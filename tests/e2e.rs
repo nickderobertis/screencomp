@@ -151,6 +151,29 @@ fn gallery_creates_index_html() {
 }
 
 #[test]
+fn gallery_diff_mode_renders_before_after() {
+    let dir = TempDir::new().unwrap();
+
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--baseline")
+        .arg(baseline())
+        .arg("--output")
+        .arg(dir.path())
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(dir.path().join("index.html")).expect("index.html");
+    assert!(html.contains("<h2>Changed</h2>"));
+    assert!(html.contains("src=\"baseline/desktop/about.png\""));
+    assert!(html.contains("src=\"current/desktop/about.png\""));
+    // Both image trees are copied so before/after both render.
+    assert!(dir.path().join("baseline/desktop/about.png").exists());
+    assert!(dir.path().join("current/desktop/about.png").exists());
+}
+
+#[test]
 fn missing_directory_fails_with_clean_stderr() {
     bin()
         .args(["classify", "--baseline", "/no/such/dir", "--current"])

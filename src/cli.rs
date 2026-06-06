@@ -67,9 +67,15 @@ pub struct ClassifyArgs {
 /// Arguments for [`Command::Gallery`].
 #[derive(Debug, clap::Args)]
 pub struct GalleryArgs {
-    /// Screenshot root to index (`<dir>/<project>/<name>.png`).
+    /// Screenshot root to index (`<dir>/<project>/<name>.png`). In diff mode this
+    /// is the current capture.
     #[arg(long, value_name = "DIR")]
     pub input: Utf8PathBuf,
+
+    /// Optional baseline root; when given, render a before/after diff gallery of
+    /// `--input` against it instead of a plain index.
+    #[arg(long, value_name = "DIR")]
+    pub baseline: Option<Utf8PathBuf>,
 
     /// Output directory; `index.html` is written inside it.
     #[arg(long, value_name = "DIR")]
