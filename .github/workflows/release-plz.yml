@@ -81,19 +81,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: release-plz release-pr ${{ steps.baseline.outputs.arg }} --git-token "$GITHUB_TOKEN"
 
-      # Auto-release: enable GitHub auto-merge on the release PR so it merges
-      # itself once required status checks pass. That merge re-triggers this
-      # workflow's `release` step above, which tags vX.Y.Z and cuts the Release.
-      - name: Auto-merge the release PR when the gate is green
+      # Merge the release PR so its merge re-triggers this workflow's `release`
+      # step, which tags vX.Y.Z and cuts the Release. Prefer auto-merge (waits for
+      # required status checks when branch protection is configured); fall back to
+      # a direct squash merge when auto-merge cannot be enabled (no required checks
+      # to gate on). The release PR only bumps version + changelog, and release.yml
+      # re-runs tests before publishing any artifact.
+      - name: Merge the release PR
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
           pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName \
                  --jq 'map(select(.headRefName | startswith("release-plz-"))) | .[0].number // empty')
-          if [ -n "$pr" ]; then
-            echo "Enabling auto-merge on release PR #$pr"
-            gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --auto --rebase \
-              || echo "::warning::could not enable auto-merge on #$pr (already enabled, or already merging)"
-          else
-            echo "No open release PR to auto-merge."
+          if [ -z "$pr" ]; then
+            echo "No open release PR to merge."
+            exit 0
           fi
+          echo "Merging release PR #$pr"
+          gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --squash --auto \
+            || gh pr merge "$pr" --repo "$GITHUB_REPOSITORY" --squash
