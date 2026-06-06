@@ -51,10 +51,14 @@ just security      just doc           just dist-plan
 keep `just full-check` green before merging. Do not mutate dependencies outside
 this flow without explicit review.
 
-## Cutting a release
+## Commit messages & releases
 
-See **Releasing** in `README.md`. In short: bump the version, update
-`CHANGELOG.md`, run `just full-check`, then tag `vX.Y.Z` and push the tag.
+Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org):
+`feat:` (minor), `fix:`/`perf:` (patch), and `!`/`BREAKING CHANGE:` (major);
+`docs`/`test`/`chore`/`ci`/`build`/`style` do not trigger a release. release-plz
+reads these to compute the next version, update `CHANGELOG.md`, and open a release
+PR that auto-merges once CI is green — see **Releasing** in `README.md`. Do not
+bump the version or edit the changelog by hand.
 
 ## Agent / editor permissions
 
