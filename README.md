@@ -197,15 +197,23 @@ not just "the binary starts". Smoke checks are a subset, never the whole suite.
 
 ## Releasing
 
-1. Bump `version` in `Cargo.toml`; refresh `Cargo.lock` (`cargo update -p screencomp`).
-2. Update `CHANGELOG.md`.
-3. `just full-check`.
-4. Commit, then tag: `git tag vX.Y.Z && git push --tags`.
-5. CI must be green; the release workflow then builds per-platform archives +
-   `*.sha256` checksums, attaches them to the GitHub Release, and pushes a
-   multi-arch image to `ghcr.io/nickderobertis/screencomp`.
-6. Publishing to crates.io is a separate, gated step requiring
-   `CARGO_REGISTRY_TOKEN` (see `.github/workflows/release.yml`).
+Releases are automated with [release-plz](https://release-plz.dev) from
+[Conventional Commits](https://www.conventionalcommits.org):
+
+1. Land commits on `main` (`feat:` → minor, `fix:`/`perf:` → patch,
+   `!`/`BREAKING CHANGE` → major; `docs`/`test`/`chore`/`ci` don't release).
+2. release-plz opens/updates a **release PR** that bumps the version and writes
+   the `CHANGELOG`; it auto-merges once CI is green.
+3. Merging tags `vX.Y.Z` and cuts the GitHub Release, which triggers:
+   - `release.yml` — per-platform archives + `*.sha256`, and (gated) the
+     crates.io publish;
+   - `docker.yml` — the multi-arch `ghcr.io/nickderobertis/screencomp` image
+     (`:X.Y.Z`, `:X.Y`, `:X`, `:latest`).
+
+crates.io publishing is gated on the `PUBLISH_TO_CRATES_IO` repository variable
+and the `CARGO_REGISTRY_TOKEN` secret; the automation needs a `RELEASE_PLZ_TOKEN`
+PAT so release events trigger the workflows above. Creating a GitHub Release by
+hand (or `gh release create`) is a supported fallback.
 
 ## License
 
