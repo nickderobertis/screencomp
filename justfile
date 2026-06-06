@@ -12,6 +12,11 @@ lefthook_version := "2.1.9"
 # Pinned linters for workflow + Dockerfile checks (fetched on demand).
 actionlint_version := "1.7.7"
 hadolint_version := "2.12.0"
+# Pinned tools for the informational performance suite (`bench*`, `profile`).
+# Installed on demand by `just bench-tools`; never part of the quality gate.
+hyperfine_version := "1.20.0"
+critcmp_version := "0.1.8"
+samply_version := "0.13.1"
 
 # Show available recipes.
 default:
@@ -135,6 +140,55 @@ dist-build: build-release
     fi
     echo "packaged dist/${stem}.tar.gz"
 
+# --- Performance suite (informational; never part of `full-check`) -----------
+# Benchmarks are non-deterministic on shared hardware, so they measure rather
+# than gate. `just check`/`clippy` already type-check `benches/`, so the bench
+# can't rot without a gate phase of its own. Install the tools with `bench-tools`.
+
+# In-process micro-benchmarks (Criterion); saves the `current` baseline for bench-compare.
+bench:
+    cargo bench --locked --bench commands -- --save-baseline current
+
+# Save current benchmarks as the `base` baseline (run on the comparison point).
+bench-base:
+    cargo bench --locked --bench commands -- --save-baseline base
+
+# Diff the latest `bench` run against `base` (run `bench-base` first; needs critcmp).
+bench-compare:
+    critcmp base current
+
+# End-to-end CLI latency for every verb (hyperfine); writes target/bench/results.*.
+bench-cli:
+    @bash scripts/bench.sh
+
+# Fast smoke check of the CLI benchmark harness (one run, no warmup, no stable numbers).
+bench-cli-smoke:
+    @bash scripts/bench.sh --dry-run
+
+# Run both benchmark layers (Criterion + hyperfine).
+bench-all: bench bench-cli
+
+# Record a sampling profile to find hot spots (samply); see scripts/profile.sh for modes.
+profile *args:
+    @bash scripts/profile.sh {{args}}
+
+# Install the pinned performance tools (hyperfine, critcmp, samply) onto PATH.
+bench-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    declare -A want=([hyperfine]={{hyperfine_version}} [critcmp]={{critcmp_version}} [samply]={{samply_version}})
+    missing=()
+    for t in "${!want[@]}"; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("${t}@${want[$t]}")
+    done
+    if [ "${#missing[@]}" -eq 0 ]; then
+        echo "performance tools already installed"
+    elif command -v cargo-binstall >/dev/null 2>&1; then
+        cargo binstall --no-confirm "${missing[@]}"
+    else
+        cargo install --locked "${missing[@]}"
+    fi
+
 # Build the consumer container image locally (requires Docker).
 image:
     docker build -t screencomp:dev .
@@ -193,7 +247,7 @@ upgrade:
 # Noisy environment report (kept out of the quality gate).
 doctor:
     @echo "# toolchain"; rustup show active-toolchain; rustc --version; cargo --version
-    @echo "# tools"; for t in asdf direnv just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
+    @echo "# tools"; for t in asdf direnv just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker hyperfine critcmp samply; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
     @echo "# installed targets"; rustup target list --installed
 
 # --- internal helpers -------------------------------------------------------
