@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/nickderobertis/screencomp/compare/v0.1.0...v0.1.1) - 2026-06-06
+
+### Other
+
+- Initial screencomp CLI for the visual-docs framework
+
 ### Added
 
 - Composite GitHub Action (`action.yml`) that installs the CLI (verified release
