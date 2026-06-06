@@ -22,6 +22,17 @@ as the first step. Export `SCREENCOMP_AUTO_SETUP=1` to have the hook provision i
 a detached background process instead (still non-blocking); `SCREENCOMP_SKIP_SETUP=1`
 disables it entirely.
 
+In a remote or CI environment that builds containers from a provisioning step,
+run `scripts/setup.sh` there so the toolchain is ready before a session starts:
+that avoids the in-session wait and the bootstrap order problem where `just` is
+itself installed by setup. Non-interactive shells do not source the login rc, so
+the asdf shims and `~/.cargo/bin` must be on `PATH` for tool calls — the setup
+scripts and session hook normalise this through `_load_tool_env`, but a bare
+shell needs them added explicitly. `lefthook` (git hooks) is the one optional
+tool: it has no cargo source fallback, so where its prebuilt is unreachable
+`setup-check` reports it as an advisory rather than failing, since building and
+testing do not depend on it.
+
 Prefer to wire things by hand? The equivalent manual steps:
 
 1. Install Rust via [rustup](https://rustup.rs). The toolchain, components, and
