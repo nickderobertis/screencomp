@@ -142,6 +142,12 @@ fn gallery_creates_index_html() {
     let html = std::fs::read_to_string(dir.path().join("index.html")).expect("index.html");
     assert!(html.contains("<title>Screenshot gallery</title>"));
     assert!(html.contains("src=\"desktop/about.png\""));
+
+    // The gallery is self-contained: every referenced image is copied alongside
+    // index.html with identical bytes, so the directory is deploy-ready.
+    let copied = std::fs::read(dir.path().join("desktop/about.png")).expect("image copied");
+    let source = std::fs::read(current().join("desktop/about.png")).expect("source image");
+    assert_eq!(copied, source);
 }
 
 #[test]

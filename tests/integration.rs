@@ -128,6 +128,12 @@ fn gallery_writes_index_html() {
         std::fs::read_to_string(out_dir.path().join("index.html")).expect("index.html written");
     assert!(html.contains("<title>Screenshot gallery</title>"));
     assert!(html.contains("src=\"desktop/about.png\""));
+
+    // The referenced image is copied next to index.html, byte-for-byte.
+    let copied = std::fs::read(out_dir.path().join("desktop/about.png")).expect("image copied");
+    let source = std::fs::read(std::path::Path::new(&current()).join("desktop/about.png"))
+        .expect("source image");
+    assert_eq!(copied, source);
 }
 
 #[test]
