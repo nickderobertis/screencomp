@@ -1,15 +1,28 @@
-# Example consumer workflow for the visual-docs framework.
+# Standard visual-docs configuration: capture and compare inside one pinned
+# Linux/amd64 container, on every machine.
 #
-# Copy this into a consuming repository's `.github/workflows/` and adapt the
-# "Capture screenshots" step to your stack. The flow is:
+# Why a container, even on macOS: a screenshot's bytes depend on the renderer's
+# OS, CPU, fonts, and GPU. Pinning ONE container image fixes all of them, so a
+# capture is byte-reproducible run to run and machine to machine. macOS cannot
+# run Linux containers natively — Docker runs a Linux VM — so a "container on a
+# Mac" renders Linux pixels; with `--platform=linux/amd64` it renders the SAME
+# linux/amd64 pixels as CI (emulated via Rosetta/QEMU). The host OS becomes
+# irrelevant, and there is a single platform key: `linux-x86_64`.
 #
-#   capture screenshots  ->  screencomp gallery  ->  publish to GitHub Pages
-#                        ->  screencomp comment   ->  sticky PR diff comment
+# This trades real-macOS rendering fidelity for exact reproducibility. If you
+# need to know how the site looks in a real Mac browser, add a separate,
+# non-gating macOS-native lane; do not byte-gate it.
 #
-# Conventions this workflow assumes:
-#   * A committed baseline at `shots/baseline/<project>/<name>.png`.
-#   * The capture step writes the current run to `shots/current/<project>/<name>.png`.
-#   * GitHub Pages is enabled for the repository (Settings -> Pages -> GitHub Actions).
+# Layout (single platform key):
+#   shots/baseline/linux-x86_64/<project>/<name>.png   committed source of truth
+#   shots/current/linux-x86_64/<project>/<name>.png    captured this run
+#
+# `<project>` is a Playwright project/variant. `--platform auto` resolves to
+# `linux-x86_64` because screencomp runs INSIDE the container.
+#
+# Prerequisites:
+#   * Committed baselines at shots/baseline/linux-x86_64/<project>/<name>.png.
+#   * GitHub Pages enabled (Settings -> Pages -> GitHub Actions).
 name: Visual docs
 
 on:
@@ -17,7 +30,6 @@ on:
   push:
     branches: [main]
 
-# Read-only by default; jobs widen only the scopes they need.
 permissions:
   contents: read
 
@@ -27,41 +39,75 @@ concurrency:
 
 jobs:
   visual-docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # amd64; the container therefore runs native amd64.
+    # The pinned image fixes Chromium, fonts, and the OS userland. Keep this tag
+    # in lockstep with the `playwright` version your tests install, and use the
+    # SAME tag locally (see the bottom of this file) so captures match.
+    container: mcr.microsoft.com/playwright:v1.55.0-jammy
     permissions:
-      contents: read
+      contents: write # commit regenerated baselines to the PR branch
       pull-requests: write # post the diff comment
       pages: write # deploy the gallery
       id-token: write # Pages deployment auth
+    env:
+      # Output tree for this platform. screencomp's `auto` resolves to the same
+      # key because it runs in this container.
+      SHOTS_OUT: shots/current/linux-x86_64
+      # Deterministic-rendering flags passed to Chromium at capture time. Set
+      # these in your Playwright config's `launchOptions.args`; they are listed
+      # here so the contract is visible. Exact names track the pinned Chromium.
+      #   --headless=new
+      #   --disable-gpu --disable-gpu-rasterization --disable-partial-raster
+      #   --use-gl=angle --use-angle=swiftshader        # software rendering
+      #   --disable-skia-runtime-opts                   # portable code path:
+      #       the single most important flag for cross-CPU / emulated reproducibility,
+      #       since it stops Skia choosing SIMD kernels by runtime CPU features.
+      #   --force-color-profile=srgb
+      #   --font-render-hinting=none --disable-lcd-text # stable text rasterization
+      #   --hide-scrollbars
+      # Also pin deviceScaleFactor: 1 and a fixed viewport in the Playwright project.
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }} # PR branch, so baselines can be pushed back
 
-      # Install the CLI via the reusable action. Pin to a released major tag.
-      - uses: nickderobertis/screencomp@v1
+      - uses: nickderobertis/screencomp@v1 # pin to a released major tag
         with:
           version: latest
 
-      # Replace this with your real capture job. It must write PNGs to
-      # shots/current/<project>/<name>.png for screencomp to classify them.
+      # Replace with your real capture. It MUST write PNGs to
+      # $SHOTS_OUT/<project>/<name>.png using the deterministic flags above.
       - name: Capture screenshots
         run: |
           npm ci
           npx playwright install --with-deps chromium
-          npx playwright test # writes shots/current/<project>/<name>.png
+          npx playwright test # writes $SHOTS_OUT/<project>/<name>.png
+
+      # Reproducibility gate: capture a SECOND time and require byte-identical
+      # output. This is what makes the single-container standard trustworthy —
+      # it fails loudly if rendering is nondeterministic on this machine
+      # (including an Apple Silicon dev box emulating amd64). Drop it only once
+      # you trust your capture pipeline.
+      - name: Verify capture is reproducible
+        run: |
+          set -euo pipefail
+          SHOTS_OUT=shots/verify/linux-x86_64 npx playwright test
+          screencomp classify \
+            --baseline shots/current --current shots/verify \
+            --platform auto --exit-code
+          rm -rf shots/verify
 
       - name: Build gallery
-        run: screencomp gallery --input shots/current --output site --title "Visual docs"
-
+        run: |
+          screencomp gallery \
+            --input shots/current --baseline shots/baseline --platform auto \
+            --output site --title "Visual docs"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-
       - id: deploy
         uses: actions/deploy-pages@v4
 
-      # On pull requests, render the diff against the baseline and upsert a single
-      # sticky comment. screencomp emits a stable HTML marker; `--edit-last` keeps
-      # the bot's most recent comment updated instead of posting a new one.
       - name: Comment screenshot diff
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -70,9 +116,45 @@ jobs:
           GALLERY_URL: ${{ steps.deploy.outputs.page_url }}
         run: |
           screencomp comment \
-            --baseline shots/baseline \
-            --current shots/current \
-            --gallery-url "${GALLERY_URL}" \
-            --output comment.md
+            --baseline shots/baseline --current shots/current --platform auto \
+            --gallery-url "${GALLERY_URL}" --output comment.md
           gh pr comment "${PR}" --body-file comment.md --edit-last \
             || gh pr comment "${PR}" --body-file comment.md
+
+      # Regenerate the committed baseline from this run and push it to the PR
+      # branch. The resulting PNG diff is the review surface; merging accepts it.
+      - name: Update baseline on the PR branch
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          rsync -a --delete shots/current/ shots/baseline/
+          if [ -n "$(git status --porcelain shots/baseline)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add shots/baseline
+            git commit -m "chore: regenerate screenshot baselines"
+            git push
+          fi
+
+# ---------------------------------------------------------------------------
+# Local use (same image, so captures match CI). On Apple Silicon, --platform
+# forces the amd64 image under Rosetta/QEMU:
+#
+#   docker run --rm --platform=linux/amd64 \
+#     --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+#     mcr.microsoft.com/playwright:v1.55.0-jammy \
+#     bash -lc 'npm ci && SHOTS_OUT=shots/current/linux-x86_64 npx playwright test'
+#
+#   # Compare from the host (explicit key, since the host is not linux-x86_64):
+#   screencomp classify --baseline shots/baseline --current shots/current \
+#       --platform linux-x86_64
+#
+# One-time validation that emulated amd64 on your Mac matches native CI: against
+# a commit whose committed baseline is up to date, run the capture above, then
+#
+#   screencomp classify --baseline shots/baseline --current shots/current \
+#       --platform linux-x86_64 --exit-code
+#
+#   exit 0  -> emulated capture is byte-identical to CI; the standard holds.
+#   exit 3  -> emulation diverges; switch to per-arch baselines
+#              (linux-x86_64 from amd64 CI, linux-arm64 from native Apple Silicon).

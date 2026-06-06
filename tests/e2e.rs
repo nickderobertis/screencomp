@@ -200,6 +200,94 @@ fn gallery_diff_mode_renders_before_after() {
     assert!(dir.path().join("current/desktop/about.png").exists());
 }
 
+/// Host platform key, mirroring `commands::platform::host_key`.
+fn host_key() -> String {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" | "arm64" => "arm64",
+        other => other,
+    };
+    format!("{}-{arch}", std::env::consts::OS)
+}
+
+fn write_shot(root: &std::path::Path, platform: &str, project: &str, name: &str, bytes: &[u8]) {
+    let dir = root.join(platform).join(project);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+}
+
+#[test]
+fn classify_platform_auto_compares_only_the_host_subtree() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    let key = host_key();
+
+    // Host subtree changes; a foreign subtree differs too but must be ignored.
+    write_shot(&base, &key, "desktop", "home", b"old");
+    write_shot(&cur, &key, "desktop", "home", b"new");
+    write_shot(&base, "other-arch", "desktop", "home", b"a");
+    write_shot(&cur, "other-arch", "desktop", "home", b"b");
+
+    bin()
+        .args(["classify", "--platform", "auto", "--exit-code", "--baseline"])
+        .arg(&base)
+        .arg("--current")
+        .arg(&cur)
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("changed desktop/home"))
+        // Only the host subtree is compared (1 shot); the foreign subtree, which
+        // also differs, is invisible to the scoped run.
+        .stdout(predicate::str::contains(
+            "added 0 changed 1 removed 0 unchanged 0",
+        ));
+}
+
+#[test]
+fn gallery_diff_scopes_both_trees_by_platform() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    let out = TempDir::new().unwrap();
+    write_shot(&base, "linux-arm64", "desktop", "home", b"old");
+    write_shot(&cur, "linux-arm64", "desktop", "home", b"new");
+
+    bin()
+        .args(["gallery", "--platform", "linux-arm64", "--input"])
+        .arg(&cur)
+        .arg("--baseline")
+        .arg(&base)
+        .arg("--output")
+        .arg(out.path())
+        .assert()
+        .success();
+
+    // Copied trees drop the platform layer: the diff page is self-contained.
+    assert!(out.path().join("baseline/desktop/home.png").exists());
+    assert!(out.path().join("current/desktop/home.png").exists());
+}
+
+#[test]
+fn missing_platform_subtree_names_the_path_on_stderr() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "linux-arm64", "desktop", "home", b"x");
+    write_shot(&cur, "linux-arm64", "desktop", "home", b"x");
+
+    bin()
+        .args(["classify", "--platform", "windows-x86_64", "--baseline"])
+        .arg(&base)
+        .arg("--current")
+        .arg(&cur)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("not a directory"))
+        .stderr(predicate::str::contains("windows-x86_64"));
+}
+
 #[test]
 fn missing_directory_fails_with_clean_stderr() {
     bin()

@@ -55,6 +55,14 @@ pub struct ClassifyArgs {
     #[arg(long, value_name = "DIR")]
     pub current: Utf8PathBuf,
 
+    /// Restrict the comparison to one platform subtree
+    /// (`<root>/<platform>/<project>/<name>.png`), since identical UI rendered on
+    /// a different OS or CPU architecture differs byte-for-byte. Use `auto` to
+    /// detect the host `<os>-<arch>` (e.g. `linux-x86_64`, `macos-arm64`). Omit
+    /// to treat the root as project-level, with no platform layer.
+    #[arg(long, value_name = "KEY")]
+    pub platform: Option<String>,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
@@ -77,6 +85,12 @@ pub struct GalleryArgs {
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<Utf8PathBuf>,
 
+    /// Restrict to one platform subtree (`<root>/<platform>/...`) of `--input`
+    /// and, in diff mode, `--baseline`. Use `auto` to detect the host
+    /// `<os>-<arch>`. Omit to treat the roots as project-level.
+    #[arg(long, value_name = "KEY")]
+    pub platform: Option<String>,
+
     /// Output directory; `index.html` is written inside it.
     #[arg(long, value_name = "DIR")]
     pub output: Utf8PathBuf,
@@ -97,9 +111,27 @@ pub struct CommentArgs {
     #[arg(long, value_name = "DIR")]
     pub current: Utf8PathBuf,
 
+    /// Restrict the comparison to one platform subtree
+    /// (`<root>/<platform>/<project>/<name>.png`). Use `auto` to detect the host
+    /// `<os>-<arch>` (e.g. `linux-x86_64`, `macos-arm64`). Omit to treat the
+    /// roots as project-level. Pair a per-platform `--marker` to keep one sticky
+    /// comment each.
+    #[arg(long, value_name = "KEY")]
+    pub platform: Option<String>,
+
     /// Optional `screencomp.toml`; falls back to `$SCREENCOMP_CONFIG`, then built-in defaults.
     #[arg(long, value_name = "FILE")]
     pub config: Option<Utf8PathBuf>,
+
+    /// Heading shown at the top of the comment. Overrides `comment.title`.
+    #[arg(long, value_name = "TEXT")]
+    pub title: Option<String>,
+
+    /// Stable HTML marker used to upsert the comment. Overrides `comment.marker`;
+    /// give each platform a distinct value to keep one sticky comment per
+    /// platform.
+    #[arg(long, value_name = "ID")]
+    pub marker: Option<String>,
 
     /// Optional gallery URL to link from the comment. When set, it is also the
     /// base URL for inline image previews.

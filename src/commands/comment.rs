@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use super::{Ctx, write_err};
+use super::{Ctx, platform, write_err};
 use crate::cli::CommentArgs;
 use crate::config::{self, CONFIG_ENV};
 use crate::domain::classify::classify;
@@ -15,17 +15,20 @@ pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
     let env = std::env::var(CONFIG_ENV).ok();
     let cfg = config::load(args.config.as_deref(), env)?;
 
-    let baseline = fs::discover(&args.baseline)?;
-    let current = fs::discover(&args.current)?;
+    let plat = args.platform.as_deref();
+    let baseline = fs::discover(&platform::scope(&args.baseline, plat))?;
+    let current = fs::discover(&platform::scope(&args.current, plat))?;
     let classification = classify(&baseline, &current);
 
-    // CLI flag overrides the configured limit when present.
+    // CLI flags override the configured values when present.
     let embed_limit = args.embed_limit.unwrap_or(cfg.comment.embed_limit);
+    let title = args.title.as_deref().unwrap_or(&cfg.comment.title);
+    let marker = args.marker.as_deref().unwrap_or(&cfg.comment.marker);
 
     let markdown = render_markdown(
         &classification,
-        &cfg.comment.title,
-        &cfg.comment.marker,
+        title,
+        marker,
         cfg.comment.show_unchanged,
         args.gallery_url.as_deref(),
         embed_limit,

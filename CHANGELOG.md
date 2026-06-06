@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- *(classify, gallery, comment)* add `--platform <KEY|auto>` to compare within a
+  single `<root>/<platform>/<project>/<name>.png` subtree, so screenshots
+  captured on different operating systems or CPU architectures are never
+  compared against each other. `auto` resolves to the host's `<os>-<arch>`.
+- *(comment)* add `--marker` and `--title` flags overriding `comment.marker` /
+  `comment.title`, so a per-platform run can keep one sticky comment each
+  without a config file per platform.
+
 ## [0.1.7](https://github.com/nickderobertis/screencomp/compare/v0.1.6...v0.1.7) - 2026-06-06
 
 ### Added
