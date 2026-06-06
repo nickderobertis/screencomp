@@ -61,6 +61,46 @@ pub(crate) fn write_string(path: &Utf8Path, contents: &str) -> Result<(), AppErr
     fs::write(path, contents).map_err(|e| AppError::io(format!("writing {path}"), e))
 }
 
+/// Copy every `<project>/<name>.png` under `input` into the matching path under
+/// `output`, so a rendered gallery is self-contained and deploy-ready. Returns
+/// the number of images copied. Mirrors [`discover`]'s traversal and naming.
+pub(crate) fn copy_png_tree(input: &Utf8Path, output: &Utf8Path) -> Result<usize, AppError> {
+    if !input.is_dir() {
+        return Err(AppError::NotADirectory {
+            path: input.to_owned(),
+        });
+    }
+
+    let mut copied = 0usize;
+    for project_dir in read_dir_sorted(input)? {
+        if !project_dir.is_dir() {
+            continue;
+        }
+        let Some(project) = project_dir.file_name() else {
+            continue;
+        };
+
+        for file in read_dir_sorted(&project_dir)? {
+            if !file.is_file() || !is_png(&file) {
+                continue;
+            }
+            let Some(stem) = file.file_stem() else {
+                continue;
+            };
+            let dest_dir = output.join(project);
+            fs::create_dir_all(&dest_dir)
+                .map_err(|e| AppError::io(format!("creating {dest_dir}"), e))?;
+            // Match the `<name>.png` reference render_html emits.
+            let dest = dest_dir.join(format!("{stem}.png"));
+            fs::copy(&file, &dest)
+                .map_err(|e| AppError::io(format!("copying {file} to {dest}"), e))?;
+            copied += 1;
+        }
+    }
+
+    Ok(copied)
+}
+
 /// Read a directory into UTF-8 paths sorted lexically; non-UTF-8 names are an error.
 fn read_dir_sorted(dir: &Utf8Path) -> Result<Vec<Utf8PathBuf>, AppError> {
     let entries =
@@ -121,5 +161,25 @@ mod tests {
         assert!(is_png(Utf8Path::new("a/b.png")));
         assert!(is_png(Utf8Path::new("a/b.PNG")));
         assert!(!is_png(Utf8Path::new("a/b.jpg")));
+    }
+
+    #[test]
+    fn copy_png_tree_reproduces_the_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let input = root.join("in");
+        let output = root.join("out");
+        fs::create_dir_all(input.join("desktop")).unwrap();
+        fs::write(input.join("desktop/home.png"), b"png-bytes").unwrap();
+        // A non-png sibling must be ignored.
+        fs::write(input.join("desktop/notes.txt"), b"skip").unwrap();
+
+        let copied = copy_png_tree(&input, &output).unwrap();
+        assert_eq!(copied, 1);
+        assert_eq!(
+            fs::read(output.join("desktop/home.png")).unwrap(),
+            b"png-bytes"
+        );
+        assert!(!output.join("desktop/notes.txt").exists());
     }
 }

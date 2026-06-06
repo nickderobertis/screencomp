@@ -14,9 +14,12 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
 
     let index = args.output.join("index.html");
     fs::write_string(&index, &html)?;
+    // Copy the referenced images next to index.html so the output is a
+    // self-contained, deploy-ready directory.
+    let images = fs::copy_png_tree(&args.input, &args.output)?;
 
     if !ctx.quiet {
-        writeln!(out, "wrote {index}").map_err(write_err)?;
+        writeln!(out, "wrote {index} ({images} images)").map_err(write_err)?;
     }
     Ok(0)
 }

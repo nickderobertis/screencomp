@@ -51,6 +51,16 @@ jobs:
             | tar -xz -C /usr/local/bin release-plz
           release-plz --version
 
+      # `release` runs first: it only publishes the version already in Cargo.toml,
+      # deciding by whether that version's git tag exists, so it needs no baseline.
+      - name: Tag and publish a merged version bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: release-plz release --git-token "$GITHUB_TOKEN"
+
+      # Compute the baseline AFTER release, so a tag just created above becomes the
+      # baseline. Otherwise release-pr would re-propose the version that was just
+      # released and open a duplicate release PR.
       - name: Use the last release tag as the version baseline
         id: baseline
         run: |
@@ -65,14 +75,6 @@ jobs:
             echo "arg=" >> "$GITHUB_OUTPUT"
             echo "No release tag yet; the first release uses the current version."
           fi
-
-      # `release` only ever publishes the version already in Cargo.toml, and
-      # decides whether to by checking for its git tag — so it needs no version
-      # baseline (and does not accept --registry-manifest-path).
-      - name: Tag and publish a merged version bump
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-        run: release-plz release --git-token "$GITHUB_TOKEN"
 
       - name: Open or update the release PR
         env:
