@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/nickderobertis/screencomp/compare/v0.1.4...v0.1.5) - 2026-06-06
+
+### Added
+
+- *(comment)* embed inline image previews for small diffs ([#10](https://github.com/nickderobertis/screencomp/pull/10))
+- *(gallery)* add a before/after diff gallery mode ([#8](https://github.com/nickderobertis/screencomp/pull/8))
+
+### Fixed
+
+- *(gallery)* copy referenced images into the output directory ([#5](https://github.com/nickderobertis/screencomp/pull/5))
+
+### Other
+
+- Initial screencomp CLI for the visual-docs framework
+
 ## [0.1.4](https://github.com/nickderobertis/screencomp/compare/v0.1.3...v0.1.4) - 2026-06-06
 
 ### Added
