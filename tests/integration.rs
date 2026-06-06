@@ -137,6 +137,29 @@ fn gallery_writes_index_html() {
 }
 
 #[test]
+fn gallery_diff_mode_copies_both_trees() {
+    let out_dir = TempDir::new().unwrap();
+    let out_str = path_str(out_dir.path());
+    let (code, stdout) = invoke(&[
+        "screencomp",
+        "gallery",
+        "--input",
+        &current(),
+        "--baseline",
+        &baseline(),
+        "--output",
+        &out_str,
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(stdout.contains("diff"));
+
+    let html = std::fs::read_to_string(out_dir.path().join("index.html")).expect("index.html");
+    assert!(html.contains("<h2>Changed</h2>"));
+    assert!(out_dir.path().join("baseline/desktop/about.png").exists());
+    assert!(out_dir.path().join("current/desktop/about.png").exists());
+}
+
+#[test]
 fn comment_writes_markdown_file() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("comment.md");

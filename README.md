@@ -16,7 +16,8 @@ each `<project>` is a Playwright project/variant. From two such trees,
 
 - **`classify`** — compares `current` against `baseline` and labels each
   screenshot `added` / `changed` / `removed` / `unchanged` (by content hash).
-- **`gallery`** — renders a self-contained `index.html` index of a tree.
+- **`gallery`** — renders a self-contained `index.html` index of a tree, or a
+  before/after **diff gallery** when given a `--baseline` (great for PR previews).
 - **`comment`** — renders the sticky Markdown PR comment body for a
   classification (with a stable HTML marker for upserts).
 
@@ -105,11 +106,20 @@ $ screencomp classify --baseline baseline --current current --format json
 Build a gallery and render the PR comment:
 
 ```sh
+# Latest gallery (one tree) — e.g. published from the default branch.
 screencomp gallery --input current --output public/screenshots --title "UI"
+
+# Before/after diff gallery (current vs baseline) — e.g. a per-PR preview.
+screencomp gallery --input current --baseline baseline \
+    --output public/pr-123 --title "PR #123 visual diff"
+
 screencomp comment --baseline baseline --current current \
-    --gallery-url https://example.github.io/repo/screenshots/ \
+    --gallery-url https://example.github.io/repo/pr-123/ \
     --output comment.md
 ```
+
+The diff gallery groups shots into Changed (rendered before/after), Added,
+Removed, and Unchanged, and copies both image trees so it is self-contained.
 
 `classify --exit-code` returns a non-zero status when differences exist, for
 automation that wants a signal without parsing output:
