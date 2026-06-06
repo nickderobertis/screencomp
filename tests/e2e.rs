@@ -125,6 +125,33 @@ fn comment_writes_file_and_reports_path() {
     assert!(md.starts_with("<!-- screencomp -->"));
     assert!(md.contains("## Visual changes"));
     assert!(md.contains("### Changed"));
+    // Without a gallery URL the comment is a path listing, not inline images.
+    assert!(!md.contains("<img"));
+}
+
+#[test]
+fn comment_embeds_inline_previews_when_gallery_url_given() {
+    let dir = TempDir::new().unwrap();
+    let out = dir.path().join("comment.md");
+
+    bin()
+        .args(["comment", "--baseline"])
+        .arg(baseline())
+        .arg("--current")
+        .arg(current())
+        .arg("--gallery-url")
+        .arg("https://example.test/pr/12/")
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    // Small diff under the default limit: inline before/after images appear.
+    assert!(md.contains("| Before | After |"));
+    assert!(md.contains("src=\"https://example.test/pr/12/baseline/desktop/about.png\""));
+    assert!(md.contains("src=\"https://example.test/pr/12/current/desktop/pricing.png\""));
+    assert!(md.contains("width=\"380\""));
 }
 
 #[test]

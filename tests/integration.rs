@@ -180,6 +180,64 @@ fn comment_writes_markdown_file() {
     assert!(md.starts_with("<!-- screencomp -->"));
     assert!(md.contains("## Visual changes"));
     assert!(md.contains("### Changed\n- `desktop/about`"));
+    // No base URL: a path listing, never inline images.
+    assert!(!md.contains("<img"));
+}
+
+#[test]
+fn comment_embeds_inline_previews_with_gallery_url() {
+    // A small diff (1 changed + 1 added) plus a base URL embeds images inline.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline",
+        &baseline(),
+        "--current",
+        &current(),
+        "--gallery-url",
+        "https://example.test/pr/9/",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    // Changed shot: before/after from both trees.
+    assert!(out.contains("### Changed"), "{out}");
+    assert!(
+        out.contains("src=\"https://example.test/pr/9/baseline/desktop/about.png\""),
+        "{out}"
+    );
+    assert!(
+        out.contains("src=\"https://example.test/pr/9/current/desktop/about.png\""),
+        "{out}"
+    );
+    // Added shot: single image from current.
+    assert!(
+        out.contains("src=\"https://example.test/pr/9/current/desktop/pricing.png\""),
+        "{out}"
+    );
+    // Embed mode replaces the path listing but keeps the gallery link.
+    assert!(!out.contains("- `desktop/about`"), "{out}");
+    assert!(
+        out.contains("[View full gallery](https://example.test/pr/9/)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn comment_embed_limit_zero_falls_back_to_listing() {
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline",
+        &baseline(),
+        "--current",
+        &current(),
+        "--gallery-url",
+        "https://example.test/pr/9/",
+        "--embed-limit",
+        "0",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(!out.contains("<img"), "{out}");
+    assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
 }
 
 #[test]

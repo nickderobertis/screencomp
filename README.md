@@ -121,6 +121,13 @@ screencomp comment --baseline baseline --current current \
 The diff gallery groups shots into Changed (rendered before/after), Added,
 Removed, and Unchanged, and copies both image trees so it is self-contained.
 
+When `--gallery-url` is given and the diff is small (at most `comment.embed_limit`
+screenshots differ — 10 by default), the comment embeds the changed shots inline
+(changed before/after, added/removed as a single image) resolved against that
+URL, and still links to the full gallery. Larger diffs fall back to a path
+listing plus the link. Override the threshold with `--embed-limit <N>` (`0`
+disables embedding).
+
 `classify --exit-code` returns a non-zero status when differences exist, for
 automation that wants a signal without parsing output:
 
@@ -154,6 +161,7 @@ required). A path given explicitly that is missing or invalid is a hard error.
 title = "Visual changes"   # comment heading
 marker = "screencomp"       # [A-Za-z0-9_-]; embedded as <!-- marker --> for upserts
 show_unchanged = false      # also list unchanged screenshots
+embed_limit = 10            # embed images inline when ≤ N shots differ (0 disables)
 ```
 
 ## Examples

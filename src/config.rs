@@ -27,6 +27,9 @@ pub(crate) struct CommentConfig {
     pub(crate) marker: String,
     /// Whether to list unchanged screenshots in the comment.
     pub(crate) show_unchanged: bool,
+    /// Embed inline image previews when at most this many screenshots differ
+    /// (added + changed + removed) and a gallery URL is available.
+    pub(crate) embed_limit: usize,
 }
 
 impl Default for Config {
@@ -36,6 +39,7 @@ impl Default for Config {
                 title: "Visual changes".to_owned(),
                 marker: "screencomp".to_owned(),
                 show_unchanged: false,
+                embed_limit: 10,
             },
         }
     }
@@ -131,6 +135,7 @@ struct RawCommentConfig {
     title: Option<String>,
     marker: Option<String>,
     show_unchanged: Option<bool>,
+    embed_limit: Option<usize>,
 }
 
 impl RawConfig {
@@ -163,6 +168,7 @@ impl RawConfig {
                 show_unchanged: comment
                     .show_unchanged
                     .unwrap_or(defaults.comment.show_unchanged),
+                embed_limit: comment.embed_limit.unwrap_or(defaults.comment.embed_limit),
             },
         })
     }
@@ -211,12 +217,19 @@ mod tests {
     #[test]
     fn accepts_valid_overrides() {
         let raw: RawConfig = toml::from_str(
-            "[comment]\ntitle = \"UI\"\nmarker = \"ui-shots\"\nshow_unchanged = true\n",
+            "[comment]\ntitle = \"UI\"\nmarker = \"ui-shots\"\nshow_unchanged = true\nembed_limit = 3\n",
         )
         .unwrap();
         let cfg = raw.validate().expect("valid");
         assert_eq!(cfg.comment.title, "UI");
         assert_eq!(cfg.comment.marker, "ui-shots");
         assert!(cfg.comment.show_unchanged);
+        assert_eq!(cfg.comment.embed_limit, 3);
+    }
+
+    #[test]
+    fn embed_limit_defaults_to_ten() {
+        let cfg = load(None, None).expect("defaults load");
+        assert_eq!(cfg.comment.embed_limit, 10);
     }
 }

@@ -19,12 +19,16 @@ pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
     let current = fs::discover(&args.current)?;
     let classification = classify(&baseline, &current);
 
+    // CLI flag overrides the configured limit when present.
+    let embed_limit = args.embed_limit.unwrap_or(cfg.comment.embed_limit);
+
     let markdown = render_markdown(
         &classification,
         &cfg.comment.title,
         &cfg.comment.marker,
         cfg.comment.show_unchanged,
         args.gallery_url.as_deref(),
+        embed_limit,
     );
 
     match &args.output {
