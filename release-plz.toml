@@ -24,16 +24,22 @@ publish = false
 # conventional-commit type instead. Re-enable once enforceable in CI.
 semver_check = false
 
-# Only release when the commits since the last release include a releasable
-# change — a feature, a fix/perf, or a breaking change (`!` on any type, or a
-# `BREAKING CHANGE` footer). This is what actually gates a release: the
-# [changelog] `skip = true` parsers below only hide a type from the CHANGELOG
-# text, they do NOT stop the version bump. Without this, any commit that touches
-# packaged files (chore, ci, docs, test, build, style) still cuts a patch
-# release — and every auto-merged `chore: release vX.Y.Z` commit then
-# re-triggers another, looping. Matching commits still get the normal
-# conventional-commit bump (feat -> minor pre-1.0, fix/perf -> patch).
-release_commits = '^(feat|fix|perf)(\(.+\))?!?:|^\w+(\(.+\))?!:|BREAKING CHANGE'
+# Gate a release on the commit *subject* only. release-plz proposes a release
+# whenever packaged files change, regardless of type; the [changelog]
+# `skip = true` parsers below merely hide a type from the CHANGELOG text and do
+# NOT stop the version bump. So without this, any commit that touches packaged
+# files (chore, ci, docs, test, build, style) cuts a patch release — and every
+# auto-merged `chore: release vX.Y.Z` commit then re-triggers another, looping.
+#
+# This regex is matched against the WHOLE commit message, so every alternative
+# is anchored with `^` to confine matching to the subject line — otherwise a
+# message body that merely mentions a releasable keyword would trip the gate.
+# A release fires only when the subject is a feature, a fix/perf, or a breaking
+# change (`!` on any conventional type). Express breaking changes with `!` in
+# the subject (a body-only `BREAKING CHANGE:` footer is intentionally not a
+# trigger, to keep prose from cutting releases). Matching commits still get the
+# normal conventional-commit bump (feat -> minor pre-1.0, fix/perf -> patch).
+release_commits = '^(feat|fix|perf)(\(.+\))?!?:|^[a-z]+(\(.+\))?!:'
 
 # Single binary crate: tag and name each release `vX.Y.Z`.
 git_tag_name = "v{{ version }}"
