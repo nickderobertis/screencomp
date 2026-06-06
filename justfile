@@ -17,6 +17,14 @@ hadolint_version := "2.12.0"
 default:
     @just --list
 
+# One-command machine setup (asdf + direnv + toolchain + tools + hooks; idempotent).
+setup:
+    @bash scripts/setup.sh
+
+# Fast check of whether this machine is set up (no installs, no network).
+setup-check:
+    @bash scripts/setup-check.sh
+
 # Install developer tooling and git hooks (idempotent).
 bootstrap: _ensure-tools _ensure-lefthook hooks-install
     @echo "bootstrap complete"
@@ -185,7 +193,7 @@ upgrade:
 # Noisy environment report (kept out of the quality gate).
 doctor:
     @echo "# toolchain"; rustup show active-toolchain; rustc --version; cargo --version
-    @echo "# tools"; for t in just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
+    @echo "# tools"; for t in asdf direnv just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
     @echo "# installed targets"; rustup target list --installed
 
 # --- internal helpers -------------------------------------------------------
