@@ -2,6 +2,28 @@
 
 ## Setup
 
+One command provisions a fresh machine end to end:
+
+```sh
+./scripts/setup.sh    # or `just setup` once `just` is on PATH
+```
+
+It is idempotent and safe to re-run. It installs **asdf** + **direnv**, the
+asdf-pinned `just` (`.tool-versions`), the Rust toolchain that `rust-toolchain.toml`
+pins (via `rustup`), the cargo dev tools and git hooks (`just bootstrap`), then
+allows the `.envrc` and records a stamp under `.dev/` so subsequent checks are
+instant. Open a new shell (or `direnv reload`) afterward so asdf/direnv take
+effect. Check readiness anytime with `just setup-check`.
+
+Working in **Claude Code**? A `SessionStart` hook (`scripts/session-setup.sh`,
+wired in `.claude/settings.json`) runs `setup-check` automatically: if the
+environment is ready it stays silent, otherwise it advises running `just setup`
+as the first step. Export `SCREENCOMP_AUTO_SETUP=1` to have the hook provision in
+a detached background process instead (still non-blocking); `SCREENCOMP_SKIP_SETUP=1`
+disables it entirely.
+
+Prefer to wire things by hand? The equivalent manual steps:
+
 1. Install Rust via [rustup](https://rustup.rs). The toolchain, components, and
    release targets are pinned in `rust-toolchain.toml`.
 2. Confirm the toolchain: `rustup show`.

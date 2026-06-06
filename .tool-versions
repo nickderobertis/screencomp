@@ -1,0 +1,10 @@
+# asdf-managed tool versions for a reproducible local setup.
+#
+# Scope: tools needed to *bootstrap* the project. The Rust toolchain is
+# deliberately NOT managed here — rust-toolchain.toml + rustup remain the single
+# source of truth (channel, components, targets, profile). Adding `rust` here
+# would create a second, conflicting toolchain mechanism.
+#
+# `just` is pinned so a fresh machine can run `just setup` (and the rest of the
+# gate) at a known version before any cargo tooling is installed.
+just 1.40.0
