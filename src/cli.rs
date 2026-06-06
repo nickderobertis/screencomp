@@ -101,9 +101,16 @@ pub struct CommentArgs {
     #[arg(long, value_name = "FILE")]
     pub config: Option<Utf8PathBuf>,
 
-    /// Optional gallery URL to link from the comment.
+    /// Optional gallery URL to link from the comment. When set, it is also the
+    /// base URL for inline image previews.
     #[arg(long, value_name = "URL")]
     pub gallery_url: Option<String>,
+
+    /// Embed inline image previews when at most this many screenshots differ
+    /// (requires `--gallery-url`). Overrides `comment.embed_limit` (default 10);
+    /// `0` disables embedding.
+    #[arg(long, value_name = "N")]
+    pub embed_limit: Option<usize>,
 
     /// Write the comment to this file instead of stdout.
     #[arg(long, value_name = "FILE")]
