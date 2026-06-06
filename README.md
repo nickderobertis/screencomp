@@ -24,6 +24,11 @@ each `<project>` is a Playwright project/variant. From two such trees,
 It never decodes images — it content-hashes bytes — so output is deterministic
 and the tool has no image-codec dependencies.
 
+Because that content hash also changes with the renderer's OS and CPU
+architecture, each command takes an optional `--platform` to compare within a
+single `<root>/<platform>/<project>/<name>.png` subtree (see
+[Cross-platform comparison](#cross-platform-comparison)).
+
 ## Install
 
 ### From release binaries
@@ -137,6 +142,44 @@ screencomp classify --baseline baseline --current current --exit-code || echo "c
 
 `--quiet` suppresses human output (machine-readable `--format json` is
 unaffected).
+
+### Cross-platform comparison
+
+Identical UI rendered on a different OS or CPU architecture produces
+byte-different PNGs, so comparing across platforms reports spurious changes.
+Give each capture environment its own subtree and pass `--platform` to compare
+only within it:
+
+```text
+shots/baseline/linux-x86_64/desktop/home.png
+shots/baseline/macos-arm64/desktop/home.png
+shots/current/linux-x86_64/desktop/home.png
+shots/current/macos-arm64/desktop/home.png
+```
+
+```sh
+# Explicit key (e.g. one matrix leg per platform in CI):
+screencomp classify --baseline shots/baseline --current shots/current \
+    --platform linux-x86_64
+
+# `auto` detects the host's own <os>-<arch>, ideal for a local pre-push check:
+screencomp classify --baseline shots/baseline --current shots/current \
+    --platform auto
+```
+
+`--platform` accepts any subtree name; `auto` resolves to `<os>-<arch>` for the
+running binary (`aarch64` is spelled `arm64`). All three commands accept it. For
+`comment`, give each platform a distinct `--marker` (and optionally `--title`)
+so every platform keeps its own sticky comment:
+
+```sh
+screencomp comment --baseline shots/baseline --current shots/current \
+    --platform linux-x86_64 \
+    --marker screencomp-linux-x86_64 --title "Visual changes (linux-x86_64)"
+```
+
+Omit `--platform` entirely to treat the root as project-level (no platform
+layer) — the original behavior.
 
 ## Exit codes
 

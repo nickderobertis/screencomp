@@ -240,6 +240,135 @@ fn comment_embed_limit_zero_falls_back_to_listing() {
     assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
 }
 
+/// Host platform key, mirroring `commands::platform::host_key` (which is
+/// crate-private) so the `--platform auto` journey can be exercised end to end.
+fn host_key() -> String {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" | "arm64" => "arm64",
+        other => other,
+    };
+    format!("{}-{arch}", std::env::consts::OS)
+}
+
+/// Write `bytes` to `<root>/<platform>/<project>/<name>.png`.
+fn write_shot(root: &Path, platform: &str, project: &str, name: &str, bytes: &[u8]) {
+    let dir = root.join(platform).join(project);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+}
+
+#[test]
+fn platform_flag_scopes_comparison_to_one_subtree() {
+    // Two platforms coexist under each root. The `arm` subtree is identical
+    // across baseline and current; the `x86` subtree differs. Scoping to `arm`
+    // must report no changes even though `x86` would — proving cross-platform
+    // bytes never leak into the comparison.
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+
+    write_shot(&base, "linux-arm64", "desktop", "home", b"same");
+    write_shot(&cur, "linux-arm64", "desktop", "home", b"same");
+    write_shot(&base, "linux-x86_64", "desktop", "home", b"old");
+    write_shot(&cur, "linux-x86_64", "desktop", "home", b"new");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+        "--platform",
+        "linux-arm64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("added 0 changed 0 removed 0 unchanged 1"),
+        "{out}"
+    );
+
+    // The same roots scoped to the other platform do see the change.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("changed desktop/home"), "{out}");
+}
+
+#[test]
+fn platform_auto_resolves_to_the_host_subtree() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    let key = host_key();
+
+    write_shot(&base, &key, "desktop", "home", b"old");
+    write_shot(&cur, &key, "desktop", "home", b"new");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+        "--platform",
+        "auto",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("changed desktop/home"), "{out}");
+}
+
+#[test]
+fn missing_platform_subtree_is_not_a_directory_error() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "linux-arm64", "desktop", "home", b"x");
+    write_shot(&cur, "linux-arm64", "desktop", "home", b"x");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+        "--platform",
+        "windows-x86_64",
+    ]);
+    assert!(matches!(result, Err(AppError::NotADirectory { .. })));
+}
+
+#[test]
+fn comment_marker_and_title_flags_override_config() {
+    // Distinct markers are how a multi-platform run keeps one sticky comment per
+    // platform without a config file per platform.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline",
+        &baseline(),
+        "--current",
+        &current(),
+        "--marker",
+        "screencomp-linux-x86_64",
+        "--title",
+        "Visual changes (linux-x86_64)",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.starts_with("<!-- screencomp-linux-x86_64 -->"), "{out}");
+    assert!(out.contains("## Visual changes (linux-x86_64)"), "{out}");
+}
+
 #[test]
 fn missing_baseline_is_not_a_directory_error() {
     let (result, out) = invoke(&[

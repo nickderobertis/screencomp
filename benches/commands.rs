@@ -138,6 +138,7 @@ fn classify_cli(t: &Trees, format: OutputFormat) -> Cli {
         command: Command::Classify(ClassifyArgs {
             baseline: t.baseline.clone(),
             current: t.current.clone(),
+            platform: None,
             format,
             exit_code: false,
         }),
@@ -150,6 +151,7 @@ fn gallery_cli(t: &Trees) -> Cli {
         command: Command::Gallery(GalleryArgs {
             input: t.current.clone(),
             baseline: Some(t.baseline.clone()),
+            platform: None,
             output: t.gallery_out.clone(),
             title: "Screenshot gallery".to_owned(),
         }),
@@ -162,7 +164,10 @@ fn comment_cli(t: &Trees) -> Cli {
         command: Command::Comment(CommentArgs {
             baseline: t.baseline.clone(),
             current: t.current.clone(),
+            platform: None,
             config: None,
+            title: None,
+            marker: None,
             gallery_url: None,
             embed_limit: None,
             output: None,

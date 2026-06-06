@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use super::{Ctx, write_err};
+use super::{Ctx, platform, write_err};
 use crate::cli::GalleryArgs;
 use crate::domain::classify::classify;
 use crate::domain::gallery::{render_diff_html, render_html};
@@ -11,7 +11,9 @@ use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    let current = fs::discover(&args.input)?;
+    let plat = args.platform.as_deref();
+    let input_root = platform::scope(&args.input, plat);
+    let current = fs::discover(&input_root)?;
     let index = args.output.join("index.html");
 
     match &args.baseline {
@@ -21,20 +23,21 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
             fs::write_string(&index, &html)?;
             // Copy the referenced images next to index.html so the output is a
             // self-contained, deploy-ready directory.
-            let images = fs::copy_png_tree(&args.input, &args.output)?;
+            let images = fs::copy_png_tree(&input_root, &args.output)?;
             if !ctx.quiet {
                 writeln!(out, "wrote {index} ({images} images)").map_err(write_err)?;
             }
         }
         // Before/after diff gallery of current against baseline.
         Some(baseline_dir) => {
-            let baseline = fs::discover(baseline_dir)?;
+            let baseline_root = platform::scope(baseline_dir, plat);
+            let baseline = fs::discover(&baseline_root)?;
             let classification = classify(&baseline, &current);
             let html = render_diff_html(&classification, &args.title);
             fs::write_string(&index, &html)?;
             // Both trees are referenced by the diff page (before and after).
-            let base = fs::copy_png_tree(baseline_dir, &args.output.join("baseline"))?;
-            let cur = fs::copy_png_tree(&args.input, &args.output.join("current"))?;
+            let base = fs::copy_png_tree(&baseline_root, &args.output.join("baseline"))?;
+            let cur = fs::copy_png_tree(&input_root, &args.output.join("current"))?;
             if !ctx.quiet {
                 writeln!(
                     out,

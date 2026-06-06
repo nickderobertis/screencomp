@@ -4,6 +4,7 @@
 pub(crate) mod classify;
 pub(crate) mod comment;
 pub(crate) mod gallery;
+pub(crate) mod platform;
 
 use crate::errors::AppError;
 

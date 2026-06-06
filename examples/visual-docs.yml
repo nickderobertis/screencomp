@@ -1,15 +1,30 @@
-# Example consumer workflow for the visual-docs framework.
+# Example consumer workflow for the visual-docs framework, cross-platform.
 #
 # Copy this into a consuming repository's `.github/workflows/` and adapt the
 # "Capture screenshots" step to your stack. The flow is:
 #
-#   capture screenshots  ->  screencomp gallery  ->  publish to GitHub Pages
-#                        ->  screencomp comment   ->  sticky PR diff comment
+#   per platform (matrix):  capture  ->  upload current/<platform> artifact
+#   once (publish):         gather all platforms  ->  screencomp gallery (Pages)
+#                                                 ->  screencomp comment (sticky, per platform)
+#                           on a PR: regenerate baselines -> commit to the PR branch
+#
+# Why a platform matrix: a screenshot's bytes depend on the OS and CPU
+# architecture that rendered it, so `screencomp` must compare each platform only
+# against its own baseline. The tree therefore carries a platform layer:
+#
+#   shots/baseline/<platform>/<project>/<name>.png   (committed source of truth)
+#   shots/current/<platform>/<project>/<name>.png    (captured this run)
+#
+# where <platform> is `<os>-<arch>` (e.g. linux-x86_64, macos-arm64), matching
+# `screencomp --platform auto`. A platform's baseline can only be regenerated on
+# that platform, so each leg captures on a native runner. On a PR the publish job
+# rewrites the baselines and commits them back to the PR branch: GitHub then shows
+# the screenshot changes in the PR's Files view (review them like any diff), and
+# approving the PR is what blesses the new baselines.
 #
 # Conventions this workflow assumes:
-#   * A committed baseline at `shots/baseline/<project>/<name>.png`.
-#   * The capture step writes the current run to `shots/current/<project>/<name>.png`.
-#   * GitHub Pages is enabled for the repository (Settings -> Pages -> GitHub Actions).
+#   * Committed baselines at shots/baseline/<platform>/<project>/<name>.png.
+#   * GitHub Pages enabled for the repository (Settings -> Pages -> GitHub Actions).
 name: Visual docs
 
 on:
@@ -26,53 +41,130 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  visual-docs:
+  # 1) Capture on each platform's native runner and hand the result to `publish`.
+  capture:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 renders inside the pinned Playwright image, so captures
+          # are byte-reproducible run to run. Keep this tag pinned in lockstep
+          # with the `playwright` version your tests install.
+          - platform: linux-x86_64
+            runs-on: ubuntu-latest
+            container: mcr.microsoft.com/playwright:v1.55.0-jammy
+          # Apple Silicon has no official Playwright container; pin the runner
+          # image and the Playwright version instead for stable-enough renders.
+          - platform: macos-arm64
+            runs-on: macos-15
+            container: ''
+    runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Replace this with your real capture step. It MUST write PNGs to
+      # shots/current/${{ matrix.platform }}/<project>/<name>.png.
+      - name: Capture screenshots
+        run: |
+          npm ci
+          npx playwright install --with-deps
+          OUT="shots/current/${{ matrix.platform }}" npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: current-${{ matrix.platform }}
+          path: shots/current/${{ matrix.platform }}
+
+  # 2) Gather every platform's capture, publish one gallery, post one sticky
+  #    comment per platform, and (on PRs) regenerate the committed baselines.
+  publish:
+    needs: capture
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write # post the diff comment
+      contents: write # commit regenerated baselines to the PR branch
+      pull-requests: write # post the diff comments
       pages: write # deploy the gallery
       id-token: write # Pages deployment auth
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }} # the PR branch, so we can push baselines back
 
-      # Install the CLI via the reusable action. Pin to a released major tag.
-      - uses: nickderobertis/screencomp@v1
+      - uses: nickderobertis/screencomp@v1 # pin to a released major tag
         with:
           version: latest
 
-      # Replace this with your real capture job. It must write PNGs to
-      # shots/current/<project>/<name>.png for screencomp to classify them.
-      - name: Capture screenshots
+      # Reassemble shots/current/<platform>/... from the per-platform artifacts.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: current-*
+          path: shots/current
+      - name: Flatten artifact directories
         run: |
-          npm ci
-          npx playwright install --with-deps chromium
-          npx playwright test # writes shots/current/<project>/<name>.png
+          set -euo pipefail
+          # download-artifact nests each under its artifact name; lift it so the
+          # layout is shots/current/<platform>/<project>/<name>.png.
+          for d in shots/current/current-*; do
+            mv "$d" "shots/current/$(basename "$d" | sed 's/^current-//')"
+          done
 
+      # One gallery covering all platforms, deployed to Pages.
       - name: Build gallery
-        run: screencomp gallery --input shots/current --output site --title "Visual docs"
-
+        run: |
+          set -euo pipefail
+          for p in linux-x86_64 macos-arm64; do
+            screencomp gallery \
+              --input shots/current --baseline shots/baseline --platform "$p" \
+              --output "site/$p" --title "Visual docs ($p)"
+          done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-
       - id: deploy
         uses: actions/deploy-pages@v4
 
-      # On pull requests, render the diff against the baseline and upsert a single
-      # sticky comment. screencomp emits a stable HTML marker; `--edit-last` keeps
-      # the bot's most recent comment updated instead of posting a new one.
+      # One sticky comment per platform: distinct --marker keeps them separate.
       - name: Comment screenshot diff
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          GALLERY_URL: ${{ steps.deploy.outputs.page_url }}
+          PAGE_URL: ${{ steps.deploy.outputs.page_url }}
         run: |
-          screencomp comment \
-            --baseline shots/baseline \
-            --current shots/current \
-            --gallery-url "${GALLERY_URL}" \
-            --output comment.md
-          gh pr comment "${PR}" --body-file comment.md --edit-last \
-            || gh pr comment "${PR}" --body-file comment.md
+          set -euo pipefail
+          for p in linux-x86_64 macos-arm64; do
+            screencomp comment \
+              --baseline shots/baseline --current shots/current --platform "$p" \
+              --marker "screencomp-$p" --title "Visual changes ($p)" \
+              --gallery-url "${PAGE_URL}$p/" \
+              --output "comment-$p.md"
+            gh pr comment "${PR}" --body-file "comment-$p.md" --edit-last \
+              || gh pr comment "${PR}" --body-file "comment-$p.md"
+          done
+
+      # Regenerate the committed baselines from this run and push them to the PR
+      # branch. The resulting PNG diff is the review surface; merging accepts it.
+      - name: Update baselines on the PR branch
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          rsync -a --delete shots/current/ shots/baseline/
+          if [ -n "$(git status --porcelain shots/baseline)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add shots/baseline
+            git commit -m "chore: regenerate screenshot baselines"
+            git push
+          fi
+
+# Local pre-push check (no CI): compare your working capture against the
+# committed baseline for *your* platform and get a notice of what changed.
+#
+#   OUT=shots/current/$(uname -s)-$(uname -m) npx playwright test
+#   screencomp classify --baseline shots/baseline --current shots/current \
+#       --platform auto
+#
+# `--platform auto` resolves to this host's <os>-<arch>; on a non-Linux host the
+# result is advisory (renders can differ from the CI runner), whereas Linux in
+# the pinned container matches byte-for-byte.
