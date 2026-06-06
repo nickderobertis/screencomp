@@ -34,7 +34,14 @@ bench_gen_tree() {
 
 # Write a file of exactly $3 bytes whose content is determined by seed $2, so
 # digests differ per seed and match across baseline/current when seeds match.
+# No pipes: a `producer | head -c` would leave the producer killed by SIGPIPE,
+# which trips `set -o pipefail` in the calling scripts. A seed-tagged prefix
+# padded with spaces to the target length is deterministic and codec-free (the
+# tool compares bytes, never decoding the image).
 _bench_write_shot() {
     local path="$1" seed="$2" bytes="$3"
-    yes "screencomp-bench-$seed" | head -c "$bytes" >"$path"
+    local head="screencomp-bench-${seed}:"
+    local pad=$((bytes - ${#head}))
+    ((pad < 0)) && pad=0
+    { printf '%s' "$head"; printf '%*s' "$pad" ''; } >"$path"
 }
