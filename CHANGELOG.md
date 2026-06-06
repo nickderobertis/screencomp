@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/nickderobertis/screencomp/compare/v0.1.1...v0.1.2) - 2026-06-06
+
+### Fixed
+
+- *(gallery)* copy referenced images into the output directory ([#5](https://github.com/nickderobertis/screencomp/pull/5))
+
 ## [0.1.1](https://github.com/nickderobertis/screencomp/compare/v0.1.0...v0.1.1) - 2026-06-06
 
 ### Other
