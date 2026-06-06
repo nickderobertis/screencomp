@@ -80,6 +80,12 @@ unused → security → doc → release build → publish dry-run, stopping at t
 failure. CI mirrors this across Linux/macOS/Windows and stays a hard pass/fail
 gate.
 
+The performance suite (`benches/`, the `bench*`/`profile` recipes, the perf CI
+job) is informational and stays out of `full-check`: its timings are
+non-deterministic on shared hardware, so it reports rather than gates. `cargo
+check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
+`harness = false` keeps it out of the test runner and coverage.
+
 ## Release & git
 
 - Releases are tag-driven (`vX.Y.Z`); the workflow builds per-platform archives

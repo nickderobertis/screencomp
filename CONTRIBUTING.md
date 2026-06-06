@@ -60,6 +60,29 @@ just test-e2e      just test-cov      just deps-check
 just security      just doc           just dist-plan
 ```
 
+## Performance
+
+`screencomp` ships an **informational** performance suite — it measures, it does
+not gate, so it is not part of `just full-check`:
+
+- `just bench` — Criterion micro-benchmarks of the in-process pipeline (tree
+  walk + SHA-256 + classify/gallery/comment render) at two tree scales; driven
+  through the public `run` entrypoint so they track what the binary does.
+- `just bench-cli` — end-to-end CLI latency for every verb via hyperfine (real
+  process startup + walk + hash + render), writing `target/bench/results.*`.
+- `just bench-compare` — diff the latest `bench` run against a `base` baseline
+  saved earlier with `just bench-base` (e.g. on `main`, before a change).
+- `just profile [...]` — record a sampling profile with samply to find hot
+  spots: the in-process pipeline by default (`engine` mode), or a looped real
+  CLI invocation (`just profile cli classify`).
+
+`just bench-tools` installs the tools (hyperfine, critcmp, samply); they are
+optional and not required by the quality gate. On every pull request, CI runs
+the same suite on a fixed runner and posts the numbers as a sticky comment and a
+job summary; once the bench lands on `main`, that comment also shows the
+regression delta versus the base. Because the timings are noisy, the job reports
+rather than blocks — do not add it to required checks.
+
 ## House rules
 
 - **No warning backlogs.** Every diagnostic is an error or is disabled — never a
