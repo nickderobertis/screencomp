@@ -118,3 +118,19 @@ jobs:
         run: |
           screencomp --help
           screencomp classify --baseline tests/fixtures/baseline --current tests/fixtures/current
+
+  # Exercise the action's download path against the latest published release —
+  # asset naming, checksum verification, and extraction. Requires a release to
+  # exist; complements the source-mode job above.
+  action-download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install via the action (download mode)
+        uses: ./
+        with:
+          method: download
+          version: latest
+          args: --version
+      - name: Use the installed binary
+        run: screencomp classify --baseline tests/fixtures/baseline --current tests/fixtures/current

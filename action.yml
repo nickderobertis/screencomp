@@ -28,19 +28,22 @@ runs:
       env:
         SCREENCOMP_VERSION: ${{ inputs.version }}
         SCREENCOMP_METHOD: ${{ inputs.method }}
-        SCREENCOMP_REPO: ${{ github.action_repository }}
+        # action_repository is the published `owner/repo@ref`; it is empty when
+        # the action runs from a local checkout (`uses: ./`), where the release
+        # source is the current repository.
+        SCREENCOMP_REPO: ${{ github.action_repository || github.repository }}
         SCREENCOMP_ACTION_PATH: ${{ github.action_path }}
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
 
         verify_checksum() {
-          # The release publishes `<asset>.sha256` in `sha256sum` format next to
-          # the archive; refuse to install a binary that does not match it.
+          # $1 is a sha256sum-format file; the archive it names must be in the
+          # current directory. Refuse to install a binary that does not match.
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum --check --status "${1}.sha256"
+            sha256sum --check --status "$1"
           elif command -v shasum >/dev/null 2>&1; then
-            shasum -a 256 -c "${1}.sha256" >/dev/null
+            shasum -a 256 -c "$1" >/dev/null
           else
             echo "no sha256 tool available to verify the download" >&2
             return 1
@@ -87,13 +90,17 @@ runs:
             tag="$(gh release view --repo "${SCREENCOMP_REPO}" --json tagName --jq .tagName)"
           fi
 
-          local asset="screencomp-${tag}-${target}.${ext}"
+          # taiki-e/upload-rust-binary-action names the checksum after the
+          # archive stem (no extension) and lists the archive file inside it.
+          local stem="screencomp-${tag}-${target}"
+          local asset="${stem}.${ext}"
+          local sums="${stem}.sha256"
           local base="https://github.com/${SCREENCOMP_REPO}/releases/download/${tag}"
           local work; work="$(mktemp -d)"
           echo "Installing screencomp ${tag} (${target})"
           curl -fsSL -o "${work}/${asset}" "${base}/${asset}"
-          curl -fsSL -o "${work}/${asset}.sha256" "${base}/${asset}.sha256"
-          (cd "${work}" && verify_checksum "${asset}")
+          curl -fsSL -o "${work}/${sums}" "${base}/${sums}"
+          (cd "${work}" && verify_checksum "${sums}")
 
           local bindir="${RUNNER_TEMP:-${work}}/screencomp-bin"
           mkdir -p "${bindir}"
