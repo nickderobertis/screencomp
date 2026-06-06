@@ -1,0 +1,33 @@
+# Local git hooks. Install with `just hooks-install`; run on demand with `just hooks`.
+# Fast checks gate commits; heavier checks gate pushes. No check may pass with
+# warnings — clippy runs with `-D warnings`.
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    conflicts:
+      # Detects unresolved merge-conflict markers and whitespace errors.
+      run: git diff --cached --check
+    large-files:
+      run: |
+        bash -c '
+          max=$((512 * 1024)); ec=0
+          for f in $(git diff --cached --name-only --diff-filter=AM); do
+            [ -f "$f" ] || continue
+            size=$(wc -c < "$f")
+            if [ "$size" -gt "$max" ]; then
+              echo "blocked: $f is ${size} bytes (>512KiB)"; ec=1
+            fi
+          done
+          exit $ec'
+
+pre-push:
+  parallel: false
+  commands:
+    clippy:
+      run: cargo clippy --locked --all-targets --all-features -- -D warnings
+    test:
+      run: cargo nextest run --locked -E 'not binary(e2e)'

@@ -1,0 +1,278 @@
+# screencomp task runner. All common operations live here and delegate to Cargo
+# or Rust-native tools. Successful recipes stay quiet; failures keep actionable
+# diagnostics. Run `just` (or `just --list`) to see recipes.
+
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set windows-shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+# Minimum line coverage enforced by `test-cov` and `full-check`.
+cov_min := "85"
+# Pinned lefthook binary fetched by bootstrap / hooks-install when absent.
+lefthook_version := "2.1.9"
+# Pinned linters for workflow + Dockerfile checks (fetched on demand).
+actionlint_version := "1.7.7"
+hadolint_version := "2.12.0"
+
+# Show available recipes.
+default:
+    @just --list
+
+# Install developer tooling and git hooks (idempotent).
+bootstrap: _ensure-tools _ensure-lefthook hooks-install
+    @echo "bootstrap complete"
+
+# Fetch locked dependencies and verify the pinned toolchain is active.
+sync:
+    cargo fetch --locked
+    rustup show active-toolchain
+
+# Run the CLI, e.g. `just run -- classify --help`.
+run *args:
+    cargo run --locked -- {{args}}
+
+# Format the workspace.
+fmt:
+    cargo fmt --all
+
+# Check formatting without writing.
+fmt-check:
+    cargo fmt --all --check
+
+# Type-check all targets and features.
+check:
+    cargo check --locked --all-targets --all-features
+
+# Lint with every enabled lint treated as an error.
+clippy:
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+
+# Apply machine-applicable clippy fixes.
+clippy-fix:
+    cargo clippy --fix --allow-dirty --allow-staged --locked --all-targets --all-features -- -D warnings
+
+# Unit + integration tests (excludes the slower binary e2e suite).
+test:
+    cargo nextest run --locked -E 'not binary(e2e)'
+
+# Re-run tests on change (requires cargo-watch).
+test-watch:
+    cargo watch -x "nextest run --locked -E 'not binary(e2e)'"
+
+# All tests with an enforced line-coverage threshold.
+test-cov:
+    cargo llvm-cov nextest --locked --all-features --fail-under-lines {{cov_min}} --summary-only
+
+# End-to-end tests that execute the compiled binary.
+test-e2e:
+    cargo nextest run --locked -E 'binary(e2e)'
+
+# Build API docs, failing on any rustdoc warning.
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+
+# Security advisories + yanked crates.
+security:
+    cargo deny check advisories
+
+# License, banned/duplicate-crate, source policy, and unused-dependency hygiene.
+# `license-not-encountered` is silenced: the allow-list is accepted-license
+# policy, not an inventory of what the current tree happens to use.
+deps-check:
+    cargo deny check bans licenses sources -A license-not-encountered
+    cargo machete
+
+# Build under the declared MSRV (the pinned toolchain equals rust-version).
+msrv:
+    cargo check --locked --all-features
+
+# Install git hooks into the working copy.
+hooks-install: _ensure-lefthook
+    lefthook install
+
+# Run the pre-commit hook set on demand.
+hooks: _ensure-lefthook
+    lefthook run pre-commit
+
+# Debug build.
+build:
+    cargo build --locked
+
+# Optimized release build.
+build-release:
+    cargo build --release --locked
+
+# Verify publish metadata and the crate package without uploading anything.
+dist-plan:
+    cargo publish --locked --dry-run --allow-dirty
+    @echo "binary release targets are defined in .github/workflows/release.yml"
+
+# Build and package a release archive + checksum for the host target.
+dist-build: build-release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name=screencomp
+    bin="target/release/${name}"
+    ver="$("$bin" --version | awk '{print $2}')"
+    triple="$(rustc -vV | sed -n 's/^host: //p')"
+    stem="${name}-${ver}-${triple}"
+    rm -rf "dist/${stem}" && mkdir -p "dist/${stem}"
+    cp "$bin" "dist/${stem}/"
+    cp README.md LICENSE CHANGELOG.md "dist/${stem}/"
+    tar -czf "dist/${stem}.tar.gz" -C dist "${stem}"
+    rm -rf "dist/${stem}"
+    if command -v sha256sum >/dev/null 2>&1; then
+        ( cd dist && sha256sum "${stem}.tar.gz" > "${stem}.tar.gz.sha256" )
+    else
+        ( cd dist && shasum -a 256 "${stem}.tar.gz" > "${stem}.tar.gz.sha256" )
+    fi
+    echo "packaged dist/${stem}.tar.gz"
+
+# Build the consumer container image locally (requires Docker).
+image:
+    docker build -t screencomp:dev .
+
+# Run the locally built image, e.g. `just image-run -- --version`.
+image-run *args:
+    docker run --rm screencomp:dev {{args}}
+
+# Lint GitHub Actions workflows and the example (also enforced in CI).
+lint-actions: _ensure-actionlint
+    actionlint .github/workflows/*.yml examples/*.yml
+
+# Lint the Dockerfile.
+lint-docker: _ensure-hadolint
+    hadolint Dockerfile
+
+# Full quality gate: stops at the first failing phase; quiet on success.
+full-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    phase() {
+        local label="$1"; shift
+        local log; log="$(mktemp)"
+        printf '▶ %-12s ' "$label"
+        if "$@" >"$log" 2>&1; then
+            printf 'ok\n'; rm -f "$log"
+        else
+            printf 'FAILED\n\n'; cat "$log"; rm -f "$log"; exit 1
+        fi
+    }
+    phase fmt        cargo fmt --all --check
+    phase check      cargo check --locked --all-targets --all-features
+    phase clippy     cargo clippy --locked --all-targets --all-features -- -D warnings
+    phase test       cargo nextest run --locked -E 'not binary(e2e)'
+    phase e2e        cargo nextest run --locked -E 'binary(e2e)'
+    phase coverage   cargo llvm-cov nextest --locked --all-features --fail-under-lines {{cov_min}} --summary-only
+    phase deps       cargo deny check bans licenses sources -A license-not-encountered
+    phase unused     cargo machete
+    phase security   cargo deny check advisories
+    phase doc        env RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
+    phase release    cargo build --release --locked
+    phase dist-plan  cargo publish --locked --dry-run --allow-dirty
+    printf '\n✓ full-check passed\n'
+
+# Remove build and release artifacts.
+clean:
+    cargo clean
+    rm -rf dist
+
+# Upgrade dependencies to the latest semver-compatible versions, then re-gate.
+# May change Cargo.lock (and, via re-gate, surface tool-version drift).
+upgrade:
+    cargo update
+    just full-check
+
+# Noisy environment report (kept out of the quality gate).
+doctor:
+    @echo "# toolchain"; rustup show active-toolchain; rustc --version; cargo --version
+    @echo "# tools"; for t in just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
+    @echo "# installed targets"; rustup target list --installed
+
+# --- internal helpers -------------------------------------------------------
+
+# Install missing cargo-based dev tools (prefers cargo-binstall when present).
+_ensure-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rustup component add rustfmt clippy llvm-tools-preview >/dev/null 2>&1 || true
+    missing=()
+    for t in cargo-nextest cargo-llvm-cov cargo-deny cargo-machete; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        if command -v cargo-binstall >/dev/null 2>&1; then
+            cargo binstall --no-confirm "${missing[@]}"
+        else
+            cargo install --locked "${missing[@]}"
+        fi
+    fi
+
+# Install the pinned lefthook binary onto PATH if it is missing.
+_ensure-lefthook:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v lefthook >/dev/null 2>&1 && exit 0
+    case "$(uname -s)" in
+        Linux) os=Linux ;;
+        Darwin) os=MacOS ;;
+        *) echo "Install lefthook manually for $(uname -s): https://lefthook.dev" >&2; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+        arm64|aarch64) arch=arm64 ;;
+        x86_64|amd64) arch=x86_64 ;;
+        *) echo "Unsupported architecture $(uname -m) for lefthook auto-install" >&2; exit 1 ;;
+    esac
+    dest="${CARGO_HOME:-$HOME/.cargo}/bin"
+    mkdir -p "$dest"
+    url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}"
+    echo "installing lefthook {{lefthook_version}}"
+    curl -fsSL "$url" -o "$dest/lefthook"
+    chmod +x "$dest/lefthook"
+
+# Install the pinned actionlint binary onto PATH if it is missing.
+_ensure-actionlint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v actionlint >/dev/null 2>&1 && exit 0
+    case "$(uname -s)" in
+        Linux) os=linux ;;
+        Darwin) os=darwin ;;
+        *) echo "Install actionlint manually for $(uname -s): https://github.com/rhysd/actionlint" >&2; exit 1 ;;
+    esac
+    case "$(uname -m)" in
+        arm64|aarch64) arch=arm64 ;;
+        x86_64|amd64) arch=amd64 ;;
+        *) echo "Unsupported architecture $(uname -m) for actionlint auto-install" >&2; exit 1 ;;
+    esac
+    dest="${CARGO_HOME:-$HOME/.cargo}/bin"
+    mkdir -p "$dest"
+    url="https://github.com/rhysd/actionlint/releases/download/v{{actionlint_version}}/actionlint_{{actionlint_version}}_${os}_${arch}.tar.gz"
+    echo "installing actionlint {{actionlint_version}}"
+    curl -fsSL "$url" | tar -xz -C "$dest" actionlint
+
+# Install the pinned hadolint binary onto PATH if it is missing.
+_ensure-hadolint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v hadolint >/dev/null 2>&1 && exit 0
+    case "$(uname -s)" in
+        Linux) os=Linux ;;
+        Darwin) os=Darwin ;;
+        *) echo "Install hadolint manually for $(uname -s): https://github.com/hadolint/hadolint" >&2; exit 1 ;;
+    esac
+    # hadolint publishes Linux arm64/x86_64 and Darwin x86_64 only.
+    if [ "$os" = "Darwin" ]; then
+        arch=x86_64
+    else
+        case "$(uname -m)" in
+            arm64|aarch64) arch=arm64 ;;
+            x86_64|amd64) arch=x86_64 ;;
+            *) echo "Unsupported architecture $(uname -m) for hadolint auto-install" >&2; exit 1 ;;
+        esac
+    fi
+    dest="${CARGO_HOME:-$HOME/.cargo}/bin"
+    mkdir -p "$dest"
+    url="https://github.com/hadolint/hadolint/releases/download/v{{hadolint_version}}/hadolint-${os}-${arch}"
+    echo "installing hadolint {{hadolint_version}}"
+    curl -fsSL "$url" -o "$dest/hadolint"
+    chmod +x "$dest/hadolint"

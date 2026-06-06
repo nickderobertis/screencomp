@@ -1,0 +1,46 @@
+# cargo-deny policy. Checks either fail on a configured issue or stay silent on
+# success — there is no "warn" middle ground. Run via `just security`
+# (advisories) and `just deps-check` (bans/licenses/sources).
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory database. Vulnerabilities always fail; yanked crates fail.
+# Any ignored advisory must be listed here with a reason and a review date.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Permissive licenses compatible with shipping an MIT-licensed binary. Anything
+# outside this set fails until reviewed and added as an explicit exception.
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+exceptions = []
+
+[bans]
+# Duplicate versions of the same crate are rejected; document any unavoidable
+# duplicate in `skip`/`skip-tree` with a reason.
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# Only crates.io is trusted; unknown registries or git sources fail.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

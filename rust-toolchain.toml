@@ -1,0 +1,13 @@
+# Pinned toolchain. CI and local development both provision exactly this via
+# `rustup show`. Bump deliberately and keep `rust-version` in Cargo.toml in sync.
+[toolchain]
+channel = "1.89.0"
+profile = "minimal"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]

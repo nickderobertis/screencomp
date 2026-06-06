@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Cross-platform compile, lint, and the full test suite (incl. e2e binary).
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Provision pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo check --locked --all-targets --all-features
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked
+      - run: cargo build --release --locked
+
+  # Formatting and documentation gate (Linux only).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: Build docs (deny warnings)
+        run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Dependency, license, and security policy (Linux only).
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+      - run: cargo deny check advisories
+      - run: cargo deny check bans licenses sources -A license-not-encountered
+      - run: cargo machete
+
+  # Coverage with an enforced threshold (Linux only), uploaded as an artifact.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest,cargo-llvm-cov
+      - name: Coverage (fail under threshold)
+        run: cargo llvm-cov nextest --locked --all-features --fail-under-lines 85 --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
+
+  # Lint workflows (and their embedded shell) and the Dockerfile. No warnings.
+  workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz | tar -xz actionlint
+          ./actionlint -color .github/workflows/*.yml examples/*.yml
+      - name: hadolint
+        run: |
+          curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          chmod +x hadolint
+          ./hadolint Dockerfile
+
+  # Exercise the composite action end to end: install from source, then use the
+  # binary it put on PATH in later steps.
+  action:
+    runs-on: ubuntu-latest
+    env:
+      # Bypass rust-toolchain.toml's cross-targets for a fast host-only build.
+      RUSTUP_TOOLCHAIN: "1.89.0"
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install 1.89.0 --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: Install via the action
+        uses: ./
+        with:
+          method: source
+          args: --version
+      - name: Use the installed binary
+        run: |
+          screencomp --help
+          screencomp classify --baseline tests/fixtures/baseline --current tests/fixtures/current

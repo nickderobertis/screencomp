@@ -1,0 +1,18 @@
+# Keep the build context to source + lockfile + toolchain pin; everything else is
+# developer/CI plumbing that the image build does not need.
+.git/
+target/
+dist/
+.github/
+.claude/
+examples/
+tests/
+*.md
+action.yml
+Dockerfile
+.dockerignore
+lefthook.yml
+deny.toml
+rustfmt.toml
+clippy.toml
+justfile

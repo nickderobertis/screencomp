@@ -1,0 +1,4 @@
+# Pin clippy's MSRV awareness to the declared `rust-version` so lints never
+# suggest APIs newer than the crate supports. Lint levels live in Cargo.toml
+# (`[lints]`); this file holds only repo-specific knobs.
+msrv = "1.89"

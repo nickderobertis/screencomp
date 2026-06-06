@@ -1,0 +1,18 @@
+# Build + release artifacts
+/target
+/dist
+
+# Coverage / profiling
+*.profraw
+*.profdata
+/lcov.info
+
+# rustfmt backups
+**/*.rs.bk
+
+# Local environment / secrets (the CLI reads only process env, never .env files)
+.env
+.env.*
+
+# OS noise
+.DS_Store

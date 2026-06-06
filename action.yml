@@ -1,0 +1,124 @@
+name: screencomp
+description: Install the screencomp CLI (and optionally run it) for visual-docs gallery and PR-comment workflows.
+author: screencomp contributors
+
+branding:
+  icon: camera
+  color: purple
+
+inputs:
+  version:
+    description: 'Release tag to install (e.g. v0.1.0) or "latest".'
+    required: false
+    default: latest
+  method:
+    description: 'How to obtain the binary: "download" (prebuilt release asset, default) or "source" (cargo install).'
+    required: false
+    default: download
+  args:
+    description: 'Optional arguments to run as `screencomp <args>` after install. Leave empty to only install.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install screencomp
+      shell: bash
+      env:
+        SCREENCOMP_VERSION: ${{ inputs.version }}
+        SCREENCOMP_METHOD: ${{ inputs.method }}
+        SCREENCOMP_REPO: ${{ github.action_repository }}
+        SCREENCOMP_ACTION_PATH: ${{ github.action_path }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+
+        verify_checksum() {
+          # The release publishes `<asset>.sha256` in `sha256sum` format next to
+          # the archive; refuse to install a binary that does not match it.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check --status "${1}.sha256"
+          elif command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 -c "${1}.sha256" >/dev/null
+          else
+            echo "no sha256 tool available to verify the download" >&2
+            return 1
+          fi
+        }
+
+        install_from_source() {
+          # Build the exact ref the action was pinned to when a checkout is
+          # available (reproducible); otherwise install the published crate.
+          if [ -f "${SCREENCOMP_ACTION_PATH}/Cargo.toml" ]; then
+            cargo install --path "${SCREENCOMP_ACTION_PATH}" --locked --force
+          elif [ "${SCREENCOMP_VERSION}" = "latest" ]; then
+            cargo install screencomp --locked --force
+          else
+            cargo install "screencomp@${SCREENCOMP_VERSION#v}" --locked --force
+          fi
+          screencomp --version
+        }
+
+        install_from_download() {
+          if [ -z "${SCREENCOMP_REPO}" ]; then
+            echo "download mode needs a published action ref; use 'method: source' for local checkouts" >&2
+            return 1
+          fi
+
+          local os arch os_part arch_part ext
+          os="$(uname -s)"
+          arch="$(uname -m)"
+          case "${os}" in
+            Linux) os_part="unknown-linux-gnu"; ext="tar.gz" ;;
+            Darwin) os_part="apple-darwin"; ext="tar.gz" ;;
+            MINGW* | MSYS* | CYGWIN* | Windows_NT) os_part="pc-windows-msvc"; ext="zip" ;;
+            *) echo "unsupported OS: ${os}" >&2; return 1 ;;
+          esac
+          case "${arch}" in
+            x86_64 | amd64) arch_part="x86_64" ;;
+            arm64 | aarch64) arch_part="aarch64" ;;
+            *) echo "unsupported architecture: ${arch}" >&2; return 1 ;;
+          esac
+          local target="${arch_part}-${os_part}"
+
+          local tag="${SCREENCOMP_VERSION}"
+          if [ "${tag}" = "latest" ]; then
+            tag="$(gh release view --repo "${SCREENCOMP_REPO}" --json tagName --jq .tagName)"
+          fi
+
+          local asset="screencomp-${tag}-${target}.${ext}"
+          local base="https://github.com/${SCREENCOMP_REPO}/releases/download/${tag}"
+          local work; work="$(mktemp -d)"
+          echo "Installing screencomp ${tag} (${target})"
+          curl -fsSL -o "${work}/${asset}" "${base}/${asset}"
+          curl -fsSL -o "${work}/${asset}.sha256" "${base}/${asset}.sha256"
+          (cd "${work}" && verify_checksum "${asset}")
+
+          local bindir="${RUNNER_TEMP:-${work}}/screencomp-bin"
+          mkdir -p "${bindir}"
+          case "${ext}" in
+            tar.gz) tar -xzf "${work}/${asset}" -C "${bindir}" ;;
+            zip) unzip -q "${work}/${asset}" -d "${bindir}" ;;
+          esac
+          chmod +x "${bindir}/screencomp" 2>/dev/null || true
+          echo "${bindir}" >>"${GITHUB_PATH}"
+          "${bindir}/screencomp" --version
+        }
+
+        case "${SCREENCOMP_METHOD}" in
+          download) install_from_download ;;
+          source) install_from_source ;;
+          *) echo "unknown method '${SCREENCOMP_METHOD}' (expected 'download' or 'source')" >&2; exit 1 ;;
+        esac
+
+    - name: Run screencomp
+      if: ${{ inputs.args != '' }}
+      shell: bash
+      env:
+        SCREENCOMP_ARGS: ${{ inputs.args }}
+      run: |
+        set -euo pipefail
+        # Intentional word splitting so callers can pass multiple arguments.
+        # shellcheck disable=SC2086
+        screencomp ${SCREENCOMP_ARGS}

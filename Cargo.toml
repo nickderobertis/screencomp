@@ -1,0 +1,62 @@
+[package]
+name = "screencomp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Classify, gallery, and PR-comment screenshots for the visual-docs framework — byte-reproducible, network-free."
+repository = "https://github.com/nickderobertis/screencomp"
+homepage = "https://github.com/nickderobertis/screencomp"
+documentation = "https://docs.rs/screencomp"
+readme = "README.md"
+keywords = ["cli", "screenshots", "visual-regression", "playwright", "gallery"]
+categories = ["command-line-utilities", "development-tools::testing"]
+# Keep the published crate lean: developer/CI plumbing is not needed by consumers.
+exclude = [
+    ".github/",
+    ".githooks/",
+    ".claude/",
+    "examples/",
+    "action.yml",
+    "Dockerfile",
+    ".dockerignore",
+    "lefthook.yml",
+    "deny.toml",
+    "rustfmt.toml",
+    "clippy.toml",
+    "justfile",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+]
+
+[dependencies]
+camino = { version = "1.2", features = ["serde1"] }
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+thiserror = "2"
+toml = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+# Used by in-process integration tests to parse `Cli` the same way the binary does.
+clap = { version = "4.6", features = ["derive"] }
+predicates = "3"
+tempfile = "3"
+
+# Optimize CLI release binaries for size and startup without changing panic
+# semantics between debug and release builds.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = "deny"
