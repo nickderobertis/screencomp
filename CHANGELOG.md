@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/nickderobertis/screencomp/compare/v0.1.7...v0.1.8) - 2026-06-06
+
+### Added
+
+- compare screenshots within a platform via --platform ([#23](https://github.com/nickderobertis/screencomp/pull/23))
+
 ### Added
 
 - *(classify, gallery, comment)* add `--platform <KEY|auto>` to compare within a
