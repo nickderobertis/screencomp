@@ -181,6 +181,20 @@ screencomp comment --baseline shots/baseline --current shots/current \
 Omit `--platform` entirely to treat the root as project-level (no platform
 layer) — the original behavior.
 
+Because the comparison is a byte digest, determinism is a *capture-time*
+concern: a screenshot's bytes depend on the renderer's OS, CPU, fonts, and GPU.
+The recommended standard is to capture **and** compare inside a single pinned
+`linux/amd64` container everywhere — including on macOS, where Docker runs a
+Linux VM, so `--platform=linux/amd64` reproduces the same `linux-x86_64` pixels
+as CI. That gives one platform key and byte-for-byte reproducibility (the key
+flag is `--disable-skia-runtime-opts`, which forces a CPU-independent render
+path). Run screencomp inside the container so `--platform auto` resolves to
+`linux-x86_64`. See [`examples/visual-docs.yml`](examples/visual-docs.yml) for
+the full standard configuration, the deterministic-rendering flags, and a
+reproducibility gate. Capturing on multiple native platforms instead (e.g. a
+real `macos-arm64` lane) is supported by the same `--platform` mechanism, at the
+cost of giving up byte-exactness across them.
+
 ## Exit codes
 
 | Code | Meaning                                                       |

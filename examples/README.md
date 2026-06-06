@@ -11,10 +11,28 @@ publishes it to GitHub Pages, and posts a sticky screenshot-diff comment on pull
 requests. Copy it into `.github/workflows/` and adapt the **Capture screenshots**
 step to your stack (Playwright, Cypress, Storybook, …).
 
+### Standard configuration: capture in one pinned container
+
+A screenshot's bytes depend on the OS, CPU, fonts, and GPU that rendered it. The
+standard configuration fixes all of them by capturing **and** comparing inside a
+single pinned `linux/amd64` container — on CI and locally — so captures are
+byte-reproducible everywhere and there is one platform key, `linux-x86_64`.
+
+macOS cannot run Linux containers natively (Docker runs a Linux VM), so a
+container on a Mac renders Linux pixels; `--platform=linux/amd64` makes them the
+same `linux/amd64` pixels as CI (emulated via Rosetta/QEMU). This trades
+real-macOS rendering fidelity for exact reproducibility. The decisive flag is
+`--disable-skia-runtime-opts`, which forces a CPU-independent render path so
+emulated and native amd64 match; the workflow also runs a **reproducibility
+gate** (capture twice, require identical bytes) so a nondeterministic pipeline
+fails loudly. See the comments in `visual-docs.yml` for the full flag list and
+the one-time command that validates emulated capture against CI on Apple Silicon.
+
 Prerequisites:
 
-- A committed baseline under `shots/baseline/<project>/<name>.png`.
-- The capture step writes the current run to `shots/current/<project>/<name>.png`.
+- Committed baselines under `shots/baseline/linux-x86_64/<project>/<name>.png`.
+- The capture step writes the current run to
+  `shots/current/linux-x86_64/<project>/<name>.png` inside the pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
 
 ## Installing the CLI
