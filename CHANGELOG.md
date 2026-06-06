@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/nickderobertis/screencomp/compare/v0.1.3...v0.1.4) - 2026-06-06
+
+### Added
+
+- *(comment)* embed inline image previews for small diffs ([#10](https://github.com/nickderobertis/screencomp/pull/10))
+
 ## [0.1.3](https://github.com/nickderobertis/screencomp/compare/v0.1.2...v0.1.3) - 2026-06-06
 
 ### Added
