@@ -49,7 +49,7 @@ concurrency:
 jobs:
   visual-docs:
     runs-on: ubuntu-latest # amd64; the container therefore runs native amd64.
-    container: mcr.microsoft.com/playwright:v1.55.0-jammy # pin to your Playwright version
+    container: mcr.microsoft.com/playwright:v1.60.0-noble # pin to your Playwright version
     permissions:
       contents: write # commit the regenerated manifest to the PR branch
       pull-requests: write # post the diff comment
@@ -71,7 +71,7 @@ jobs:
         with:
           ref: ${{ github.head_ref }} # PR branch (empty on push -> the main ref)
 
-      - uses: nickderobertis/screencomp@v1 # pin to a released major tag
+      - uses: nickderobertis/screencomp@v0.1.9 # pin to a released tag
         with:
           version: latest
 
@@ -154,10 +154,13 @@ jobs:
         uses: actions/deploy-pages@v4
 
 # Local pre-push check (same image as CI, so captures match). On Apple Silicon
-# --platform forces the amd64 image under Rosetta/QEMU:
+# --platform forces the amd64 image under emulation. Enable Docker Desktop's
+# Rosetta ("Use Rosetta for x86_64/amd64 emulation"); the swiftshader render path
+# can crash Chromium under the QEMU fallback (`qemu: uncaught target signal`).
 #
-#   docker run --rm --platform=linux/amd64 -v "$PWD:/work" -w /work \
-#     mcr.microsoft.com/playwright:v1.55.0-jammy \
+#   docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
+#     -v "$PWD:/work" -w /work \
+#     mcr.microsoft.com/playwright:v1.60.0-noble \
 #     bash -lc 'npm ci && SHOTS_OUT=shots/current/linux-x86_64 npx playwright test'
 #   screencomp classify --baseline-manifest shots/baseline/linux-x86_64.sha256 \
 #     --current shots/current --platform linux-x86_64
