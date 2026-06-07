@@ -51,6 +51,66 @@ pub(crate) fn discover(root: &Utf8Path) -> Result<Snapshot, AppError> {
     Ok(snapshot)
 }
 
+/// Read a digest manifest into a content-addressed [`Snapshot`].
+///
+/// Parses the `sha256sum`-style format produced by
+/// [`crate::domain::manifest::render_manifest`]: one `<hex>  <project>/<name>.png`
+/// line per shot. Blank lines are ignored; any other malformation is a typed
+/// [`AppError::InvalidLayout`] naming the offending line, so a hand-edited or
+/// truncated manifest fails loudly rather than silently dropping shots.
+pub(crate) fn read_manifest(path: &Utf8Path) -> Result<Snapshot, AppError> {
+    let text = fs::read_to_string(path).map_err(|e| AppError::io(format!("reading {path}"), e))?;
+
+    let mut snapshot = Snapshot::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (key, digest) =
+            parse_manifest_line(line).map_err(|reason| AppError::InvalidLayout {
+                path: path.to_owned(),
+                reason: format!("line {}: {reason}", index + 1),
+            })?;
+        snapshot.insert(key, digest);
+    }
+
+    Ok(snapshot)
+}
+
+/// Parse one `<hex>  <project>/<name>.png` manifest line into a key and digest.
+///
+/// Returns a human-readable reason on malformation; the caller adds path/line
+/// context. Kept here (not in `domain`) so all manifest parsing lives at the I/O
+/// boundary alongside the file read.
+fn parse_manifest_line(line: &str) -> Result<(ShotKey, String), String> {
+    let (digest, rest) = line
+        .split_once(char::is_whitespace)
+        .ok_or("expected '<digest>  <project>/<name>.png'")?;
+    let path = rest.trim_start();
+
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("'{digest}' is not a 64-character hex digest"));
+    }
+
+    let stem = path
+        .strip_suffix(".png")
+        .ok_or_else(|| format!("path '{path}' does not end in .png"))?;
+    let (project, name) = stem
+        .split_once('/')
+        .ok_or_else(|| format!("path '{path}' is not '<project>/<name>.png'"))?;
+    if project.is_empty() || name.is_empty() || name.contains('/') {
+        return Err(format!("path '{path}' is not '<project>/<name>.png'"));
+    }
+
+    Ok((
+        ShotKey {
+            project: project.to_owned(),
+            name: name.to_owned(),
+        },
+        digest.to_owned(),
+    ))
+}
+
 /// Write `contents` to `path`, creating parent directories as needed.
 pub(crate) fn write_string(path: &Utf8Path, contents: &str) -> Result<(), AppError> {
     if let Some(parent) = path.parent()
@@ -181,5 +241,64 @@ mod tests {
             b"png-bytes"
         );
         assert!(!output.join("desktop/notes.txt").exists());
+    }
+
+    #[test]
+    fn read_manifest_roundtrips_render() {
+        use crate::domain::manifest::render_manifest;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(tmp.path()).unwrap().join("b.sha256");
+        let digest = "a".repeat(64);
+        fs::write(
+            &path,
+            format!("{digest}  desktop/home.png\n{digest}  mobile/home.png\n"),
+        )
+        .unwrap();
+
+        let snap = read_manifest(&path).unwrap();
+        // Blank lines tolerated, order normalized, and a re-render matches input.
+        assert_eq!(
+            render_manifest(&snap),
+            format!("{digest}  desktop/home.png\n{digest}  mobile/home.png\n")
+        );
+    }
+
+    #[test]
+    fn read_manifest_tolerates_blank_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(tmp.path()).unwrap().join("b.sha256");
+        let digest = "b".repeat(64);
+        fs::write(&path, format!("\n{digest}  desktop/home.png\n\n")).unwrap();
+        assert_eq!(read_manifest(&path).unwrap().keys().count(), 1);
+    }
+
+    #[test]
+    fn read_manifest_rejects_malformed_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+
+        let hex = "c".repeat(64);
+        let cases = [
+            "notadigest  desktop/home.png".to_owned(), // bad digest
+            format!("{hex}  desktop/home.txt"),        // not .png
+            format!("{hex}  home.png"),                // no project/
+            hex.clone(),                               // no path at all
+        ];
+        for (i, body) in cases.iter().enumerate() {
+            let path = dir.join(format!("m{i}.sha256"));
+            fs::write(&path, body).unwrap();
+            let err = read_manifest(&path).unwrap_err();
+            assert!(
+                matches!(err, AppError::InvalidLayout { .. }),
+                "case {i} ({body}) should be InvalidLayout, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_manifest_missing_file_is_io_error() {
+        let err = read_manifest(Utf8Path::new("/no/such/baseline.sha256")).unwrap_err();
+        assert!(matches!(err, AppError::Io { .. }));
     }
 }

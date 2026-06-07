@@ -136,7 +136,8 @@ fn classify_cli(t: &Trees, format: OutputFormat) -> Cli {
     Cli {
         quiet: false,
         command: Command::Classify(ClassifyArgs {
-            baseline: t.baseline.clone(),
+            baseline: Some(t.baseline.clone()),
+            baseline_manifest: None,
             current: t.current.clone(),
             platform: None,
             format,
@@ -162,7 +163,8 @@ fn comment_cli(t: &Trees) -> Cli {
     Cli {
         quiet: true,
         command: Command::Comment(CommentArgs {
-            baseline: t.baseline.clone(),
+            baseline: Some(t.baseline.clone()),
+            baseline_manifest: None,
             current: t.current.clone(),
             platform: None,
             config: None,

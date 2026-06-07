@@ -289,6 +289,89 @@ fn missing_platform_subtree_names_the_path_on_stderr() {
 }
 
 #[test]
+fn manifest_baseline_journey_replaces_committed_images() {
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("baseline.sha256");
+
+    // Produce a digest manifest instead of committing baseline PNGs.
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    // Classify a current capture against just that manifest — no baseline images.
+    bin()
+        .args(["classify", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("changed desktop/about"))
+        .stdout(predicate::str::contains(
+            "added 1 changed 1 removed 0 unchanged 2",
+        ))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn manifest_writes_sha256sum_style_to_stdout() {
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  desktop/about.png"))
+        .stdout(predicate::str::is_match(r"^[0-9a-f]{64}  ").unwrap());
+}
+
+#[test]
+fn classify_requires_exactly_one_baseline_source() {
+    // Neither source: usage error.
+    bin()
+        .args(["classify", "--current"])
+        .arg(current())
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("baseline"));
+
+    // Both sources: mutually exclusive, usage error.
+    bin()
+        .args(["classify", "--baseline"])
+        .arg(baseline())
+        .arg("--baseline-manifest")
+        .arg("b.sha256")
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn malformed_manifest_fails_with_clean_stderr() {
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("bad.sha256");
+    std::fs::write(&manifest, "deadbeef  desktop/home.png\n").unwrap();
+    bin()
+        .args(["classify", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("invalid screenshot layout"))
+        .stderr(predicate::str::contains("line 1"));
+}
+
+#[test]
 fn missing_directory_fails_with_clean_stderr() {
     bin()
         .args(["classify", "--baseline", "/no/such/dir", "--current"])

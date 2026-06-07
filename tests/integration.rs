@@ -370,6 +370,135 @@ fn comment_marker_and_title_flags_override_config() {
 }
 
 #[test]
+fn manifest_then_classify_against_it_matches_a_dir_baseline() {
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("baseline.sha256"));
+
+    // Write a digest manifest of the baseline fixture.
+    let (code, _) = invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    let body = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        body.lines()
+            .all(|l| l.contains("  ") && l.ends_with(".png")),
+        "{body}"
+    );
+
+    // Classifying against the manifest yields the same result as the image dir.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("added 1 changed 1 removed 0 unchanged 2"),
+        "{out}"
+    );
+    assert!(out.contains("changed desktop/about"), "{out}");
+    assert!(out.contains("added desktop/pricing"), "{out}");
+}
+
+#[test]
+fn comment_accepts_a_baseline_manifest() {
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("b.sha256"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
+}
+
+#[test]
+fn manifest_and_classify_are_platform_scoped() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "linux-x86_64", "desktop", "home", b"v1");
+    write_shot(&cur, "linux-x86_64", "desktop", "home", b"v2");
+    let manifest = path_str(&dir.path().join("linux-x86_64.sha256"));
+
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        base.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+    // The manifest drops the platform segment.
+    assert_eq!(
+        std::fs::read_to_string(&manifest)
+            .unwrap()
+            .lines()
+            .next()
+            .map(|l| l.ends_with("desktop/home.png")),
+        Some(true)
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        cur.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("changed desktop/home"), "{out}");
+}
+
+#[test]
+fn malformed_manifest_is_invalid_layout_error() {
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("bad.sha256");
+    std::fs::write(&manifest, "not-a-digest  desktop/home.png\n").unwrap();
+    let (result, _) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+        "--current",
+        &current(),
+    ]);
+    assert!(matches!(result, Err(AppError::InvalidLayout { .. })));
+}
+
+#[test]
 fn missing_baseline_is_not_a_directory_error() {
     let (result, out) = invoke(&[
         "screencomp",

@@ -11,6 +11,17 @@ publishes it to GitHub Pages, and posts a sticky screenshot-diff comment on pull
 requests. Copy it into `.github/workflows/` and adapt the **Capture screenshots**
 step to your stack (Playwright, Cypress, Storybook, …).
 
+### Image-free baselines (digest manifest)
+
+The workflow commits only a tiny per-platform **digest manifest**
+(`shots/baseline/<platform>.sha256`), never the baseline PNGs. Because
+`screencomp` compares by content digest, the manifest is all that `classify` and
+`comment` need, so the repository never accumulates binary history and grows
+without bound. The manifest's diff in a PR (old hash → new hash per shot) is the
+precise record of what changed; the gallery published to Pages shows the current
+pixels. Seed it once with `screencomp manifest --input shots/current --platform
+auto --output shots/baseline/<platform>.sha256` and commit it.
+
 ### Standard configuration: capture in one pinned container
 
 A screenshot's bytes depend on the OS, CPU, fonts, and GPU that rendered it. The
@@ -30,7 +41,7 @@ the one-time command that validates emulated capture against CI on Apple Silicon
 
 Prerequisites:
 
-- Committed baselines under `shots/baseline/linux-x86_64/<project>/<name>.png`.
+- A committed baseline manifest at `shots/baseline/linux-x86_64.sha256` (text).
 - The capture step writes the current run to
   `shots/current/linux-x86_64/<project>/<name>.png` inside the pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
