@@ -194,6 +194,8 @@ the full standard configuration, the deterministic-rendering flags, and a
 reproducibility gate. Capturing on multiple native platforms instead (e.g. a
 real `macos-arm64` lane) is supported by the same `--platform` mechanism, at the
 cost of giving up byte-exactness across them.
+[`docs/cross-platform-verification.md`](docs/cross-platform-verification.md)
+lists what is verified and the steps to confirm the standard in a consuming repo.
 
 ## Exit codes
 
