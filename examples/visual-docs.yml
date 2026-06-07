@@ -4,20 +4,30 @@
 # The repository commits only a tiny per-platform digest *manifest*
 # (`shots/baseline/<platform>.sha256`), never the baseline PNGs — so it never
 # accumulates binary history and grows without bound. screencomp compares by
-# content digest, so the manifest is all that `classify`/`comment` need. The
-# manifest's diff in a PR is itself the precise "what changed" record; the
-# deployed gallery shows the current pixels.
+# content digest, so the manifest is all that `classify`/`comment` need.
+#
+# Lifecycle:
+#   * Seed once:   capture, then `screencomp manifest ... > the .sha256`, commit.
+#   * On a PR:     capture, classify against the committed manifest, post a
+#                  listing comment, and push a regenerated manifest to the PR
+#                  branch. Its text diff (old hash -> new hash per shot) is the
+#                  review record; merging the PR accepts the new baseline.
+#   * On main:     capture and publish the gallery to Pages — the browseable,
+#                  blessed "current state". Pages is NOT a baseline store (the
+#                  manifest is), so it is only deployed here, never from a PR.
 #
 # Why a container, even on macOS: a screenshot's bytes depend on the OS, CPU,
 # fonts, and GPU that rendered it. macOS cannot run Linux containers natively
 # (Docker runs a Linux VM), so `--platform=linux/amd64` reproduces the same
 # linux/amd64 pixels as CI, giving one platform key (`linux-x86_64`) and
 # byte-for-byte reproducibility. `--platform auto` resolves to it because
-# screencomp runs INSIDE the container. See docs/cross-platform-verification.md.
+# screencomp runs INSIDE the container. See the screencomp README
+# ("Cross-platform comparison") for the determinism details.
 #
 # Prerequisites:
-#   * A committed baseline manifest at shots/baseline/linux-x86_64.sha256.
-#     Seed it once: run the capture below, then
+#   * A committed baseline manifest at shots/baseline/linux-x86_64.sha256. Seed
+#     it once (before the first PR, or the manifest steps below have nothing to
+#     compare against): run the capture, then
 #       screencomp manifest --input shots/current --platform auto \
 #         --output shots/baseline/linux-x86_64.sha256
 #     and commit it.
@@ -43,7 +53,7 @@ jobs:
     permissions:
       contents: write # commit the regenerated manifest to the PR branch
       pull-requests: write # post the diff comment
-      pages: write # deploy the gallery
+      pages: write # deploy the gallery (on main)
       id-token: write # Pages deployment auth
     env:
       SHOTS_OUT: shots/current/linux-x86_64
@@ -59,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }} # PR branch, so the manifest can be pushed back
+          ref: ${{ github.head_ref }} # PR branch (empty on push -> the main ref)
 
       - uses: nickderobertis/screencomp@v1 # pin to a released major tag
         with:
@@ -85,44 +95,37 @@ jobs:
           rm -rf shots/verify
 
       # The check: compare the capture against the committed digest manifest.
-      # Non-zero (exit 3) on differences makes the status visible; the manifest's
-      # own diff on the PR branch (committed below) is the reviewable record.
+      # Differences are EXPECTED on a feature PR, so this does not fail the job —
+      # the change is surfaced by the comment and the committed manifest diff,
+      # not a red check. Drop `|| true` if you want changes to block instead.
       - name: Classify against the baseline manifest
         run: |
           screencomp classify --baseline-manifest "$MANIFEST" \
             --current shots/current --platform auto || true
 
-      # Publish a gallery of the current capture (overwrite-friendly preview; not
-      # a baseline store — the manifest is the baseline).
-      - name: Build gallery
-        run: screencomp gallery --input shots/current --platform auto --output site --title "Visual docs"
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-      - id: deploy
-        uses: actions/deploy-pages@v4
+      # ---- PR only: comment + push the regenerated manifest -----------------
 
-      # Sticky comment listing changed shots, linked to the gallery. Embedding is
-      # disabled because before/after needs the prior PNGs, which this image-free
-      # model intentionally does not keep. (To show before/after, fetch each
-      # manifest entry's image from the previous Pages deploy into a baseline dir
-      # and use `gallery --baseline`/`comment --gallery-url` instead.)
+      # Sticky comment listing changed shots. No --gallery-url: a live per-PR
+      # gallery would need its own hosting (a single Pages site can't preview
+      # PRs without clobbering main). Review is the listing plus the manifest
+      # diff below; the browseable gallery is the main deployment. To add a link,
+      # set --gallery-url to your published Pages URL.
       - name: Comment screenshot diff
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          GALLERY_URL: ${{ steps.deploy.outputs.page_url }}
         run: |
           screencomp comment --baseline-manifest "$MANIFEST" \
-            --current shots/current --platform auto \
-            --gallery-url "${GALLERY_URL}" --embed-limit 0 --output comment.md
+            --current shots/current --platform auto --output comment.md
           gh pr comment "${PR}" --body-file comment.md --edit-last \
             || gh pr comment "${PR}" --body-file comment.md
 
       # Regenerate the manifest from this run and push it to the PR branch. Its
       # text diff (old hash -> new hash per shot) is the review surface; merging
       # accepts the new baseline. Tiny, so the repo never accrues binary history.
+      # Pushing with the default GITHUB_TOKEN does NOT re-trigger this workflow,
+      # so there is no capture loop.
       - name: Update the baseline manifest on the PR branch
         if: ${{ github.event_name == 'pull_request' }}
         run: |
@@ -135,6 +138,20 @@ jobs:
             git commit -m "chore: update screenshot baseline manifest"
             git push
           fi
+
+      # ---- main only: publish the blessed gallery to Pages -----------------
+
+      - name: Build gallery
+        if: ${{ github.event_name == 'push' }}
+        run: screencomp gallery --input shots/current --platform auto --output site --title "Visual docs"
+      - name: Upload Pages artifact
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to Pages
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/deploy-pages@v4
 
 # Local pre-push check (same image as CI, so captures match). On Apple Silicon
 # --platform forces the amd64 image under Rosetta/QEMU:
