@@ -222,6 +222,19 @@ reproducibility gate. Capturing on multiple native platforms instead (e.g. a
 real `macos-arm64` lane) is supported by the same `--platform` mechanism, at the
 cost of giving up byte-exactness across them.
 
+For a complete, continuously tested consumer of this standard, see
+[**screencomp-demo**](https://github.com/nickderobertis/screencomp-demo): it
+captures real Playwright screenshots in the pinned container and exercises the
+manifest → classify → gallery → comment flow on every pull request, so you can
+watch the whole setup work before adopting it.
+
+On Apple Silicon, prefer Docker Desktop's **Rosetta** for amd64 emulation; under
+the QEMU fallback the `--use-angle=swiftshader` path can crash Chromium
+(`qemu: uncaught target signal`). CPU rasterization (`--disable-gpu`, one browser
+per context) with `--disable-skia-runtime-opts` still produces captures
+byte-identical to native CI — `screencomp-demo` verifies emulated-vs-native on
+every run.
+
 ## Exit codes
 
 | Code | Meaning                                                       |

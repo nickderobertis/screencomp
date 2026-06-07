@@ -11,6 +11,11 @@ publishes it to GitHub Pages, and posts a sticky screenshot-diff comment on pull
 requests. Copy it into `.github/workflows/` and adapt the **Capture screenshots**
 step to your stack (Playwright, Cypress, Storybook, …).
 
+> **See it running:** [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
+> is a live consumer of this standard — real Playwright captures in the pinned
+> container, exercised on every pull request (visual and non-visual changes,
+> locally and in CI). It is a good template to copy from.
+
 ### Image-free baselines (digest manifest)
 
 The workflow commits only a tiny per-platform **digest manifest**
@@ -38,6 +43,12 @@ emulated and native amd64 match; the workflow also runs a **reproducibility
 gate** (capture twice, require identical bytes) so a nondeterministic pipeline
 fails loudly. See the comments in `visual-docs.yml` for the full flag list and
 the one-time command that validates emulated capture against CI on Apple Silicon.
+
+On Apple Silicon, enable Docker Desktop's **Rosetta** for amd64 emulation. Under
+the QEMU fallback, `--use-angle=swiftshader` can crash Chromium
+(`qemu: uncaught target signal`); a CPU-rasterization fallback (`--disable-gpu`,
+one browser per context, keeping `--disable-skia-runtime-opts`) is byte-identical
+to native CI — see `screencomp-demo` for a worked configuration.
 
 Prerequisites:
 
