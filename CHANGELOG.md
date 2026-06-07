@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/nickderobertis/screencomp/compare/v0.1.8...v0.1.9) - 2026-06-07
+
+### Added
+
+- image-free baselines via digest manifest ([#26](https://github.com/nickderobertis/screencomp/pull/26))
+
 ### Added
 
 - *(manifest)* add a `manifest` subcommand that writes a screenshot tree's
