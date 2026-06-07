@@ -20,6 +20,9 @@ each `<project>` is a Playwright project/variant. From two such trees,
   before/after **diff gallery** when given a `--baseline` (great for PR previews).
 - **`comment`** — renders the sticky Markdown PR comment body for a
   classification (with a stable HTML marker for upserts).
+- **`manifest`** — writes a tree's digests as a tiny text file usable as a
+  committed, image-free baseline (`classify`/`comment` accept it via
+  `--baseline-manifest`).
 
 It never decodes images — it content-hashes bytes — so output is deterministic
 and the tool has no image-codec dependencies.
@@ -142,6 +145,30 @@ screencomp classify --baseline baseline --current current --exit-code || echo "c
 
 `--quiet` suppresses human output (machine-readable `--format json` is
 unaffected).
+
+### Image-free baselines (digest manifest)
+
+Since comparison is by content digest, the baseline pixels are unnecessary — only
+the per-shot digests are. `screencomp manifest` writes them as a tiny
+`sha256sum`-style text file, which you commit *instead of* the PNGs so the
+repository never accumulates binary history:
+
+```sh
+# Record the current capture as the baseline (one line per shot).
+screencomp manifest --input shots/current --platform auto \
+    --output shots/baseline/linux-x86_64.sha256
+
+# Later, classify a new capture against that manifest — no baseline images.
+screencomp classify --baseline-manifest shots/baseline/linux-x86_64.sha256 \
+    --current shots/current --platform auto
+```
+
+`--baseline-manifest` is accepted by `classify` and `comment` as a drop-in
+alternative to `--baseline <DIR>` (exactly one is required). The manifest is
+already platform-specific, so `--platform` then scopes only `--current`. Its
+diff in a pull request (old hash → new hash per shot) is an exact, reviewable
+record of what changed; render the actual pixels with `gallery` (which still
+needs an image tree). See [`examples/visual-docs.yml`](examples/visual-docs.yml).
 
 ### Cross-platform comparison
 

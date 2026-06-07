@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use super::{Ctx, platform, write_err};
+use super::{Ctx, baseline_snapshot, platform, write_err};
 use crate::cli::CommentArgs;
 use crate::config::{self, CONFIG_ENV};
 use crate::domain::classify::classify;
@@ -16,7 +16,11 @@ pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
     let cfg = config::load(args.config.as_deref(), env)?;
 
     let plat = args.platform.as_deref();
-    let baseline = fs::discover(&platform::scope(&args.baseline, plat))?;
+    let baseline = baseline_snapshot(
+        args.baseline.as_deref(),
+        args.baseline_manifest.as_deref(),
+        plat,
+    )?;
     let current = fs::discover(&platform::scope(&args.current, plat))?;
     let classification = classify(&baseline, &current);
 

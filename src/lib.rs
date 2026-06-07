@@ -5,7 +5,8 @@
 //!
 //! - **classify** a current capture against a baseline (added/changed/removed/unchanged),
 //! - **gallery** render a static HTML index of a capture,
-//! - **comment** render the sticky pull-request comment body for a classification.
+//! - **comment** render the sticky pull-request comment body for a classification,
+//! - **manifest** write a tree's digests as a committable, image-free baseline.
 //!
 //! Core logic in `domain` is free of I/O; filesystem access is confined to `io`;
 //! argument parsing lives in [`cli`]. The single entrypoint is [`run`], which
@@ -45,5 +46,6 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         Command::Classify(args) => commands::classify::run(&args, &ctx, out),
         Command::Gallery(args) => commands::gallery::run(&args, &ctx, out),
         Command::Comment(args) => commands::comment::run(&args, &ctx, out),
+        Command::Manifest(args) => commands::manifest::run(&args, &ctx, out),
     }
 }

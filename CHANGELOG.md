@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- *(manifest)* add a `manifest` subcommand that writes a screenshot tree's
+  digests as a tiny `sha256sum`-style text file, and accept it via
+  `--baseline-manifest` on `classify`/`comment`. Committing the manifest instead
+  of the baseline PNGs keeps a consuming repository free of unbounded binary
+  history while preserving an exact, reviewable record of every shot's digest.
+
 ## [0.1.8](https://github.com/nickderobertis/screencomp/compare/v0.1.7...v0.1.8) - 2026-06-06
 
 ### Added

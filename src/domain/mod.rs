@@ -6,4 +6,5 @@
 pub(crate) mod classify;
 pub(crate) mod comment;
 pub(crate) mod gallery;
+pub(crate) mod manifest;
 pub(crate) mod snapshot;
