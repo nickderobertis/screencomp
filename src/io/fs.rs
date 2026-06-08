@@ -5,6 +5,7 @@ use std::fs;
 use camino::{Utf8Path, Utf8PathBuf};
 use sha2::{Digest as _, Sha256};
 
+use crate::domain::layout::{LayoutScan, ProjectScan};
 use crate::domain::snapshot::{ShotKey, Snapshot};
 use crate::errors::AppError;
 
@@ -49,6 +50,54 @@ pub(crate) fn discover(root: &Utf8Path) -> Result<Snapshot, AppError> {
     }
 
     Ok(snapshot)
+}
+
+/// Scan `<root>` one level deep into a [`LayoutScan`] describing its shape.
+///
+/// Unlike [`discover`], which content-hashes shots and discards everything that
+/// is not a `<project>/<name>.png`, this records the structure a preflight needs:
+/// each project directory with its `.png` count, and any `.png` files stranded
+/// directly under the root (a common capture-path mistake that every command
+/// then silently ignores). It reads directory entries but no file *bytes*, so it
+/// stays cheap even on a large tree. A missing root is the same typed error
+/// [`discover`] raises, so `doctor` reports it identically.
+pub(crate) fn scan_layout(root: &Utf8Path) -> Result<LayoutScan, AppError> {
+    if !root.is_dir() {
+        return Err(AppError::NotADirectory {
+            path: root.to_owned(),
+        });
+    }
+
+    let mut projects = Vec::new();
+    let mut loose_pngs = Vec::new();
+
+    for entry in read_dir_sorted(root)? {
+        if entry.is_dir() {
+            let Some(name) = entry.file_name() else {
+                continue;
+            };
+            let shots = read_dir_sorted(&entry)?
+                .iter()
+                .filter(|f| f.is_file() && is_png(f))
+                .count();
+            projects.push(ProjectScan {
+                name: name.to_owned(),
+                shots,
+            });
+        } else if entry.is_file()
+            && is_png(&entry)
+            && let Some(name) = entry.file_name()
+        {
+            loose_pngs.push(name.to_owned());
+        }
+    }
+
+    // read_dir_sorted already yields entries in lexical order, so both lists are
+    // sorted without an extra pass.
+    Ok(LayoutScan {
+        projects,
+        loose_pngs,
+    })
 }
 
 /// Read a digest manifest into a content-addressed [`Snapshot`].
@@ -241,6 +290,50 @@ mod tests {
             b"png-bytes"
         );
         assert!(!output.join("desktop/notes.txt").exists());
+    }
+
+    #[test]
+    fn scan_layout_reports_projects_loose_pngs_and_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        fs::create_dir_all(root.join("desktop")).unwrap();
+        fs::create_dir_all(root.join("mobile")).unwrap();
+        fs::create_dir_all(root.join("empty")).unwrap();
+        fs::write(root.join("desktop/home.png"), b"a").unwrap();
+        fs::write(root.join("desktop/about.png"), b"b").unwrap();
+        fs::write(root.join("desktop/notes.txt"), b"skip").unwrap(); // non-png ignored
+        fs::write(root.join("mobile/home.png"), b"c").unwrap();
+        // A PNG stranded at the root: the layout mistake the scan exists to catch.
+        fs::write(root.join("stray.png"), b"d").unwrap();
+        fs::write(root.join("README.md"), b"e").unwrap(); // non-png at root ignored
+
+        let scan = scan_layout(root).unwrap();
+        assert_eq!(
+            scan.projects,
+            vec![
+                ProjectScan {
+                    name: "desktop".to_owned(),
+                    shots: 2,
+                },
+                ProjectScan {
+                    name: "empty".to_owned(),
+                    shots: 0,
+                },
+                ProjectScan {
+                    name: "mobile".to_owned(),
+                    shots: 1,
+                },
+            ]
+        );
+        assert_eq!(scan.loose_pngs, vec!["stray.png".to_owned()]);
+        assert_eq!(scan.total_shots(), 3);
+        assert!(scan.has_problems()); // the loose PNG
+    }
+
+    #[test]
+    fn scan_layout_missing_root_is_not_a_directory() {
+        let err = scan_layout(Utf8Path::new("/no/such/dir")).unwrap_err();
+        assert!(matches!(err, AppError::NotADirectory { .. }));
     }
 
     #[test]

@@ -3,9 +3,11 @@
 
 pub(crate) mod classify;
 pub(crate) mod comment;
+pub(crate) mod doctor;
 pub(crate) mod gallery;
 pub(crate) mod manifest;
 pub(crate) mod platform;
+pub(crate) mod verify;
 
 use camino::Utf8Path;
 

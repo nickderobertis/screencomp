@@ -7,11 +7,12 @@ comments, commit messages, or one-off notes.
 
 ## What this is
 
-`screencomp` — a CLI for the visual-docs framework with four deterministic,
+`screencomp` — a CLI for the visual-docs framework with deterministic,
 network-free operations over screenshot trees laid out as
-`<root>/<project>/<name>.png`: `classify`, `gallery`, `comment`, and `manifest`
-(an image-free digest baseline). Screenshots are compared by byte digest; nothing
-decodes images.
+`<root>/<project>/<name>.png`: `classify`, `gallery`, `comment`, `manifest` (an
+image-free digest baseline), `verify` (the reproducibility gate — two captures of
+one build must be byte-identical), and `doctor` (preflight the platform key and
+layout). Screenshots are compared by byte digest; nothing decodes images.
 
 ## Layout
 

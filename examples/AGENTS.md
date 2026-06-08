@@ -6,4 +6,6 @@
 - Keep them minimal and in sync with the CLI's real flags and the documented
   `<root>/<project>/<name>.png` layout — a broken example is worse than none.
 - Reference released surfaces only: the `vN` action tag, `ghcr.io/.../screencomp`,
-  and `cargo install screencomp`. Do not depend on unreleased behavior.
+  release archives, and `cargo install --git` (the crate is not yet on crates.io,
+  so do not present `cargo install screencomp` as working until publishing is
+  enabled). Do not depend on unreleased behavior.

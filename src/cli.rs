@@ -35,6 +35,14 @@ pub enum Command {
     /// Write a digest manifest for a screenshot tree, usable as a committed
     /// baseline that avoids storing the PNGs themselves.
     Manifest(ManifestArgs),
+
+    /// Assert that two captures of the same build are byte-identical (the
+    /// reproducibility gate); exit `3` if they diverge.
+    Verify(VerifyArgs),
+
+    /// Preflight a capture: print the resolved platform key and sanity-check the
+    /// `<root>/<project>/<name>.png` layout before classifying.
+    Doctor(DoctorArgs),
 }
 
 /// Output encoding for commands that support both human and machine formats.
@@ -183,4 +191,51 @@ pub struct ManifestArgs {
     /// Write the manifest to this file instead of stdout.
     #[arg(long, value_name = "FILE")]
     pub output: Option<Utf8PathBuf>,
+}
+
+/// Arguments for [`Command::Verify`].
+#[derive(Debug, clap::Args)]
+pub struct VerifyArgs {
+    /// First capture of the build (`<dir>/<project>/<name>.png`).
+    #[arg(long, value_name = "DIR")]
+    pub first: Utf8PathBuf,
+
+    /// Second capture of the *same* build, expected byte-identical to `--first`.
+    #[arg(long, value_name = "DIR")]
+    pub second: Utf8PathBuf,
+
+    /// Restrict the comparison to one platform subtree
+    /// (`<root>/<platform>/<project>/<name>.png`) of both captures. Use `auto`
+    /// to detect the host `<os>-<arch>`. Omit to treat the roots as
+    /// project-level.
+    #[arg(long, value_name = "KEY")]
+    pub platform: Option<String>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+}
+
+/// Arguments for [`Command::Doctor`].
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Capture root to inspect (`<dir>/<project>/<name>.png`).
+    #[arg(long, value_name = "DIR")]
+    pub input: Utf8PathBuf,
+
+    /// Resolve and inspect a single platform subtree
+    /// (`<root>/<platform>/<project>/<name>.png`). Use `auto` to detect the host
+    /// `<os>-<arch>` (the resolved key is printed). Omit to treat the root as
+    /// project-level.
+    #[arg(long, value_name = "KEY")]
+    pub platform: Option<String>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+
+    /// Exit with code 3 when the layout has problems (empty capture or `.png`
+    /// files stranded at the root), for use as a CI preflight gate.
+    #[arg(long)]
+    pub exit_code: bool,
 }

@@ -23,6 +23,12 @@ each `<project>` is a Playwright project/variant. From two such trees,
 - **`manifest`** — writes a tree's digests as a tiny text file usable as a
   committed, image-free baseline (`classify`/`comment` accept it via
   `--baseline-manifest`).
+- **`verify`** — asserts two captures of the *same* build are byte-identical
+  (the [reproducibility gate](#reproducibility-gate-verify)); exits non-zero the
+  moment they diverge.
+- **`doctor`** — a [preflight](#preflight-doctor) that prints the resolved
+  platform key and sanity-checks the `<project>/<name>.png` layout before you
+  classify.
 
 It never decodes images — it content-hashes bytes — so output is deterministic
 and the tool has no image-codec dependencies.
@@ -42,11 +48,16 @@ Prebuilt archives (with SHA-256 checksums) are attached to each
 archive for your platform, verify the checksum, extract, and place `screencomp`
 on your `PATH`.
 
-### From crates.io
+### With cargo (from git)
+
+The crate is not yet published to crates.io, so install it from the repository:
 
 ```sh
-cargo install screencomp --locked
+cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp
 ```
+
+> Once crates.io publishing is enabled (see [Releasing](#releasing)),
+> `cargo install screencomp --locked` will also work.
 
 ### From source
 
@@ -68,8 +79,9 @@ A composite action installs the CLI (and optionally runs it) on a runner:
 ```
 
 Inputs: `version` (release tag or `latest`), `method` (`download` prebuilt asset,
-the default, or `source` to `cargo install`), and `args` (run `screencomp <args>`
-right after install). Downloads are verified against their published SHA-256.
+the default, or `source` to build with `cargo install` from the checkout or git),
+and `args` (run `screencomp <args>` right after install). Downloads are verified
+against their published SHA-256.
 
 ### Container image
 
@@ -235,14 +247,153 @@ per context) with `--disable-skia-runtime-opts` still produces captures
 byte-identical to native CI — `screencomp-demo` verifies emulated-vs-native on
 every run.
 
+### Reproducibility gate (`verify`)
+
+Image-free baselines are only safe if capture is *deterministic*: a committed
+digest means nothing if the same build hashes differently on the next run. Make
+that a hard, mechanical check — capture the same build **twice** and require the
+two trees to be byte-identical:
+
+```sh
+# Capture once to shots/run-a, again to shots/run-b (same build, same flags).
+screencomp verify --first shots/run-a --second shots/run-b --platform auto
+```
+
+`verify` exits `0` when every shot matches and `3` the moment any diverges,
+listing each divergent shot as `differs` (bytes changed between runs),
+`only-in-first`, or `only-in-second` (the capture *set* was nondeterministic).
+`--format json` emits a single-line `{"reproducible":…,"checked":…,"divergent":[…]}`
+contract; `--quiet` suppresses the human report but still gates.
+
+This is the step that turns "it looks fine" into a deterministic, fixable
+failure, so run it on every pull request (or nightly to halve capture cost). A
+failure is almost always a JS-animated or async-rendered widget caught
+mid-transition — see [Capturing an interactive app](#capturing-an-interactive-app)
+for the fix.
+
+### Preflight (`doctor`)
+
+Before the first classify, confirm captures actually landed where every command
+looks for them. `doctor` resolves the platform key and scans the
+`<root>/<project>/<name>.png` layout:
+
+```sh
+$ screencomp doctor --input shots/current --platform auto
+platform: linux-x86_64 (auto)
+inspected: shots/current/linux-x86_64
+projects: 2
+  desktop (3 shots)
+  mobile (1 shot)
+shots: 4
+ok: layout matches <project>/<name>.png
+```
+
+It flags the two mistakes that otherwise surface only as a confusing *empty
+diff*: a capture written to the wrong path (`.png` files stranded at the root
+instead of under a `<project>/` directory), and an empty capture — often a
+`--platform` key that does not match the subtree on disk. Pass `--exit-code` to
+turn either problem into a non-zero (`3`) status for a CI preflight gate, or
+`--format json` for a machine-readable report.
+
+## Capturing an interactive app
+
+The [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
+standard captures static `.html` over `file://` with no interaction. A real
+single-page app — client-side navigation, async-rendered widgets, hydration —
+adds capture-time gotchas that surface only at runtime, each of which can hang
+the capture or break byte-reproducibility. screencomp never runs a browser, so
+these live in *your* capture step; they are collected here because they are easy
+to rediscover the hard way.
+
+### Set explicit Playwright timeouts
+
+Outside the `@playwright/test` runner — i.e. the standalone Playwright script
+that is the usual capture setup — there is no test config, so `page.click`,
+`page.waitForURL`, and `locator.waitFor` default to a timeout of `0`: **wait
+forever**. A missing element then hangs the capture indefinitely instead of
+failing, indistinguishable from "slow". Set both explicitly right after creating
+the page:
+
+```js
+page.setDefaultTimeout(15_000);
+page.setDefaultNavigationTimeout(30_000);
+```
+
+(`expect.configure({ timeout })` only covers assertions, not actions, so it is
+not enough on its own.)
+
+### Split the Chromium flags: determinism vs stability
+
+The standard's flag list mixes two concerns. **Determinism** flags change the
+*bytes* and are mandatory for byte-reproducibility:
+
+```text
+--disable-skia-runtime-opts   # CPU-independent render path: the decisive flag
+--disable-gpu --disable-gpu-rasterization
+--use-gl=angle --use-angle=swiftshader
+--force-color-profile=srgb
+--font-render-hinting=none --disable-lcd-text
+--hide-scrollbars
+```
+
+**Stability / emulation** flags change the *process model* and leave the bytes
+identical, so they are safe to add or drop per environment:
+
+```text
+--single-process              # OFF for interactive pages (see below)
+--disable-dev-shm-usage
+--ipc=host
+```
+
+`--single-process` is the trap: on a page doing meaningful client-side work the
+renderer can fault and, being the only process, take the whole browser down with
+it. It is fine for static sites but should be **off** for interactive ones —
+dropping it does not change a single byte of output.
+
+### One browser process per viewport
+
+Capturing several viewports in one long-lived browser process can wedge the
+second capture partway through. Launch — and fully close — **one browser process
+per viewport** (or per project) rather than reusing one across all of them. It is
+reliable and, because the bytes do not depend on process lifetime, still
+byte-reproducible.
+
+### Make async / animated widgets byte-reproducible
+
+Playwright's `animations: "disabled"` only freezes **CSS** animations and
+transitions. A widget that animates via JS-set styles — fade-ins, async-loaded
+image layers, canvas redraws — can be caught mid-transition (e.g. at opacity
+`0.97` instead of `1.0`), so a large region differs by a few levels between two
+runs of the same build. The [reproducibility gate](#reproducibility-gate-verify)
+flags this correctly; the fix is to *settle, then pin* the widget before the
+shot:
+
+```js
+// 1. Wait for the widget to finish loading/animating.
+await page.locator(".chart").waitFor({ state: "visible" });
+await page.waitForFunction(() => window.__chartReady === true);
+
+// 2. Force its final visual state so nothing is mid-transition at capture.
+await page.addStyleTag({
+  content: `*, *::before, *::after { transition: none !important; animation: none !important; }`,
+});
+await page.locator(".chart").evaluate((el) => { el.style.opacity = "1"; });
+
+// 3. Now capture.
+await page.locator(".chart").screenshot({ path: out, animations: "disabled" });
+```
+
+Re-run `screencomp verify` until it is green; a remaining diff means a widget is
+still settling at capture time.
+
 ## Exit codes
 
 | Code | Meaning                                                       |
 | ---- | ------------------------------------------------------------- |
-| `0`  | Success (no differences, or differences without `--exit-code`)|
+| `0`  | Success (no differences/problems, or differences without `--exit-code`) |
 | `1`  | Runtime error — I/O, invalid input layout, or bad config      |
 | `2`  | CLI usage error (unknown flag, missing required argument)     |
-| `3`  | `classify --exit-code` ran successfully and found differences |
+| `3`  | Ran successfully but the result is not clean: `classify --exit-code` or `verify` found differences, or `doctor --exit-code` found layout problems |
 
 Human output goes to stdout; errors go to stderr; the two never mix.
 

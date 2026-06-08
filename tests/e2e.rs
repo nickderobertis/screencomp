@@ -37,7 +37,9 @@ fn help_lists_subcommands() {
         .stdout(predicate::str::contains("Usage: screencomp"))
         .stdout(predicate::str::contains("classify"))
         .stdout(predicate::str::contains("gallery"))
-        .stdout(predicate::str::contains("comment"));
+        .stdout(predicate::str::contains("comment"))
+        .stdout(predicate::str::contains("verify"))
+        .stdout(predicate::str::contains("doctor"));
 }
 
 #[test]
@@ -286,6 +288,85 @@ fn missing_platform_subtree_names_the_path_on_stderr() {
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("not a directory"))
         .stderr(predicate::str::contains("windows-x86_64"));
+}
+
+#[test]
+fn verify_identical_captures_pass_and_diverging_ones_exit_three() {
+    // Two reads of the same tree are byte-identical: the gate passes.
+    bin()
+        .args(["verify", "--first"])
+        .arg(current())
+        .arg("--second")
+        .arg(current())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reproducible:"))
+        .stderr(predicate::str::is_empty());
+
+    // Baseline vs current differ: the gate fails with code 3, output on stdout.
+    bin()
+        .args(["verify", "--first"])
+        .arg(baseline())
+        .arg("--second")
+        .arg(current())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("NOT reproducible:"))
+        .stdout(predicate::str::contains("differs desktop/about"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn verify_json_contract() {
+    bin()
+        .args(["verify", "--format", "json", "--first"])
+        .arg(baseline())
+        .arg("--second")
+        .arg(current())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains(r#""reproducible":false"#))
+        .stdout(predicate::str::contains(r#""kind":"differs""#));
+}
+
+#[test]
+fn doctor_reports_a_clean_capture_layout() {
+    bin()
+        .args(["doctor", "--input"])
+        .arg(current())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("desktop (3 shots)"))
+        .stdout(predicate::str::contains("shots: 4"))
+        .stdout(predicate::str::contains("ok: layout matches"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn doctor_exit_code_gate_catches_a_misplaced_capture() {
+    let dir = TempDir::new().unwrap();
+    // A capture written to the root instead of <project>/<name>.png.
+    std::fs::write(dir.path().join("home.png"), b"oops").unwrap();
+
+    bin()
+        .args(["doctor", "--exit-code", "--input"])
+        .arg(dir.path())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("warning:"))
+        .stdout(predicate::str::contains("problems found"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn doctor_missing_input_fails_with_clean_stderr() {
+    bin()
+        .args(["doctor", "--input", "/no/such/dir"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("not a directory"));
 }
 
 #[test]
