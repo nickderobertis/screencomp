@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/nickderobertis/screencomp/compare/v0.1.9...v0.1.10) - 2026-06-08
+
+### Added
+
+- add verify and doctor commands, interactive-capture guide, and install script ([#30](https://github.com/nickderobertis/screencomp/pull/30))
+
+### Documentation
+
+- link the screencomp-demo consumer; fix just setup on asdf >= 0.16 ([#29](https://github.com/nickderobertis/screencomp/pull/29))
+
 ### Added
 
 - *(verify)* add a `verify` subcommand that asserts two captures of the same
