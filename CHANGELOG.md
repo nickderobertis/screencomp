@@ -17,10 +17,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   capture or `.png` files stranded at the root before they surface as a confusing
   empty diff. `--exit-code` turns problems into a non-zero status for CI.
 
+- *(install)* add `scripts/install.sh`, a POSIX install script that detects the
+  platform, downloads the matching prebuilt release binary, verifies its SHA-256
+  checksum, and installs it to `~/.local/bin` (overridable via `--version`/`--to`
+  or `SCREENCOMP_VERSION`/`SCREENCOMP_INSTALL_DIR`). It refuses to install a
+  binary it cannot checksum-verify.
+
 ### Documentation
 
-- Lead the install docs with working methods (`cargo install --git`, release
-  binaries, container) and annotate the unpublished crates.io line.
+- Lead the install docs with the prebuilt-binary install script, then the manual
+  release archive and `cargo install --git`; annotate the unpublished crates.io
+  line.
 - Add a "Capturing an interactive app" guide: explicit Playwright timeouts, the
   determinism-vs-stability flag split (`--single-process` off for interactive
   pages), one browser process per viewport, and a recipe for making

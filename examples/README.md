@@ -80,10 +80,13 @@ The workflow installs the CLI with the bundled composite action:
 Other options, outside Actions:
 
 ```sh
+# Recommended: prebuilt binary, checksum-verified, onto your PATH
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scripts/install.sh | sh
+
 # With cargo, from git (the crate is not yet published to crates.io)
 cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp
 
-# From a release archive (Linux/macOS/Windows binaries + checksums)
+# Or download a release archive by hand (Linux/macOS/Windows binaries + checksums)
 #   https://github.com/nickderobertis/screencomp/releases
 ```
 

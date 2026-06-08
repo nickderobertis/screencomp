@@ -101,11 +101,13 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
 - Releases are tag-driven (`vX.Y.Z`); the workflow builds per-platform archives
   with sha256 checksums and a multi-arch image, and never publishes untested
   artifacts. crates.io publish is a separately gated step.
-- The CLI ships through four surfaces that must stay consistent: release
-  binaries, crates.io, the GHCR image (`Dockerfile`), and the composite action
-  (`action.yml`). The action's downloaded asset names must match the release
-  workflow's `archive` pattern; `examples/` shows the intended consumer flow and
-  is excluded from the published crate.
+- The CLI ships through several surfaces that must stay consistent: release
+  binaries, the `scripts/install.sh` installer, crates.io, the GHCR image
+  (`Dockerfile`), and the composite action (`action.yml`). Both `install.sh` and
+  the action download release assets by name, so their constructed archive and
+  `.sha256` names must match the release workflow's `archive` pattern; change the
+  pattern and you change all three. `examples/` shows the intended consumer flow
+  and is excluded from the published crate.
 - Manage git state end-to-end; branch off the default branch for changes. Do not
   commit or push unless asked.
 

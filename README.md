@@ -40,17 +40,40 @@ single `<root>/<platform>/<project>/<name>.png` subtree (see
 
 ## Install
 
+### Install script (recommended)
+
+Download the prebuilt binary for your platform, verify its SHA-256 checksum, and
+install it to `~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scripts/install.sh | sh
+```
+
+Pin a version or choose where it lands (flags or the matching environment
+variables `SCREENCOMP_VERSION` / `SCREENCOMP_INSTALL_DIR`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scripts/install.sh \
+  | sh -s -- --version v0.1.0 --to /usr/local/bin
+```
+
+It covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
+(Git Bash / MSYS / WSL), and aborts rather than install a binary it cannot
+checksum-verify. Set `GITHUB_TOKEN` if the GitHub API rate-limits the `latest`
+lookup.
+
 ### From release binaries
 
-Prebuilt archives (with SHA-256 checksums) are attached to each
-[GitHub Release](https://github.com/nickderobertis/screencomp/releases) for Linux
-(x86_64, arm64), macOS (x86_64, arm64), and Windows (x86_64). Download the
-archive for your platform, verify the checksum, extract, and place `screencomp`
-on your `PATH`.
+Prefer to do it by hand? Prebuilt archives (with SHA-256 checksums) are attached
+to each [GitHub Release](https://github.com/nickderobertis/screencomp/releases)
+for Linux (x86_64, arm64), macOS (x86_64, arm64), and Windows (x86_64). Download
+the archive for your platform, verify the checksum, extract, and place
+`screencomp` on your `PATH`.
 
 ### With cargo (from git)
 
-The crate is not yet published to crates.io, so install it from the repository:
+For Rust users, or targets without a prebuilt binary, build and install from the
+repository (the crate is not yet published to crates.io):
 
 ```sh
 cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp
