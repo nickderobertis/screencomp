@@ -58,14 +58,24 @@ jobs:
     env:
       SHOTS_OUT: shots/current/linux-x86_64
       MANIFEST: shots/baseline/linux-x86_64.sha256
-      # Deterministic-rendering flags for Chromium, set via your Playwright
-      # config's launchOptions.args (listed here so the contract is visible):
+      # Chromium flags, set via your Playwright config's launchOptions.args
+      # (listed here so the contract is visible). They split into two kinds:
+      #
+      # DETERMINISM — change the bytes; mandatory for byte-reproducibility:
+      #   --disable-skia-runtime-opts            # CPU-independent path: key flag
       #   --headless=new --disable-gpu --disable-gpu-rasterization
       #   --use-gl=angle --use-angle=swiftshader
-      #   --disable-skia-runtime-opts            # CPU-independent path: key flag
       #   --force-color-profile=srgb
       #   --font-render-hinting=none --disable-lcd-text --hide-scrollbars
       # plus deviceScaleFactor: 1 and a fixed viewport.
+      #
+      # STABILITY / EMULATION — change only the process model; leave bytes
+      # identical, so add or drop per environment:
+      #   --disable-dev-shm-usage --ipc=host
+      #   --single-process    # OK for static pages; turn OFF for interactive
+      #                       # ones — the renderer can fault and take the whole
+      #                       # single-process browser down. See the README's
+      #                       # "Capturing an interactive app".
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,14 +94,15 @@ jobs:
 
       # Reproducibility gate: capture again, require byte-identical output. This
       # is what makes image-free baselines safe — the committed digests are only
-      # meaningful if capture is deterministic on this machine. (Move to a
-      # nightly `schedule:` trigger if you want to halve per-PR capture cost.)
+      # meaningful if capture is deterministic on this machine. A failure here is
+      # almost always a JS-animated or async-rendered widget caught mid-transition
+      # (see the README's "Capturing an interactive app"). Move to a nightly
+      # `schedule:` trigger if you want to halve per-PR capture cost.
       - name: Verify capture is reproducible
         run: |
           set -euo pipefail
           SHOTS_OUT=shots/verify/linux-x86_64 npx playwright test
-          screencomp classify --baseline shots/current --current shots/verify \
-            --platform auto --exit-code
+          screencomp verify --first shots/current --second shots/verify --platform auto
           rm -rf shots/verify
 
       # The check: compare the capture against the committed digest manifest.

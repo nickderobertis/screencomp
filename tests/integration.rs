@@ -527,6 +527,261 @@ fn explicit_missing_config_is_config_error() {
     assert!(matches!(result, Err(AppError::Config(_))));
 }
 
+/// Write `bytes` to `<root>/<project>/<name>.png` (no platform layer).
+fn write_flat(root: &Path, project: &str, name: &str, bytes: &[u8]) {
+    let dir = root.join(project);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
+}
+
+#[test]
+fn verify_identical_captures_pass() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("run-a");
+    let b = dir.path().join("run-b");
+    write_flat(&a, "desktop", "home", b"pixels");
+    write_flat(&b, "desktop", "home", b"pixels");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "verify",
+        "--first",
+        a.to_str().unwrap(),
+        "--second",
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("reproducible: 1 shots byte-identical"),
+        "{out}"
+    );
+}
+
+#[test]
+fn verify_divergent_captures_exit_three_with_kinds() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("run-a");
+    let b = dir.path().join("run-b");
+    write_flat(&a, "desktop", "home", b"v1"); // differs between runs
+    write_flat(&b, "desktop", "home", b"v2");
+    write_flat(&a, "desktop", "only_first", b"x"); // dropped in second run
+    write_flat(&b, "desktop", "only_second", b"y"); // appeared in second run
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "verify",
+        "--first",
+        a.to_str().unwrap(),
+        "--second",
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("differs desktop/home"), "{out}");
+    assert!(out.contains("only-in-first desktop/only_first"), "{out}");
+    assert!(out.contains("only-in-second desktop/only_second"), "{out}");
+    assert!(
+        out.contains("NOT reproducible: 1 differ, 1 only in first run, 1 only in second (of 3)"),
+        "{out}"
+    );
+}
+
+#[test]
+fn verify_json_is_single_line_contract() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("run-a");
+    let b = dir.path().join("run-b");
+    write_flat(&a, "desktop", "home", b"v1");
+    write_flat(&b, "desktop", "home", b"v2");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "verify",
+        "--first",
+        a.to_str().unwrap(),
+        "--second",
+        b.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(out.contains(r#""reproducible":false"#), "{out}");
+    assert!(out.contains(r#""checked":1"#), "{out}");
+    assert!(
+        out.contains(r#"{"project":"desktop","name":"home","kind":"differs"}"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn verify_is_platform_scoped() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("run-a");
+    let b = dir.path().join("run-b");
+    let key = host_key();
+    write_shot(&a, &key, "desktop", "home", b"same");
+    write_shot(&b, &key, "desktop", "home", b"same");
+    // A foreign subtree diverges but must be invisible to the scoped run.
+    write_shot(&a, "other-arch", "desktop", "home", b"p");
+    write_shot(&b, "other-arch", "desktop", "home", b"q");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "verify",
+        "--first",
+        a.to_str().unwrap(),
+        "--second",
+        b.to_str().unwrap(),
+        "--platform",
+        "auto",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("reproducible: 1 shots byte-identical"),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_reports_layout_and_passes_a_clean_tree() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    write_flat(&input, "desktop", "home", b"a");
+    write_flat(&input, "desktop", "about", b"b");
+    write_flat(&input, "mobile", "home", b"c");
+
+    let (code, out) = invoke(&["screencomp", "doctor", "--input", input.to_str().unwrap()]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("platform: none (root is project-level)"),
+        "{out}"
+    );
+    assert!(out.contains("desktop (2 shots)"), "{out}");
+    assert!(out.contains("mobile (1 shot)"), "{out}");
+    assert!(out.contains("shots: 3"), "{out}");
+    assert!(
+        out.contains("ok: layout matches <project>/<name>.png"),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_resolves_auto_platform_key() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    let key = host_key();
+    write_shot(&input, &key, "desktop", "home", b"a");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--platform",
+        "auto",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(&format!("platform: {key} (auto)")), "{out}");
+}
+
+#[test]
+fn doctor_explicit_platform_key_is_shown_without_auto_suffix() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    write_shot(&input, "linux-x86_64", "desktop", "home", b"a");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("platform: linux-x86_64"), "{out}");
+    assert!(!out.contains("(auto)"), "{out}");
+}
+
+#[test]
+fn doctor_json_contract_reports_problems() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    write_flat(&input, "desktop", "home", b"a");
+    std::fs::write(input.join("stray.png"), b"oops").unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--format",
+        "json",
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(out.contains(r#""ok":false"#), "{out}");
+    assert!(out.contains(r#""total_shots":1"#), "{out}");
+    assert!(out.contains(r#""loose_pngs":["stray.png"]"#), "{out}");
+    assert!(out.contains(r#""platform":null"#), "{out}");
+    assert!(out.contains(r#"{"name":"desktop","shots":1}"#), "{out}");
+}
+
+#[test]
+fn verify_and_doctor_quiet_suppress_human_output() {
+    let dir = TempDir::new().unwrap();
+    let a = dir.path().join("run-a");
+    let b = dir.path().join("run-b");
+    write_flat(&a, "desktop", "home", b"v1");
+    write_flat(&b, "desktop", "home", b"v2");
+
+    // Quiet still gates (exit 3) but writes nothing to stdout.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "-q",
+        "verify",
+        "--first",
+        a.to_str().unwrap(),
+        "--second",
+        b.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.is_empty(), "quiet verify stdout should be empty: {out}");
+
+    let (code, out) = invoke(&["screencomp", "-q", "doctor", "--input", a.to_str().unwrap()]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.is_empty(), "quiet doctor stdout should be empty: {out}");
+}
+
+#[test]
+fn doctor_exit_code_flags_loose_pngs() {
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    std::fs::create_dir_all(&input).unwrap();
+    // A capture stranded at the root instead of under a project directory.
+    std::fs::write(input.join("home.png"), b"a").unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("warning:"), "{out}");
+    assert!(out.contains("home.png"), "{out}");
+    assert!(out.contains("problems found"), "{out}");
+}
+
+#[test]
+fn doctor_missing_input_is_not_a_directory_error() {
+    let (result, out) = invoke(&["screencomp", "doctor", "--input", "/no/such/dir"]);
+    assert!(out.is_empty());
+    assert!(matches!(result, Err(AppError::NotADirectory { .. })));
+}
+
 #[test]
 fn valid_config_overrides_title_and_marker() {
     let dir = TempDir::new().unwrap();

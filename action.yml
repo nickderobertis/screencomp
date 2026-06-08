@@ -52,13 +52,16 @@ runs:
 
         install_from_source() {
           # Build the exact ref the action was pinned to when a checkout is
-          # available (reproducible); otherwise install the published crate.
+          # available (reproducible); otherwise build from git. The crate is not
+          # yet on crates.io, so source installs come from the repository rather
+          # than `cargo install screencomp`.
           if [ -f "${SCREENCOMP_ACTION_PATH}/Cargo.toml" ]; then
             cargo install --path "${SCREENCOMP_ACTION_PATH}" --locked --force
           elif [ "${SCREENCOMP_VERSION}" = "latest" ]; then
-            cargo install screencomp --locked --force
+            cargo install --git "https://github.com/${SCREENCOMP_REPO}" --locked --force screencomp
           else
-            cargo install "screencomp@${SCREENCOMP_VERSION#v}" --locked --force
+            cargo install --git "https://github.com/${SCREENCOMP_REPO}" \
+              --tag "${SCREENCOMP_VERSION}" --locked --force screencomp
           fi
           screencomp --version
         }

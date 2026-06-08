@@ -39,10 +39,20 @@ container on a Mac renders Linux pixels; `--platform=linux/amd64` makes them the
 same `linux/amd64` pixels as CI (emulated via Rosetta/QEMU). This trades
 real-macOS rendering fidelity for exact reproducibility. The decisive flag is
 `--disable-skia-runtime-opts`, which forces a CPU-independent render path so
-emulated and native amd64 match; the workflow also runs a **reproducibility
-gate** (capture twice, require identical bytes) so a nondeterministic pipeline
-fails loudly. See the comments in `visual-docs.yml` for the full flag list and
-the one-time command that validates emulated capture against CI on Apple Silicon.
+emulated and native amd64 match. See the comments in `visual-docs.yml` for the
+full flag list and the one-time command that validates emulated capture against
+CI on Apple Silicon.
+
+### Reproducibility gate (required)
+
+Image-free baselines are only safe if capture is deterministic, so the workflow
+captures the same build **twice** and requires byte-identical output with
+`screencomp verify --first … --second … --platform auto` (exit `3` on any
+divergence). Treat this as a required step, not an optional one: it is what turns
+a flaky, JS-animated, or async-rendered widget from a silent baseline poisoner
+into a hard, fixable failure. The README's
+[Capturing an interactive app](https://github.com/nickderobertis/screencomp#capturing-an-interactive-app)
+covers the usual causes and fixes.
 
 On Apple Silicon, enable Docker Desktop's **Rosetta** for amd64 emulation. Under
 the QEMU fallback, `--use-angle=swiftshader` can crash Chromium
@@ -70,10 +80,13 @@ The workflow installs the CLI with the bundled composite action:
 Other options, outside Actions:
 
 ```sh
-# From crates.io
-cargo install screencomp
+# Recommended: prebuilt binary, checksum-verified, onto your PATH
+curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scripts/install.sh | sh
 
-# From a release archive (Linux/macOS/Windows binaries + checksums)
+# With cargo, from git (the crate is not yet published to crates.io)
+cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp
+
+# Or download a release archive by hand (Linux/macOS/Windows binaries + checksums)
 #   https://github.com/nickderobertis/screencomp/releases
 ```
 

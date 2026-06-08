@@ -1,12 +1,15 @@
 //! `screencomp` — deterministic screenshot tooling for the visual-docs framework.
 //!
-//! The library exposes three pure-by-default operations over a screenshot tree
-//! laid out as `<root>/<project>/<name>.png`:
+//! The library exposes pure-by-default operations over a screenshot tree laid
+//! out as `<root>/<project>/<name>.png`:
 //!
 //! - **classify** a current capture against a baseline (added/changed/removed/unchanged),
 //! - **gallery** render a static HTML index of a capture,
 //! - **comment** render the sticky pull-request comment body for a classification,
-//! - **manifest** write a tree's digests as a committable, image-free baseline.
+//! - **manifest** write a tree's digests as a committable, image-free baseline,
+//! - **verify** assert two captures of one build are byte-identical (the
+//!   reproducibility gate),
+//! - **doctor** preflight a capture's platform key and `<project>/<name>.png` layout.
 //!
 //! Core logic in `domain` is free of I/O; filesystem access is confined to `io`;
 //! argument parsing lives in [`cli`]. The single entrypoint is [`run`], which
@@ -32,7 +35,8 @@ use cli::Command;
 /// Execute a parsed CLI invocation, writing user-facing output to `out`.
 ///
 /// On success returns the intended process exit code: `0` normally, or `3` when
-/// `classify --exit-code` detects differences. Errors and their causes are the
+/// `classify --exit-code`/`doctor --exit-code` flag a problem or `verify` finds
+/// the two captures diverge. Errors and their causes are the
 /// caller's responsibility to render (the binary prints them to stderr); this
 /// function never writes to stderr.
 ///
@@ -47,5 +51,7 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         Command::Gallery(args) => commands::gallery::run(&args, &ctx, out),
         Command::Comment(args) => commands::comment::run(&args, &ctx, out),
         Command::Manifest(args) => commands::manifest::run(&args, &ctx, out),
+        Command::Verify(args) => commands::verify::run(&args, &ctx, out),
+        Command::Doctor(args) => commands::doctor::run(&args, &ctx, out),
     }
 }

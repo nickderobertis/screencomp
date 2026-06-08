@@ -15,7 +15,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
 /// Sentinel `--platform` value that resolves to the host's own key.
-const AUTO: &str = "auto";
+pub(crate) const AUTO: &str = "auto";
 
 /// Canonical platform key for the host this binary runs on, e.g.
 /// `linux-x86_64` or `macos-arm64`.
@@ -44,7 +44,10 @@ pub(crate) fn scope(root: &Utf8Path, platform: Option<&str>) -> Utf8PathBuf {
 }
 
 /// Resolve a `--platform` spec to a concrete key (`auto` → [`host_key`]).
-fn resolve(spec: &str) -> String {
+///
+/// Used both to build a scoped path ([`scope`]) and to surface the resolved
+/// subtree name to the user (`doctor`).
+pub(crate) fn resolve(spec: &str) -> String {
     if spec == AUTO {
         host_key()
     } else {

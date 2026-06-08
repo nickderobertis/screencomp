@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- *(verify)* add a `verify` subcommand that asserts two captures of the same
+  build are byte-identical — the reproducibility gate as a first-class command.
+  It exits `3` the moment any shot diverges, labelling each as `differs`,
+  `only-in-first`, or `only-in-second`, with a `--format json` contract.
+- *(doctor)* add a `doctor` preflight that prints the resolved platform key and
+  sanity-checks the `<root>/<project>/<name>.png` layout, flagging an empty
+  capture or `.png` files stranded at the root before they surface as a confusing
+  empty diff. `--exit-code` turns problems into a non-zero status for CI.
+
+- *(install)* add `scripts/install.sh`, a POSIX install script that detects the
+  platform, downloads the matching prebuilt release binary, verifies its SHA-256
+  checksum, and installs it to `~/.local/bin` (overridable via `--version`/`--to`
+  or `SCREENCOMP_VERSION`/`SCREENCOMP_INSTALL_DIR`). It refuses to install a
+  binary it cannot checksum-verify.
+
+### Documentation
+
+- Lead the install docs with the prebuilt-binary install script, then the manual
+  release archive and `cargo install --git`; annotate the unpublished crates.io
+  line.
+- Add a "Capturing an interactive app" guide: explicit Playwright timeouts, the
+  determinism-vs-stability flag split (`--single-process` off for interactive
+  pages), one browser process per viewport, and a recipe for making
+  async/animated widgets byte-reproducible.
+- Promote the reproducibility gate to a required, prominently documented step and
+  switch the example workflow to `screencomp verify`.
+
 ## [0.1.9](https://github.com/nickderobertis/screencomp/compare/v0.1.8...v0.1.9) - 2026-06-07
 
 ### Added
