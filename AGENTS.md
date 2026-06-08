@@ -7,10 +7,11 @@ comments, commit messages, or one-off notes.
 
 ## What this is
 
-`screencomp` — a CLI for the visual-docs framework with three deterministic,
+`screencomp` — a CLI for the visual-docs framework with four deterministic,
 network-free operations over screenshot trees laid out as
-`<root>/<project>/<name>.png`: `classify`, `gallery`, `comment`. Screenshots are
-compared by byte digest; nothing decodes images.
+`<root>/<project>/<name>.png`: `classify`, `gallery`, `comment`, and `manifest`
+(an image-free digest baseline). Screenshots are compared by byte digest; nothing
+decodes images.
 
 ## Layout
 
@@ -72,6 +73,14 @@ compared by byte digest; nothing decodes images.
   Every user-visible change needs an e2e test; smoke tests are only a subset.
 - Tests are deterministic, tempdir-isolated, and offline. Coverage has an
   enforced threshold; do not lower it to pass.
+- The suite never runs a real browser, so it cannot catch capture-pipeline or
+  output-contract regressions that only surface with real screenshots. Validate
+  any change to `classify`/`gallery`/`comment`/`manifest` output or the
+  `--platform` layout end-to-end against the
+  [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo) consumer
+  before release: run its pinned-container capture locally and let its CI exercise
+  a visual and a non-visual change. Keep that repo's workflow/example in lockstep
+  with this CLI's flags and the documented layout.
 
 ## Quality gate
 

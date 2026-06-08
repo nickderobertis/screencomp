@@ -66,11 +66,18 @@ ensure_direnv() {
   # it is not a per-project .tool-versions entry). `asdf direnv setup` wires the
   # shell hook and the `use asdf` function that .envrc relies on.
   ensure_plugin direnv
+  # Resolve a concrete version: asdf >= 0.16 `set` does not accept "latest".
+  local direnv_version
+  direnv_version="$(asdf latest direnv 2>/dev/null || echo latest)"
   if ! asdf list direnv 2>/dev/null | grep -q '[0-9]'; then
     say "installing direnv via asdf"
-    asdf install direnv latest
-    asdf global direnv latest
+    asdf install direnv "$direnv_version"
   fi
+  # Pin direnv in the user's global tool-versions. The asdf 0.16 Go rewrite
+  # replaced `asdf global` with `asdf set --home`; fall back to `asdf global`
+  # so a freshly cloned classic asdf still works.
+  asdf set --home direnv "$direnv_version" 2>/dev/null \
+    || asdf global direnv "$direnv_version"
   local sh; sh="$(basename "${SHELL:-bash}")"
   case "$sh" in bash | zsh | fish) : ;; *) sh="bash" ;; esac
   asdf direnv setup --shell "$sh" --version latest >/dev/null 2>&1 || true
