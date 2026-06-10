@@ -160,6 +160,14 @@ fn parse_manifest_line(line: &str) -> Result<(ShotKey, String), String> {
     ))
 }
 
+/// Read `path` into a string, wrapping a failure as an [`AppError::Io`].
+///
+/// Used by `scope` to read a newline-delimited candidate-path list from a file
+/// (the stdin case is handled at the command boundary, like other process I/O).
+pub(crate) fn read_text(path: &Utf8Path) -> Result<String, AppError> {
+    fs::read_to_string(path).map_err(|e| AppError::io(format!("reading {path}"), e))
+}
+
 /// Write `contents` to `path`, creating parent directories as needed.
 pub(crate) fn write_string(path: &Utf8Path, contents: &str) -> Result<(), AppError> {
     if let Some(parent) = path.parent()

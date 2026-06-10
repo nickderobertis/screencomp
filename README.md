@@ -409,6 +409,39 @@ await page.locator(".chart").screenshot({ path: out, animations: "disabled" });
 Re-run `screencomp verify` until it is green; a remaining diff means a widget is
 still settling at capture time.
 
+## Local pre-push guard (optional)
+
+The recommended setup wires the [`visual-docs.yml`](examples/visual-docs.yml) CI
+workflow, which silently regenerates the digest manifest on every PR. That is
+convenient but quiet: you can change UI, pass your whole local gate, and push
+without ever learning the visual baseline moved. The optional pre-push hook in
+[`examples/pre-push`](examples/pre-push) **complements** that workflow (it does
+not replace it) by surfacing baseline changes on your machine, before the push.
+
+The hook fires **only when a pushed change matches the `[guard].paths` globs** in
+`screencomp.toml`, so the common push pays nothing — no capture, no Docker. When
+a relevant file changes it is deliberately slow: it captures in the same pinned
+container as CI so the bytes match. That cost is the point of gating it behind
+`[guard].paths`. On a clean comparison it prints one line and lets the push
+through; on drift it regenerates the manifest, builds a review gallery, and
+**blocks the push**, asking you to review the gallery and commit the regenerated
+manifest before pushing again. It never auto-commits. `git push --no-verify`
+bypasses it, and it is a no-op under CI.
+
+The "did a relevant file change?" decision is the `scope` subcommand — robust
+glob matching instead of fragile shell globbing. It reads `[guard].paths` from
+config and a newline-delimited candidate list from stdin, and touches no git,
+network, or working-tree state:
+
+```sh
+git diff --name-only "$range" | screencomp scope --changed-from - --exit-code
+# exit 3 -> a relevant path matched;  exit 0 -> nothing relevant
+```
+
+See [`examples/hooks/README.md`](examples/hooks/README.md) for behavior details
+and ready-to-paste wiring for lefthook, husky, simple-git-hooks, and a raw
+`.git/hooks/pre-push`.
+
 ## Exit codes
 
 | Code | Meaning                                                       |
@@ -416,15 +449,15 @@ still settling at capture time.
 | `0`  | Success (no differences/problems, or differences without `--exit-code`) |
 | `1`  | Runtime error — I/O, invalid input layout, or bad config      |
 | `2`  | CLI usage error (unknown flag, missing required argument)     |
-| `3`  | Ran successfully but the result is not clean: `classify --exit-code` or `verify` found differences, or `doctor --exit-code` found layout problems |
+| `3`  | Ran successfully but the result is not clean: `classify --exit-code` or `verify` found differences, `doctor --exit-code` found layout problems, or `scope --exit-code` matched a screenshot-relevant path |
 
 Human output goes to stdout; errors go to stderr; the two never mix.
 
 ## Configuration
 
-The `comment` command reads optional configuration. Resolution order:
-`--config <file>` → `$SCREENCOMP_CONFIG` → built-in defaults (so no file is
-required). A path given explicitly that is missing or invalid is a hard error.
+The `comment` and `scope` commands read optional configuration. Resolution
+order: `--config <file>` → `$SCREENCOMP_CONFIG` → built-in defaults (so no file
+is required). A path given explicitly that is missing or invalid is a hard error.
 
 ```toml
 # screencomp.toml
@@ -433,14 +466,26 @@ title = "Visual changes"   # comment heading
 marker = "screencomp"       # [A-Za-z0-9_-]; embedded as <!-- marker --> for upserts
 show_unchanged = false      # also list unchanged screenshots
 embed_limit = 10            # embed images inline when ≤ N shots differ (0 disables)
+
+[guard]                                          # optional local pre-push guard
+paths = ["src/**/*.{ts,tsx,css}", "playwright/**"] # globs that trigger a re-capture
+platform = "linux-x86_64"                          # platform key to capture/classify under
+manifest = "shots/baseline/linux-x86_64.sha256"    # committed digest baseline
+gallery  = "shots/review"                          # local review-gallery output dir
 ```
+
+All `[guard]` fields are optional; with no `paths` the guard never fires. Only
+`scope` consumes `paths` — the rest document where the hook template finds the
+baseline and writes its review gallery.
 
 ## Examples
 
 [`examples/visual-docs.yml`](examples/visual-docs.yml) is a copy-paste GitHub
 Actions workflow for a consuming repository: capture screenshots → build a gallery
 → publish to GitHub Pages → post a sticky screenshot-diff comment on pull
-requests. See [`examples/README.md`](examples/README.md) for prerequisites.
+requests. [`examples/pre-push`](examples/pre-push) is the optional local guard
+that complements it (see [Local pre-push guard](#local-pre-push-guard-optional)).
+See [`examples/README.md`](examples/README.md) for prerequisites.
 
 ## Development
 

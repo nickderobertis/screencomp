@@ -782,6 +782,177 @@ fn doctor_missing_input_is_not_a_directory_error() {
     assert!(matches!(result, Err(AppError::NotADirectory { .. })));
 }
 
+/// Write a `screencomp.toml` whose `[guard].paths` are `globs`, returning its path.
+fn write_guard_config(dir: &Path, globs: &[&str]) -> String {
+    let list = globs
+        .iter()
+        .map(|g| format!("{g:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cfg = dir.join("screencomp.toml");
+    std::fs::write(&cfg, format!("[guard]\npaths = [{list}]\n")).unwrap();
+    path_str(&cfg)
+}
+
+/// Write `lines` (joined by newlines) to a candidate-paths file, returning its path.
+fn write_changed(dir: &Path, lines: &[&str]) -> String {
+    let file = dir.join("changed.txt");
+    std::fs::write(&file, lines.join("\n")).unwrap();
+    path_str(&file)
+}
+
+#[test]
+fn scope_reports_relevant_match_and_gates_with_exit_code() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_guard_config(dir.path(), &["src/**/*.rs", "playwright/**"]);
+    let changed = write_changed(
+        dir.path(),
+        &["README.md", "src/ui/button.rs", "playwright/home.spec.ts"],
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "scope",
+        "--config",
+        &cfg,
+        "--changed-from",
+        &changed,
+        "--exit-code",
+    ]);
+    // A relevant path matched: exit 3, mirroring classify's "change → 3".
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("match src/ui/button.rs"), "{out}");
+    assert!(out.contains("match playwright/home.spec.ts"), "{out}");
+    assert!(!out.contains("README.md"), "{out}");
+    assert!(
+        out.contains("2 of 3 changed paths are screenshot-relevant"),
+        "{out}"
+    );
+}
+
+#[test]
+fn scope_no_match_exits_zero() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_guard_config(dir.path(), &["src/**/*.rs"]);
+    let changed = write_changed(dir.path(), &["README.md", "docs/guide.md"]);
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "scope",
+        "--config",
+        &cfg,
+        "--changed-from",
+        &changed,
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("0 of 2 changed paths are screenshot-relevant"),
+        "{out}"
+    );
+}
+
+#[test]
+fn scope_json_is_single_line_contract() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_guard_config(dir.path(), &["shots/**"]);
+    let changed = write_changed(dir.path(), &["shots/baseline/x.sha256", "Cargo.toml"]);
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "scope",
+        "--config",
+        &cfg,
+        "--changed-from",
+        &changed,
+        "--format",
+        "json",
+    ]);
+    // Without --exit-code the run always succeeds; the verdict is in the JSON.
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(out.contains(r#""matched":true"#), "{out}");
+    assert!(out.contains(r#""considered":2"#), "{out}");
+    assert!(
+        out.contains(r#""paths":["shots/baseline/x.sha256"]"#),
+        "{out}"
+    );
+}
+
+#[test]
+fn scope_empty_input_never_matches() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_guard_config(dir.path(), &["src/**"]);
+    // An empty file with only blank lines: no candidates, so no match.
+    let changed = write_changed(dir.path(), &["", "  ", ""]);
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "scope",
+        "--config",
+        &cfg,
+        "--changed-from",
+        &changed,
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("0 of 0 changed paths are screenshot-relevant"),
+        "{out}"
+    );
+}
+
+#[test]
+fn scope_without_guard_paths_matches_nothing() {
+    // Default config has no globs, so even a screenshot path is not relevant.
+    let dir = TempDir::new().unwrap();
+    let changed = write_changed(dir.path(), &["shots/current/desktop/home.png"]);
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "scope",
+        "--changed-from",
+        &changed,
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("0 of 1 changed paths are screenshot-relevant"),
+        "{out}"
+    );
+}
+
+#[test]
+fn scope_quiet_suppresses_human_output_but_still_gates() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_guard_config(dir.path(), &["src/**"]);
+    let changed = write_changed(dir.path(), &["src/lib.rs"]);
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "-q",
+        "scope",
+        "--config",
+        &cfg,
+        "--changed-from",
+        &changed,
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.is_empty(), "quiet scope stdout should be empty: {out}");
+}
+
+#[test]
+fn scope_missing_changed_file_is_io_error() {
+    let (result, _) = invoke(&[
+        "screencomp",
+        "scope",
+        "--changed-from",
+        "/no/such/changed.txt",
+    ]);
+    assert!(matches!(result, Err(AppError::Io { .. })));
+}
+
 #[test]
 fn valid_config_overrides_title_and_marker() {
     let dir = TempDir::new().unwrap();
