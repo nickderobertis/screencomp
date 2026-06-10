@@ -485,7 +485,10 @@ Actions workflow for a consuming repository: capture screenshots → build a gal
 → publish to GitHub Pages → post a sticky screenshot-diff comment on pull
 requests. [`examples/pre-push`](examples/pre-push) is the optional local guard
 that complements it (see [Local pre-push guard](#local-pre-push-guard-optional)).
-See [`examples/README.md`](examples/README.md) for prerequisites.
+See [`examples/README.md`](examples/README.md) for prerequisites — in
+particular the branch-protection note: the workflow's manifest auto-push needs
+a token that can re-trigger CI once any status check is required, or PRs stall
+waiting on checks that never run.
 
 ## Development
 
