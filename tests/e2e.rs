@@ -493,6 +493,63 @@ fn explicit_missing_config_fails() {
 }
 
 #[test]
+fn scope_reads_stdin_and_gates_the_pre_push_guard() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[guard]\npaths = [\"src/**/*.rs\", \"playwright/**\"]\n",
+    )
+    .unwrap();
+
+    // A relevant change on stdin: exit 3 (the hook then runs its capture step).
+    bin()
+        .args(["scope", "--exit-code", "--config"])
+        .arg(&cfg)
+        .write_stdin("README.md\nsrc/ui/button.rs\n")
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("match src/ui/button.rs"))
+        .stdout(predicate::str::contains(
+            "1 of 2 changed paths are screenshot-relevant",
+        ))
+        .stderr(predicate::str::is_empty());
+
+    // No relevant change: exit 0 (the hook passes silently, no capture).
+    bin()
+        .args(["scope", "--exit-code", "--config"])
+        .arg(&cfg)
+        .write_stdin("README.md\ndocs/guide.md\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "0 of 2 changed paths are screenshot-relevant",
+        ))
+        .stderr(predicate::str::is_empty());
+
+    // JSON contract on stdin, single line.
+    bin()
+        .args(["scope", "--format", "json", "--config"])
+        .arg(&cfg)
+        .write_stdin("src/lib.rs\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""matched":true"#))
+        .stdout(predicate::str::contains(r#""paths":["src/lib.rs"]"#));
+
+    // Empty stdin: no candidates, no match, clean exit.
+    bin()
+        .args(["scope", "--exit-code", "--config"])
+        .arg(&cfg)
+        .write_stdin("")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "0 of 0 changed paths are screenshot-relevant",
+        ));
+}
+
+#[test]
 fn config_from_flag_and_env_override_defaults() {
     let dir = TempDir::new().unwrap();
     let cfg = dir.path().join("screencomp.toml");

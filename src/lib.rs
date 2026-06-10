@@ -9,7 +9,9 @@
 //! - **manifest** write a tree's digests as a committable, image-free baseline,
 //! - **verify** assert two captures of one build are byte-identical (the
 //!   reproducibility gate),
-//! - **doctor** preflight a capture's platform key and `<project>/<name>.png` layout.
+//! - **doctor** preflight a capture's platform key and `<project>/<name>.png` layout,
+//! - **scope** match a changed-path list against the `[guard].paths` globs, so
+//!   the optional local pre-push guard re-captures only when it should.
 //!
 //! Core logic in `domain` is free of I/O; filesystem access is confined to `io`;
 //! argument parsing lives in [`cli`]. The single entrypoint is [`run`], which
@@ -35,8 +37,9 @@ use cli::Command;
 /// Execute a parsed CLI invocation, writing user-facing output to `out`.
 ///
 /// On success returns the intended process exit code: `0` normally, or `3` when
-/// `classify --exit-code`/`doctor --exit-code` flag a problem or `verify` finds
-/// the two captures diverge. Errors and their causes are the
+/// `classify --exit-code`/`doctor --exit-code` flag a problem, `verify` finds
+/// the two captures diverge, or `scope --exit-code` matches a relevant path.
+/// Errors and their causes are the
 /// caller's responsibility to render (the binary prints them to stderr); this
 /// function never writes to stderr.
 ///
@@ -53,5 +56,6 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         Command::Manifest(args) => commands::manifest::run(&args, &ctx, out),
         Command::Verify(args) => commands::verify::run(&args, &ctx, out),
         Command::Doctor(args) => commands::doctor::run(&args, &ctx, out),
+        Command::Scope(args) => commands::scope::run(&args, &ctx, out),
     }
 }

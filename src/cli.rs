@@ -43,6 +43,12 @@ pub enum Command {
     /// Preflight a capture: print the resolved platform key and sanity-check the
     /// `<root>/<project>/<name>.png` layout before classifying.
     Doctor(DoctorArgs),
+
+    /// Match a changed-path list against the `[guard].paths` globs to decide
+    /// whether a screenshot-relevant file changed. Pure string matching: it
+    /// reads no git, network, or working-tree state, so the local pre-push guard
+    /// can use it to gate its (slow) re-capture.
+    Scope(ScopeArgs),
 }
 
 /// Output encoding for commands that support both human and machine formats.
@@ -236,6 +242,32 @@ pub struct DoctorArgs {
 
     /// Exit with code 3 when the layout has problems (empty capture or `.png`
     /// files stranded at the root), for use as a CI preflight gate.
+    #[arg(long)]
+    pub exit_code: bool,
+}
+
+/// Arguments for [`Command::Scope`].
+#[derive(Debug, clap::Args)]
+pub struct ScopeArgs {
+    /// Read the newline-delimited candidate paths from this file, or `-` for
+    /// standard input (the default). The pre-push hook pipes `git diff
+    /// --name-only` in on stdin; blank lines are ignored.
+    #[arg(long, value_name = "FILE", default_value = "-")]
+    pub changed_from: Utf8PathBuf,
+
+    /// Optional `screencomp.toml` providing `[guard].paths`; falls back to
+    /// `$SCREENCOMP_CONFIG`, then built-in defaults (no globs, so nothing
+    /// matches).
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<Utf8PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+
+    /// Exit with code 3 when at least one candidate path matches `[guard].paths`
+    /// (mirroring `classify --exit-code`); exit 0 when none match. Lets the hook
+    /// branch on the exit status without parsing output.
     #[arg(long)]
     pub exit_code: bool,
 }

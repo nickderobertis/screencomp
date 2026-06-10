@@ -67,6 +67,38 @@ Prerequisites:
   `shots/current/linux-x86_64/<project>/<name>.png` inside the pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
 
+## Local pre-push guard (optional)
+
+[`pre-push`](pre-push) is a copy-paste Git hook that **complements** the CI
+workflow (it does not replace it). CI silently regenerates the digest manifest on
+every PR, so without a local guard you can change UI, pass your whole local gate,
+and push without ever learning the visual baseline moved. The hook closes that
+gap on your machine.
+
+It fires **only when a pushed change matches the `[guard].paths` globs** in
+`screencomp.toml`, so most pushes pay nothing. When a relevant file changes it is
+deliberately slow — it captures in the same pinned Docker container as CI so the
+bytes match — which is exactly why it runs only when needed. On drift it
+regenerates the manifest, builds a review gallery, and **blocks the push** with
+instructions; it never auto-commits, so you review the gallery and commit the
+regenerated manifest yourself before pushing again. `git push --no-verify`
+bypasses it, and it is a no-op under CI.
+
+The relevance check is delegated to `screencomp scope`, which matches the changed
+paths against `[guard].paths` (robust string matching, no git/network/working-tree
+access) rather than fragile shell globbing. Configure it alongside `[comment]`:
+
+```toml
+[guard]
+paths = ["src/**/*.{ts,tsx,css}", "playwright/**", "public/**"]
+platform = "linux-x86_64"
+manifest = "shots/baseline/linux-x86_64.sha256"
+gallery  = "shots/review"
+```
+
+See [`hooks/README.md`](hooks/README.md) for behavior details and ready-to-paste
+wiring for lefthook, husky, simple-git-hooks, and a raw `.git/hooks/pre-push`.
+
 ## Installing the CLI
 
 The workflow installs the CLI with the bundled composite action:

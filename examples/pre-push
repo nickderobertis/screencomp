@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# screencomp local pre-push guard (optional) — COPY-PASTE TEMPLATE.
+#
+# This complements, and does NOT replace, the CI workflow in
+# examples/visual-docs.yml. CI silently regenerates the digest manifest on every
+# PR, so a developer can change UI, pass their whole local gate, and push without
+# ever learning the visual baseline moved. This hook closes that gap locally: it
+# re-captures ONLY when screenshot-relevant files changed (see [guard].paths in
+# screencomp.toml) and makes any baseline change loud and reviewable before you
+# push. Capture and git stay in your hands — the capture step below is yours to
+# adapt, exactly like visual-docs.yml's "Capture screenshots" step.
+#
+# What it does on a push:
+#   1. Compute the push range from git's stdin (new branches fall back to the
+#      merge-base with origin/HEAD).
+#   2. Ask `screencomp scope` whether any changed path matches [guard].paths.
+#      Nothing relevant? Exit 0 immediately — no capture, no Docker. (Cheap: this
+#      is the common case on most pushes.)
+#   3. Relevant change? Require Docker (a missing capture environment is a loud
+#      failure, never a silent pass), capture, then classify against the
+#      committed manifest.
+#        * In parity  -> print one line and allow the push.
+#        * On drift    -> overwrite the manifest, build a review gallery, print
+#                         exactly what changed and what to do, then BLOCK the
+#                         push. It never auto-commits: you review the gallery,
+#                         commit the regenerated manifest, and push again.
+#
+# Bypass (when you know what you are doing):  git push --no-verify
+# Under CI this is a no-op — the visual-docs workflow is the source of truth.
+#
+# Wiring (lefthook / husky / simple-git-hooks / raw .git/hooks): see
+# examples/hooks/README.md.
+
+set -euo pipefail
+
+# ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
+PLATFORM="linux-x86_64"                       # [guard].platform
+MANIFEST="shots/baseline/${PLATFORM}.sha256"  # [guard].manifest (committed)
+GALLERY="shots/review"                        # [guard].gallery  (review output)
+CURRENT="shots/current"                       # capture root, mirrors visual-docs.yml
+CONFIG="${SCREENCOMP_CONFIG:-screencomp.toml}" # supplies [guard].paths to `scope`
+# ------------------------------------------------------------------------------
+
+# No-op under CI: the workflow already captures, classifies, and comments there.
+if [ -n "${CI:-}" ]; then
+  exit 0
+fi
+
+# If the CLI is not installed, do not block the push — just say so.
+if ! command -v screencomp >/dev/null 2>&1; then
+  echo "pre-push: screencomp not on PATH; skipping the visual guard" >&2
+  exit 0
+fi
+
+# --- 1. Compute the push range(s) --------------------------------------------
+# git feeds "<local-ref> <local-sha> <remote-ref> <remote-sha>" lines on stdin.
+# A 40/64-zero sha means a new remote ref (no upstream yet) or a deletion.
+ranges=()
+if [ -n "${SCREENCOMP_GUARD_RANGE:-}" ]; then
+  # Test/override hook: skip stdin and diff this range directly (e.g. A..B).
+  ranges+=("$SCREENCOMP_GUARD_RANGE")
+else
+  zero='^0+$'
+  while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    if [[ "$local_sha" =~ $zero ]]; then
+      continue # branch deletion: nothing to capture
+    elif [[ "$remote_sha" =~ $zero ]]; then
+      # New branch: diff against where it forked from the default branch.
+      base="$(git merge-base origin/HEAD "$local_sha" 2>/dev/null || true)"
+      if [ -n "$base" ]; then
+        ranges+=("${base}..${local_sha}")
+      else
+        ranges+=("$local_sha") # no merge-base (e.g. orphan): diff the whole commit
+      fi
+    else
+      ranges+=("${remote_sha}..${local_sha}")
+    fi
+  done
+fi
+
+if [ "${#ranges[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+changed="$(for r in "${ranges[@]}"; do git diff --name-only "$r"; done | sort -u)"
+
+# --- 2. Cheap path: is anything screenshot-relevant? -------------------------
+# `scope` exits 3 when a path matches [guard].paths, 0 when none do. Piping the
+# change set in keeps the relevance check robust instead of fragile shell globs.
+if printf '%s\n' "$changed" | screencomp scope --config "$CONFIG" --changed-from - --exit-code --quiet; then
+  exit 0 # exit 0 from scope == nothing relevant; pass silently, no capture
+fi
+
+# --- 3. Relevant change: capture requires Docker -----------------------------
+# A green push without a working capture environment is FALSE assurance, so a
+# missing Docker is a loud, blocking failure — not a silent pass.
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  {
+    echo
+    echo "############################################################################"
+    echo "# screencomp pre-push guard: screenshot-relevant files changed, but Docker  #"
+    echo "# is not available to re-capture and verify them.                           #"
+    echo "#                                                                           #"
+    echo "# Refusing to push: a pass here would be false assurance. Start Docker and  #"
+    echo "# try again, or bypass intentionally with:  git push --no-verify            #"
+    echo "############################################################################"
+    echo
+  } >&2
+  exit 1
+fi
+
+# ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
+# Capture into $CURRENT/$PLATFORM/<project>/<name>.png using the SAME pinned
+# container and flags as examples/visual-docs.yml, so local bytes match CI.
+docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
+  -v "$PWD:/work" -w /work \
+  mcr.microsoft.com/playwright:v1.60.0-noble \
+  bash -lc "npm ci && SHOTS_OUT=$CURRENT/$PLATFORM npx playwright test"
+# ------------------------------------------------------------------------------
+
+# --- 4. Classify the capture against the committed baseline manifest ---------
+set +e
+report="$(screencomp classify --baseline-manifest "$MANIFEST" --current "$CURRENT" \
+  --platform "$PLATFORM" --exit-code)"
+status=$?
+set -e
+
+if [ "$status" -eq 0 ]; then
+  # --- In parity: one confirmation line, allow the push. ---------------------
+  echo "pre-push: screenshots unchanged against $MANIFEST — ok to push"
+  exit 0
+elif [ "$status" -ne 3 ]; then
+  echo "pre-push: screencomp classify failed (exit $status)" >&2
+  exit "$status"
+fi
+
+# --- On drift (classify exit 3): regenerate, build a gallery, BLOCK. ---------
+differ="$(printf '%s\n' "$report" | grep -cE '^(added|changed|removed) ' || true)"
+
+# Overwrite the committed manifest so its diff is the review record. We do NOT
+# auto-commit it — blocking and instructing is the point.
+screencomp manifest --input "$CURRENT" --platform "$PLATFORM" --output "$MANIFEST"
+
+# Build a local before/after gallery to eyeball the change.
+screencomp gallery --input "$CURRENT" --platform "$PLATFORM" \
+  --output "$GALLERY" --title "Pre-push screenshot review" >/dev/null
+
+{
+  echo
+  echo "############################################################################"
+  echo "#  SCREENSHOTS CHANGED — push blocked for review                            #"
+  echo "############################################################################"
+  echo "#"
+  echo "#  ${differ} screenshot(s) differ from the committed baseline ($MANIFEST)."
+  echo "#"
+  echo "#  Review the rendered gallery to confirm the change is intended:"
+  echo "#      ${GALLERY}/index.html"
+  echo "#      (open it, e.g.:  open ${GALLERY}/index.html   # or xdg-open on Linux)"
+  echo "#"
+  echo "#  If the change is intended:"
+  echo "#      1. git add ${MANIFEST}"
+  echo "#      2. git commit -m 'chore: update screenshot baseline manifest'"
+  echo "#      3. git push   (this hook will re-run and pass once committed)"
+  echo "#"
+  echo "#  If it is NOT intended: investigate the diff before pushing."
+  echo "#  To bypass intentionally: git push --no-verify"
+  echo "#"
+  echo "############################################################################"
+  echo
+} >&2
+
+exit 1

@@ -16,6 +16,8 @@ pub(crate) const CONFIG_ENV: &str = "SCREENCOMP_CONFIG";
 pub(crate) struct Config {
     /// Settings for the rendered pull-request comment.
     pub(crate) comment: CommentConfig,
+    /// Settings for the optional local pre-push guard.
+    pub(crate) guard: GuardConfig,
 }
 
 /// Comment-rendering settings.
@@ -32,6 +34,27 @@ pub(crate) struct CommentConfig {
     pub(crate) embed_limit: usize,
 }
 
+/// Settings for the optional local pre-push guard (see `examples/pre-push`).
+///
+/// The guard re-captures and re-classifies only when screenshot-relevant files
+/// change. These fields describe what counts as relevant and where the
+/// committed baseline and review gallery live; every field is optional so a
+/// repository that does not use the guard need not configure it. Only
+/// [`paths`](Self::paths) is consumed by `screencomp scope`; the rest are read
+/// by the hook template to keep its capture/classify wiring in one place.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct GuardConfig {
+    /// Globs whose match against a pushed change set triggers a re-capture.
+    /// Empty (the default) means the guard never fires.
+    pub(crate) paths: Vec<String>,
+    /// Platform key to capture and classify under (e.g. `linux-x86_64`, `auto`).
+    pub(crate) platform: Option<String>,
+    /// Committed digest manifest used as the baseline.
+    pub(crate) manifest: Option<Utf8PathBuf>,
+    /// Output directory for the local review gallery built on drift.
+    pub(crate) gallery: Option<Utf8PathBuf>,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -41,6 +64,7 @@ impl Default for Config {
                 show_unchanged: false,
                 embed_limit: 10,
             },
+            guard: GuardConfig::default(),
         }
     }
 }
@@ -127,6 +151,8 @@ pub(crate) fn load(
 struct RawConfig {
     #[serde(default)]
     comment: RawCommentConfig,
+    #[serde(default)]
+    guard: RawGuardConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -136,6 +162,15 @@ struct RawCommentConfig {
     marker: Option<String>,
     show_unchanged: Option<bool>,
     embed_limit: Option<usize>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGuardConfig {
+    paths: Option<Vec<String>>,
+    platform: Option<String>,
+    manifest: Option<Utf8PathBuf>,
+    gallery: Option<Utf8PathBuf>,
 }
 
 impl RawConfig {
@@ -161,6 +196,8 @@ impl RawConfig {
             });
         }
 
+        let guard = self.guard.validate()?;
+
         Ok(Config {
             comment: CommentConfig {
                 title,
@@ -170,6 +207,32 @@ impl RawConfig {
                     .unwrap_or(defaults.comment.show_unchanged),
                 embed_limit: comment.embed_limit.unwrap_or(defaults.comment.embed_limit),
             },
+            guard,
+        })
+    }
+}
+
+impl RawGuardConfig {
+    fn validate(self) -> Result<GuardConfig, ConfigError> {
+        let paths = self.paths.unwrap_or_default();
+        if let Some(bad) = paths.iter().find(|p| p.trim().is_empty()) {
+            return Err(ConfigError::Invalid {
+                reason: format!("guard.paths contains an empty glob: {bad:?}"),
+            });
+        }
+        if let Some(platform) = &self.platform
+            && platform.trim().is_empty()
+        {
+            return Err(ConfigError::Invalid {
+                reason: "guard.platform must not be empty".to_owned(),
+            });
+        }
+
+        Ok(GuardConfig {
+            paths,
+            platform: self.platform,
+            manifest: self.manifest,
+            gallery: self.gallery,
         })
     }
 }
@@ -231,5 +294,51 @@ mod tests {
     fn embed_limit_defaults_to_ten() {
         let cfg = load(None, None).expect("defaults load");
         assert_eq!(cfg.comment.embed_limit, 10);
+    }
+
+    #[test]
+    fn guard_defaults_to_empty() {
+        let cfg = load(None, None).expect("defaults load");
+        assert!(cfg.guard.paths.is_empty());
+        assert_eq!(cfg.guard.platform, None);
+        assert_eq!(cfg.guard.manifest, None);
+        assert_eq!(cfg.guard.gallery, None);
+    }
+
+    #[test]
+    fn accepts_valid_guard() {
+        let raw: RawConfig = toml::from_str(
+            "[guard]\npaths = [\"src/**/*.rs\", \"playwright/**\"]\nplatform = \"linux-x86_64\"\nmanifest = \"shots/baseline/linux-x86_64.sha256\"\ngallery = \"shots/review\"\n",
+        )
+        .unwrap();
+        let cfg = raw.validate().expect("valid");
+        assert_eq!(cfg.guard.paths, ["src/**/*.rs", "playwright/**"]);
+        assert_eq!(cfg.guard.platform.as_deref(), Some("linux-x86_64"));
+        assert_eq!(
+            cfg.guard.manifest.as_deref().map(Utf8Path::as_str),
+            Some("shots/baseline/linux-x86_64.sha256")
+        );
+        assert_eq!(
+            cfg.guard.gallery.as_deref().map(Utf8Path::as_str),
+            Some("shots/review")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_guard_glob() {
+        let raw: RawConfig = toml::from_str("[guard]\npaths = [\"src/**\", \"  \"]\n").unwrap();
+        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_blank_guard_platform() {
+        let raw: RawConfig = toml::from_str("[guard]\nplatform = \"\"\n").unwrap();
+        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_unknown_guard_field() {
+        let err = toml::from_str::<RawConfig>("[guard]\nnope = true\n").unwrap_err();
+        assert!(err.to_string().contains("nope") || err.to_string().contains("unknown"));
     }
 }
