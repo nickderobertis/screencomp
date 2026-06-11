@@ -60,6 +60,35 @@ the QEMU fallback, `--use-angle=swiftshader` can crash Chromium
 one browser per context, keeping `--disable-skia-runtime-opts`) is byte-identical
 to native CI — see `screencomp-demo` for a worked configuration.
 
+### Branch protection / required status checks
+
+The workflow pushes the regenerated manifest back to the PR branch. GitHub never
+starts workflow runs for pushes made with the default `GITHUB_TOKEN`, so after
+that bot commit the new head has **no** runs at all — and every required status
+check (this workflow or any other, e.g. your test suite) sits at "Expected —
+Waiting for status to be reported" until the branch moves again. Without
+required checks this is harmless (and saves a re-capture); with branch
+protection it blocks the PR.
+
+Two ways to run under branch protection:
+
+- **Set the `VISUAL_DOCS_PUSH_TOKEN` secret** to a credential that can trigger
+  workflows — a fine-grained PAT or a GitHub App installation token with
+  `contents: read/write` on the repository. The checkout step falls back to
+  `GITHUB_TOKEN` when the secret is absent, so the same file serves both setups.
+  The bot push then re-runs CI on the updated head. This cannot loop: the
+  re-triggered run regenerates an identical manifest, finds no diff, and does
+  not push, so it converges after one extra run.
+- **Delete the "Update the baseline manifest" step** and commit the manifest
+  yourself when visuals change — the [local pre-push guard](#local-pre-push-guard-optional)
+  regenerates it on your machine and blocks the push until you do. This keeps
+  the workflow on the default token at the cost of requiring the hook (or a
+  manual `screencomp manifest` run) whenever the baseline moves.
+
+A PR already stuck this way recovers as soon as its branch is pushed with real
+user credentials — for example, fold the bot's manifest commit into your own
+commit and push.
+
 Prerequisites:
 
 - A committed baseline manifest at `shots/baseline/linux-x86_64.sha256` (text).

@@ -12,6 +12,8 @@
 #                  listing comment, and push a regenerated manifest to the PR
 #                  branch. Its text diff (old hash -> new hash per shot) is the
 #                  review record; merging the PR accepts the new baseline.
+#                  If the repo enforces required status checks, that push needs
+#                  a token that can trigger workflows — see the checkout step.
 #   * On main:     capture and publish the gallery to Pages — the browseable,
 #                  blessed "current state". Pages is NOT a baseline store (the
 #                  manifest is), so it is only deployed here, never from a PR.
@@ -80,6 +82,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }} # PR branch (empty on push -> the main ref)
+          # Token for the manifest push below. The default GITHUB_TOKEN is fine
+          # ONLY while this repo has no required status checks: GitHub never
+          # starts workflow runs for GITHUB_TOKEN pushes, so after the bot
+          # commit the new head has NO runs and every required check — this
+          # workflow or any other — sticks at "Expected — Waiting for status to
+          # be reported", blocking the PR. If you enforce required checks, set
+          # VISUAL_DOCS_PUSH_TOKEN to a credential that can trigger workflows: a
+          # fine-grained PAT or GitHub App token with contents read/write. See
+          # examples/README.md ("Branch protection") for the trade-offs.
+          token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN || github.token }}
 
       - uses: nickderobertis/screencomp@v0.1.9 # pin to a released tag
         with:
@@ -135,8 +147,14 @@ jobs:
       # Regenerate the manifest from this run and push it to the PR branch. Its
       # text diff (old hash -> new hash per shot) is the review surface; merging
       # accepts the new baseline. Tiny, so the repo never accrues binary history.
-      # Pushing with the default GITHUB_TOKEN does NOT re-trigger this workflow,
-      # so there is no capture loop.
+      #
+      # Loop-safe with ANY token: a re-triggered run regenerates an identical
+      # manifest, sees no diff below, and does not push — at most one extra run.
+      # With the default GITHUB_TOKEN the push triggers no CI at all, which is
+      # fine without required checks but strands the PR with them (see the
+      # checkout step). A PR already stranded this way recovers as soon as the
+      # branch moves under real user credentials — e.g. amend the bot's manifest
+      # commit into your own and push.
       - name: Update the baseline manifest on the PR branch
         if: ${{ github.event_name == 'pull_request' }}
         run: |
