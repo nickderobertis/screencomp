@@ -4,11 +4,10 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use super::{Ctx, baseline_snapshot, platform, write_err};
+use super::{Ctx, baseline_snapshot, discover_scoped, write_err};
 use crate::cli::{ClassifyArgs, OutputFormat};
 use crate::domain::classify::{Classification, Counts, Entry, Status, classify};
 use crate::errors::AppError;
-use crate::io::fs;
 
 pub(crate) fn run(args: &ClassifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     let plat = args.platform.as_deref();
@@ -17,7 +16,7 @@ pub(crate) fn run(args: &ClassifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result
         args.baseline_manifest.as_deref(),
         plat,
     )?;
-    let current = fs::discover(&platform::scope(&args.current, plat))?;
+    let current = discover_scoped(&args.current, plat)?;
     let classification = classify(&baseline, &current);
 
     match args.format {

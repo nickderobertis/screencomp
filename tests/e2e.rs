@@ -157,6 +157,44 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
 }
 
 #[test]
+fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
+    // The headline image-free feature: with a digest-manifest baseline there are
+    // no baseline PNGs to host, so a `--gallery-url` (a plain gallery of the
+    // current shots) must embed only "After" images at `<URL>/<project>/<name>.png`
+    // — never a `baseline/` URL that would 404 in the rendered comment.
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--gallery-url")
+        .arg("https://example.test/site/")
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    assert!(
+        md.contains("src=\"https://example.test/site/desktop/about.png\""),
+        "{md}"
+    );
+    assert!(!md.contains("/baseline/"), "{md}");
+    assert!(!md.contains("/current/"), "{md}");
+}
+
+#[test]
 fn gallery_creates_index_html() {
     let dir = TempDir::new().unwrap();
 
@@ -270,7 +308,7 @@ fn gallery_diff_scopes_both_trees_by_platform() {
 }
 
 #[test]
-fn missing_platform_subtree_names_the_path_on_stderr() {
+fn missing_platform_subtree_hints_the_layout_on_stderr() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
@@ -286,8 +324,10 @@ fn missing_platform_subtree_names_the_path_on_stderr() {
         .failure()
         .code(1)
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("not a directory"))
-        .stderr(predicate::str::contains("windows-x86_64"));
+        // A layout hint naming the missing key and the platform layer, not a bare
+        // "not a directory".
+        .stderr(predicate::str::contains("windows-x86_64"))
+        .stderr(predicate::str::contains("--platform"));
 }
 
 #[test]
@@ -582,4 +622,139 @@ fn config_from_flag_and_env_override_defaults() {
         .assert()
         .success()
         .stdout(predicate::str::contains("<!-- ui-shots -->"));
+}
+
+#[test]
+fn init_scaffolds_a_working_setup() {
+    let dir = TempDir::new().unwrap();
+
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .arg("--platform")
+        .arg("linux-x86_64")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created"))
+        .stdout(predicate::str::contains("Next steps"))
+        .stderr(predicate::str::is_empty());
+
+    // The scaffolded config parses: feeding it back to `comment` succeeds.
+    let cfg = dir.path().join("screencomp.toml");
+    bin()
+        .args(["comment", "--config"])
+        .arg(&cfg)
+        .arg("--baseline")
+        .arg(baseline())
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<!-- screencomp -->"));
+
+    assert!(
+        dir.path()
+            .join(".github/workflows/visual-docs.yml")
+            .exists()
+    );
+    assert!(dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn comment_manifest_mode_before_after_from_separate_urls() {
+    // Manifest mode with explicit --baseline-url/--current-url restores a real
+    // before/after diff: "Before" from a canonical gallery, "After" from the PR
+    // one. This is the decoupling that makes manifest-mode comments usable.
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--baseline-url")
+        .arg("https://example.test/main")
+        .arg("--current-url")
+        .arg("https://example.test/pr/4")
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    assert!(md.contains("| Before | After |"), "{md}");
+    assert!(
+        md.contains("src=\"https://example.test/main/desktop/about.png\""),
+        "{md}"
+    );
+    assert!(
+        md.contains("src=\"https://example.test/pr/4/desktop/about.png\""),
+        "{md}"
+    );
+}
+
+#[test]
+fn comment_urls_resolve_to_real_gallery_files() {
+    // The regression guard for "gallery and comment disagree on URL layout":
+    // build a plain gallery, then assert every inline image the comment emits
+    // (via --current-url) resolves to a file the gallery actually wrote.
+    let dir = TempDir::new().unwrap();
+    let gallery_dir = dir.path().join("site");
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--output")
+        .arg(&gallery_dir)
+        .assert()
+        .success();
+
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let base = "https://example.test/site";
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--current-url")
+        .arg(base)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    let prefix = format!("{base}/");
+    let mut checked = 0;
+    for piece in md.split("src=\"").skip(1) {
+        let url = &piece[..piece.find('"').expect("closing quote")];
+        if let Some(rel) = url.strip_prefix(&prefix) {
+            assert!(
+                gallery_dir.join(rel).exists(),
+                "comment references {rel}, but the gallery never wrote it (layouts disagree)"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected at least one inline image to verify: {md}"
+    );
 }
