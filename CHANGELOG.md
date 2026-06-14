@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/nickderobertis/screencomp/compare/v0.1.12...v0.1.13) - 2026-06-14
+
+### Fixed
+
+- *(ci)* split the reusable visual-docs workflow into a container `capture` job
+  and a host `report` job so `gh`/`git`/screencomp run where they exist, fixing
+  `gh pr comment` failing inside the capture container; add a self-test workflow
+  that exercises the pipeline in real CI ([#38](https://github.com/nickderobertis/screencomp/pull/38))
+
 ## [0.1.12](https://github.com/nickderobertis/screencomp/compare/v0.1.11...v0.1.12) - 2026-06-14
 
 ### Fixed
