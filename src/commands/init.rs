@@ -164,10 +164,8 @@ on:
     branches: [main]
 
 permissions:
-  contents: write       # commit the regenerated manifest to the PR branch
+  contents: write       # commit the regenerated manifest + push the gh-pages gallery
   pull-requests: write  # post the diff comment
-  pages: write          # deploy the gallery
-  id-token: write       # Pages deployment auth
 
 jobs:
   visual-docs:
