@@ -293,9 +293,12 @@ _ensure-lefthook:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v lefthook >/dev/null 2>&1 && exit 0
+    # Windows asset names carry a `.exe`; the others do not.
+    ext=""
     case "$(uname -s)" in
         Linux) os=Linux ;;
         Darwin) os=MacOS ;;
+        MINGW*|MSYS*|CYGWIN*) os=Windows; ext=".exe" ;;
         *) echo "Install lefthook manually for $(uname -s): https://lefthook.dev" >&2; exit 1 ;;
     esac
     case "$(uname -m)" in
@@ -305,10 +308,10 @@ _ensure-lefthook:
     esac
     dest="${CARGO_HOME:-$HOME/.cargo}/bin"
     mkdir -p "$dest"
-    url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}"
+    url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}${ext}"
     echo "installing lefthook {{lefthook_version}}"
-    curl -fsSL "$url" -o "$dest/lefthook"
-    chmod +x "$dest/lefthook"
+    curl -fsSL "$url" -o "$dest/lefthook${ext}"
+    chmod +x "$dest/lefthook${ext}"
 
 # Install the pinned actionlint binary onto PATH if it is missing.
 _ensure-actionlint:
