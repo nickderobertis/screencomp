@@ -49,6 +49,10 @@ pub enum Command {
     /// reads no git, network, or working-tree state, so the local pre-push guard
     /// can use it to gate its (slow) re-capture.
     Scope(ScopeArgs),
+
+    /// Scaffold a visual-docs setup: `screencomp.toml`, a CI workflow, and the
+    /// `.gitignore` lines that commit digests while ignoring generated PNGs.
+    Init(InitArgs),
 }
 
 /// Output encoding for commands that support both human and machine formats.
@@ -253,6 +257,13 @@ pub struct DoctorArgs {
     #[arg(long, value_name = "KEY")]
     pub platform: Option<String>,
 
+    /// Optional committed digest manifest to sanity-check against the capture.
+    /// `doctor` warns when every shot differs (the classic symptom of a baseline
+    /// captured on a different OS/arch than this host) or when the manifest's
+    /// `<platform>.sha256` filename names a platform other than the capture's.
+    #[arg(long, value_name = "FILE")]
+    pub baseline_manifest: Option<Utf8PathBuf>,
+
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     pub format: OutputFormat,
@@ -261,6 +272,31 @@ pub struct DoctorArgs {
     /// files stranded at the root), for use as a CI preflight gate.
     #[arg(long)]
     pub exit_code: bool,
+}
+
+/// Arguments for [`Command::Init`].
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Directory to scaffold into (the repository root); defaults to the current
+    /// directory. Created if it does not exist.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub dir: Utf8PathBuf,
+
+    /// Platform key the scaffolded config and workflow capture under (e.g.
+    /// `linux-x86_64`). Determines the committed manifest path and shot output
+    /// directory.
+    #[arg(long, value_name = "KEY", default_value = "linux-x86_64")]
+    pub platform: String,
+
+    /// Overwrite files that already exist instead of leaving them untouched.
+    /// Without this, `init` writes only the files that are missing and reports
+    /// the rest as skipped, so it is safe to re-run.
+    #[arg(long)]
+    pub force: bool,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
 }
 
 /// Arguments for [`Command::Scope`].

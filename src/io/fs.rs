@@ -178,6 +178,74 @@ pub(crate) fn write_string(path: &Utf8Path, contents: &str) -> Result<(), AppErr
     fs::write(path, contents).map_err(|e| AppError::io(format!("writing {path}"), e))
 }
 
+/// What a scaffold write did to a file (`screencomp init`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scaffold {
+    /// The file did not exist and was written.
+    Created,
+    /// The file existed and was left untouched (no `--force`).
+    Skipped,
+    /// The file existed and was overwritten (`--force`).
+    Overwritten,
+}
+
+/// Write a scaffold file without clobbering existing work unless `force` is set.
+///
+/// Returns whether the file was created, skipped, or overwritten so `init` can
+/// report each path and stay safe to re-run.
+pub(crate) fn write_scaffold(
+    path: &Utf8Path,
+    contents: &str,
+    force: bool,
+) -> Result<Scaffold, AppError> {
+    let existed = path.exists();
+    if existed && !force {
+        return Ok(Scaffold::Skipped);
+    }
+    write_string(path, contents)?;
+    Ok(if existed {
+        Scaffold::Overwritten
+    } else {
+        Scaffold::Created
+    })
+}
+
+/// Append `block` to the `.gitignore` at `path`, idempotently.
+///
+/// `block` is added only when `marker` (a sentinel line within it) is not already
+/// present, so re-running `init` never duplicates the entries. A newline is
+/// inserted first when the existing file does not end in one. Returns the
+/// scaffold outcome: `Created` for a new file, `Overwritten` for an append, or
+/// `Skipped` when the marker is already there.
+pub(crate) fn append_block(
+    path: &Utf8Path,
+    block: &str,
+    marker: &str,
+) -> Result<Scaffold, AppError> {
+    let existing = match fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(AppError::io(format!("reading {path}"), e)),
+    };
+
+    match existing {
+        Some(text) if text.contains(marker) => Ok(Scaffold::Skipped),
+        Some(text) => {
+            let mut next = text;
+            if !next.is_empty() && !next.ends_with('\n') {
+                next.push('\n');
+            }
+            next.push_str(block);
+            write_string(path, &next)?;
+            Ok(Scaffold::Overwritten)
+        }
+        None => {
+            write_string(path, block)?;
+            Ok(Scaffold::Created)
+        }
+    }
+}
+
 /// Copy every `<project>/<name>.png` under `input` into the matching path under
 /// `output`, so a rendered gallery is self-contained and deploy-ready. Returns
 /// the number of images copied. Mirrors [`discover`]'s traversal and naming.

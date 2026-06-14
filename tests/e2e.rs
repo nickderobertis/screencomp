@@ -623,3 +623,39 @@ fn config_from_flag_and_env_override_defaults() {
         .success()
         .stdout(predicate::str::contains("<!-- ui-shots -->"));
 }
+
+#[test]
+fn init_scaffolds_a_working_setup() {
+    let dir = TempDir::new().unwrap();
+
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .arg("--platform")
+        .arg("linux-x86_64")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created"))
+        .stdout(predicate::str::contains("Next steps"))
+        .stderr(predicate::str::is_empty());
+
+    // The scaffolded config parses: feeding it back to `comment` succeeds.
+    let cfg = dir.path().join("screencomp.toml");
+    bin()
+        .args(["comment", "--config"])
+        .arg(&cfg)
+        .arg("--baseline")
+        .arg(baseline())
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<!-- screencomp -->"));
+
+    assert!(
+        dir.path()
+            .join(".github/workflows/visual-docs.yml")
+            .exists()
+    );
+    assert!(dir.path().join(".gitignore").exists());
+}

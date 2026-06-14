@@ -1065,3 +1065,118 @@ fn valid_config_overrides_title_and_marker() {
     assert!(out.starts_with("<!-- ui-shots -->"), "{out}");
     assert!(out.contains("## UI shots"), "{out}");
 }
+
+#[test]
+fn init_scaffolds_config_workflow_and_gitignore() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "init",
+        "--dir",
+        &root,
+        "--platform",
+        "macos-arm64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("created") && out.contains("screencomp.toml"),
+        "{out}"
+    );
+
+    // The config is valid and platform-substituted.
+    let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+    assert!(toml.contains("shots/baseline/macos-arm64.sha256"), "{toml}");
+
+    // The workflow calls the reusable workflow and carries the platform through.
+    let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+    assert!(
+        wf.contains("nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v"),
+        "{wf}"
+    );
+    assert!(wf.contains("platform: macos-arm64"), "{wf}");
+
+    // The .gitignore commits baselines but ignores generated images: no ignore
+    // entry (a non-comment line) targets shots/baseline/.
+    let ignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(ignore.contains("shots/current/"), "{ignore}");
+    assert!(
+        !ignore
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("shots/baseline/")),
+        "{ignore}"
+    );
+}
+
+#[test]
+fn init_is_idempotent_and_respects_force() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let gitignore = dir.path().join(".gitignore");
+    std::fs::write(&gitignore, "node_modules/\n").unwrap();
+
+    invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
+    // A second run leaves existing files untouched and does not duplicate the
+    // .gitignore block.
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("skipped") && out.contains("screencomp.toml"),
+        "{out}"
+    );
+
+    let ignore = std::fs::read_to_string(&gitignore).unwrap();
+    assert!(ignore.starts_with("node_modules/"), "{ignore}");
+    assert_eq!(
+        ignore.matches("shots/current/").count(),
+        1,
+        "block must not duplicate: {ignore}"
+    );
+
+    // --force overwrites the config and workflow; the .gitignore block stays
+    // skipped because its marker is already present (re-appending would dupe it).
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root, "--force"]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("updated") && l.contains("screencomp.toml")),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_warns_on_a_cross_platform_baseline_manifest() {
+    // A baseline manifest named for a different platform, against a capture where
+    // every shot's bytes differ, is the "everything changed" trap doctor exists
+    // to surface as a platform mismatch rather than a real diff.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_flat(&cur, "desktop", "home", b"new-bytes");
+
+    // Manifest holds the same shot name but a different digest, named for a
+    // platform that cannot be the host.
+    let other = if host_key().contains("x86_64") {
+        "linux-arm64"
+    } else {
+        "linux-x86_64"
+    };
+    let manifest = dir.path().join(format!("{other}.sha256"));
+    std::fs::write(&manifest, format!("{}  desktop/home.png\n", "a".repeat(64))).unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    // Both the filename heuristic and the all-differ heuristic fire.
+    assert!(
+        out.contains(&format!("baseline manifest '{other}'")),
+        "{out}"
+    );
+    assert!(out.contains("every shared shot differs"), "{out}");
+}
