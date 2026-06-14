@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/nickderobertis/screencomp/compare/v0.1.11...v0.1.12) - 2026-06-14
+
+### Fixed
+
+- *(ci)* run the reusable visual-docs workflow's steps under bash so the verify
+  step's `set -euo pipefail` works in container jobs whose `/bin/sh` is dash ([#36](https://github.com/nickderobertis/screencomp/pull/36))
+
 ## [0.1.11](https://github.com/nickderobertis/screencomp/compare/v0.1.10...v0.1.11) - 2026-06-14
 
 ### Added
