@@ -106,6 +106,46 @@ the default, or `source` to build with `cargo install` from the checkout or git)
 and `args` (run `screencomp <args>` right after install). Downloads are verified
 against their published SHA-256.
 
+#### Batteries-included reusable workflow
+
+The PR-review half — gate, gallery, GitHub Pages deploy, sticky comment — is the
+same for everyone, so screencomp ships it as a reusable workflow. You own only
+the capture; it owns everything downstream:
+
+```yaml
+jobs:
+  visual-docs:
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
+    with:
+      platform: linux-x86_64
+      capture-command: |        # MUST write $SHOTS_OUT/<project>/<name>.png
+        npm ci
+        npx playwright install --with-deps chromium
+        npx playwright test
+    secrets:
+      push-token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN }}   # optional; see below
+```
+
+It runs the reproducibility gate, classifies against the committed digest
+manifest, builds the gallery, deploys a canonical gallery from the default branch
+and a per-PR `/pr-<n>/` preview on pull requests, waits for Pages to go live, and
+posts a sticky before/after comment that sources "After" from the PR preview and
+"Before" from the canonical main gallery — i.e. gate against the committed
+baseline, report against main. `screencomp init` scaffolds a caller for it
+([`init`](#scaffold-a-setup-init)).
+
+> [!IMPORTANT]
+> **Inline thumbnails need a *public* Pages site.** GitHub renders comment images
+> through its anonymous Camo proxy, which can only fetch publicly reachable URLs.
+> A private Pages gallery still works as a *link*, but its inline before/after
+> previews will not load — keep the gallery public if you want them. If the repo
+> enforces required status checks, also set `VISUAL_DOCS_PUSH_TOKEN` to a
+> credential that can trigger workflows (a fine-grained PAT or App token), because
+> the default `GITHUB_TOKEN`'s manifest push starts no runs and strands the PR.
+
+For a fully hand-rolled equivalent you can copy and adapt, see
+[`examples/visual-docs.yml`](examples/visual-docs.yml).
+
 ### Container image
 
 Multi-arch images are published to GitHub Container Registry. The entrypoint is
@@ -123,6 +163,24 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
 screencomp --help
 screencomp classify --baseline path/to/baseline --current path/to/current
 ```
+
+### Scaffold a setup (`init`)
+
+New to screencomp? Scaffold the day-one boilerplate, then fill in your capture:
+
+```sh
+screencomp init --platform linux-x86_64
+```
+
+This writes a `screencomp.toml`, a `.github/workflows/visual-docs.yml` that calls
+the [reusable workflow](#batteries-included-reusable-workflow), and the
+`.gitignore` lines that commit the tiny digest baselines while ignoring generated
+PNGs and galleries. It never overwrites existing files (pass `--force` to), and
+appends the `.gitignore` block idempotently, so it is safe to re-run. After
+wiring your capture, seed the baseline once and commit it (the `init` output
+prints the exact command), then promote `verify` to a hard parity check on every
+PR — capture the same build twice and require byte-identical output (see
+[Reproducibility gate](#reproducibility-gate-verify)).
 
 Given trees laid out as `<root>/<project>/<name>.png`:
 
@@ -333,6 +391,13 @@ instead of under a `<project>/` directory), and an empty capture — often a
 `--platform` key that does not match the subtree on disk. Pass `--exit-code` to
 turn either problem into a non-zero (`3`) status for a CI preflight gate, or
 `--format json` for a machine-readable report.
+
+Pass `--baseline-manifest <file>` to also sanity-check a committed manifest
+against the capture. `doctor` then warns on the *other* confusing failure — when
+**every** shot looks changed — which is almost always a baseline captured on a
+different OS/arch than the host, not a real diff. It catches it two ways: a
+`<platform>.sha256` filename naming a platform other than the capture's, and
+shared shots with zero unchanged. Both are advisory and never fail the gate.
 
 ## Capturing an interactive app
 

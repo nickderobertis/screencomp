@@ -357,6 +357,30 @@ fn missing_platform_subtree_explains_the_layout() {
 }
 
 #[test]
+fn platform_against_loose_pngs_hints_to_add_a_project_dir() {
+    // Capture written flat (loose .png at the root) while --platform expects a
+    // subtree: the hint must call out the loose files and the fix.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    std::fs::create_dir_all(&cur).unwrap();
+    std::fs::write(cur.join("home.png"), b"x").unwrap();
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        cur.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected an InvalidLayout hint, got {result:?}");
+    };
+    assert!(reason.contains("loose .png"), "{reason}");
+    assert!(reason.contains("omit --platform"), "{reason}");
+}
+
+#[test]
 fn comment_marker_and_title_flags_override_config() {
     // Distinct markers are how a multi-platform run keeps one sticky comment per
     // platform without a config file per platform.
@@ -1179,4 +1203,66 @@ fn doctor_warns_on_a_cross_platform_baseline_manifest() {
         "{out}"
     );
     assert!(out.contains("every shared shot differs"), "{out}");
+
+    // The JSON contract carries the same warnings.
+    let (code, json) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(json.lines().count(), 1, "JSON must be one line: {json}");
+    assert!(json.contains(r#""warnings":["#), "{json}");
+    assert!(json.contains("every shared shot differs"), "{json}");
+}
+
+#[test]
+fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
+    // A manifest not named after a platform (baseline.sha256) must not trip the
+    // filename heuristic, and a matching, identical shot leaves doctor clean.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_flat(&cur, "desktop", "home", b"pixels");
+
+    // Generate a correct digest from the capture itself, named non-platform-like.
+    let manifest = dir.path().join("baseline.sha256");
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        cur.to_str().unwrap(),
+        "--output",
+        manifest.to_str().unwrap(),
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(!out.contains("baseline manifest"), "{out}");
+    assert!(!out.contains("every shared shot differs"), "{out}");
+    assert!(out.contains("ok: layout matches"), "{out}");
+}
+
+#[test]
+fn init_json_reports_each_file_action() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root, "--format", "json"]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(out.contains(r#""action":"created""#), "{out}");
+    assert!(out.contains("screencomp.toml"), "{out}");
 }
