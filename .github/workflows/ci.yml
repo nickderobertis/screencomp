@@ -34,7 +34,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Provision pinned toolchain
         run: rustup show
+      # Cache the dependency/build artifacts, but NOT ~/.cargo/bin: caching the
+      # tool binaries lets binstall's "already installed" metadata survive while
+      # the actual cargo-nextest binary is evicted, so `cargo nextest` then 404s.
+      # Letting bootstrap reinstall the prebuilt tools every run keeps it
+      # authoritative and deterministic.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-bin: false
       - name: Install just
         uses: extractions/setup-just@v2
       # `just bootstrap` installs cargo-nextest/llvm-cov/deny/machete. With only
