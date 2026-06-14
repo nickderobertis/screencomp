@@ -5,8 +5,8 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set windows-shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
-# Minimum line coverage enforced by `test-cov` and `full-check`.
-cov_min := "85"
+# Minimum line coverage enforced by `test-cov` and the `check` gate.
+cov_min := "95"
 # Pinned lefthook binary fetched by bootstrap / hooks-install when absent.
 lefthook_version := "2.1.9"
 # Pinned linters for workflow + Dockerfile checks (fetched on demand).
@@ -43,7 +43,11 @@ sync:
 run *args:
     cargo run --locked -- {{args}}
 
-# Format the workspace.
+# Format the workspace (skill-standard verb; `fmt` is the short alias below).
+format:
+    cargo fmt --all
+
+# Short alias for `format`.
 fmt:
     cargo fmt --all
 
@@ -52,10 +56,14 @@ fmt-check:
     cargo fmt --all --check
 
 # Type-check all targets and features.
-check:
+typecheck:
     cargo check --locked --all-targets --all-features
 
-# Lint with every enabled lint treated as an error.
+# Lint with every enabled lint treated as an error (skill-standard verb).
+lint:
+    cargo clippy --locked --all-targets --all-features -- -D warnings
+
+# Short alias for `lint`.
 clippy:
     cargo clippy --locked --all-targets --all-features -- -D warnings
 
@@ -205,8 +213,9 @@ lint-actions: _ensure-actionlint
 lint-docker: _ensure-hadolint
     hadolint Dockerfile
 
-# Full quality gate: stops at the first failing phase; quiet on success.
-full-check:
+# Full quality gate (skill-standard `check` verb). Runs `just test` and
+# `just test-e2e` plus {{cov_min}}% coverage; CI runs this after `bootstrap`.
+check:
     #!/usr/bin/env bash
     set -euo pipefail
     phase() {
@@ -219,11 +228,11 @@ full-check:
             printf 'FAILED\n\n'; cat "$log"; rm -f "$log"; exit 1
         fi
     }
-    phase fmt        cargo fmt --all --check
-    phase check      cargo check --locked --all-targets --all-features
-    phase clippy     cargo clippy --locked --all-targets --all-features -- -D warnings
-    phase test       cargo nextest run --locked -E 'not binary(e2e)'
-    phase e2e        cargo nextest run --locked -E 'binary(e2e)'
+    phase fmt        just fmt-check
+    phase typecheck  just typecheck
+    phase lint       just lint
+    phase test       just test
+    phase e2e        just test-e2e
     phase coverage   cargo llvm-cov nextest --locked --all-features --fail-under-lines {{cov_min}} --summary-only
     phase deps       cargo deny check bans licenses sources -A license-not-encountered
     phase unused     cargo machete
@@ -231,7 +240,10 @@ full-check:
     phase doc        env RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
     phase release    cargo build --release --locked
     phase dist-plan  cargo publish --locked --dry-run --allow-dirty
-    printf '\n✓ full-check passed\n'
+    printf '\n✓ check passed\n'
+
+# Backward-compatible alias for the `check` gate (kept for docs/bench refs).
+full-check: check
 
 # Remove build and release artifacts.
 clean:
@@ -242,7 +254,7 @@ clean:
 # May change Cargo.lock (and, via re-gate, surface tool-version drift).
 upgrade:
     cargo update
-    just full-check
+    just check
 
 # Noisy environment report (kept out of the quality gate).
 doctor:
@@ -252,7 +264,12 @@ doctor:
 
 # --- internal helpers -------------------------------------------------------
 
-# Install missing cargo-based dev tools (prefers cargo-binstall when present).
+# Install missing cargo-based dev tools as prebuilt binaries via cargo-binstall.
+# Building these from source compiles them against the pinned toolchain, and the
+# latest releases (e.g. cargo-nextest) carry an MSRV newer than what this repo
+# pins — so a `cargo install` fallback fails on a clean machine. cargo-binstall
+# fetches prebuilt release binaries, which is both faster and toolchain-agnostic;
+# bootstrap installs it first if it is absent so the path works from scratch.
 _ensure-tools:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -261,22 +278,32 @@ _ensure-tools:
     for t in cargo-nextest cargo-llvm-cov cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        if command -v cargo-binstall >/dev/null 2>&1; then
-            cargo binstall --no-confirm "${missing[@]}"
-        else
-            cargo install --locked "${missing[@]}"
-        fi
+    if [ "${#missing[@]}" -eq 0 ]; then
+        exit 0
     fi
+    if ! command -v cargo-binstall >/dev/null 2>&1; then
+        echo "installing cargo-binstall (prebuilt-binary installer)"
+        curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    fi
+    # Only ever install the published prebuilt binaries. The `compile` fallback
+    # would build the tool from source against the pinned toolchain, and the
+    # latest releases carry a newer MSRV — so a failed/rate-limited download must
+    # error loudly, not silently compile. Authenticated GitHub API calls
+    # (GITHUB_TOKEN, set in CI) avoid the rate-limiting that triggers fallback.
+    cargo binstall --no-confirm --disable-strategies compile "${missing[@]}"
 
 # Install the pinned lefthook binary onto PATH if it is missing.
 _ensure-lefthook:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v lefthook >/dev/null 2>&1 && exit 0
+    # Windows asset names carry a `.exe`; the others do not.
+    ext=""
     case "$(uname -s)" in
         Linux) os=Linux ;;
         Darwin) os=MacOS ;;
+        MINGW*|MSYS*|CYGWIN*) os=Windows; ext=".exe" ;;
         *) echo "Install lefthook manually for $(uname -s): https://lefthook.dev" >&2; exit 1 ;;
     esac
     case "$(uname -m)" in
@@ -286,10 +313,10 @@ _ensure-lefthook:
     esac
     dest="${CARGO_HOME:-$HOME/.cargo}/bin"
     mkdir -p "$dest"
-    url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}"
+    url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}${ext}"
     echo "installing lefthook {{lefthook_version}}"
-    curl -fsSL "$url" -o "$dest/lefthook"
-    chmod +x "$dest/lefthook"
+    curl -fsSL "$url" -o "$dest/lefthook${ext}"
+    chmod +x "$dest/lefthook${ext}"
 
 # Install the pinned actionlint binary onto PATH if it is missing.
 _ensure-actionlint:

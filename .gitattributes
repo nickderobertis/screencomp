@@ -1,0 +1,8 @@
+# Normalize line endings to LF in the repository so the Windows CI runner (added
+# to the `check` matrix) checks out the same bytes as Linux/macOS — otherwise
+# Git's autocrlf can flip text files to CRLF on Windows and break rustfmt's
+# formatting check and byte-exact test fixtures. Pairs with .editorconfig.
+* text=auto eol=lf
+
+# Screenshot fixtures are compared by exact byte digest; never touch their bytes.
+*.png binary

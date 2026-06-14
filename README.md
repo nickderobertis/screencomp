@@ -620,7 +620,7 @@ in `rust-toolchain.toml`.
 ```sh
 rustup show          # confirm the pinned toolchain
 just bootstrap       # install dev tools (nextest, llvm-cov, deny, machete, lefthook) + git hooks
-just full-check      # the complete quality gate
+just check           # the complete quality gate (alias: just full-check)
 ```
 
 Common recipes (`just --list` for all):
@@ -628,8 +628,9 @@ Common recipes (`just --list` for all):
 | Recipe            | Purpose                                          |
 | ----------------- | ------------------------------------------------ |
 | `just run -- …`   | Run the CLI                                       |
-| `just fmt` / `fmt-check` | Format / verify formatting                 |
-| `just check` / `clippy`  | Type-check / lint (`-D warnings`)          |
+| `just format` / `fmt-check` | Format / verify formatting              |
+| `just typecheck` / `lint` | Type-check / lint (`-D warnings`)         |
+| `just check`      | The full quality gate (alias: `full-check`)      |
 | `just test` / `test-e2e` | Unit+integration / end-to-end suites       |
 | `just test-cov`   | Coverage with an enforced threshold              |
 | `just security` / `deps-check` | Advisories / license+bans+unused-deps |

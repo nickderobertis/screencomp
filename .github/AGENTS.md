@@ -1,7 +1,8 @@
 # AGENTS — .github
 
-- CI is a hard pass/fail gate mirroring `just full-check`; never let a job pass
-  with warnings.
+- CI is a hard pass/fail gate: every run does a clean checkout, `just bootstrap`,
+  then `just check` (the `check` matrix job) across Linux/macOS/Windows. Never let
+  a job pass with warnings.
 - Pin actions to a stable major or a commit SHA. Default `permissions` to
   `contents: read`; grant a write scope only on the job that needs it (the binary
   upload job gets `contents: write`, the image push job `packages: write`).
