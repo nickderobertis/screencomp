@@ -11,8 +11,9 @@ pub(crate) mod platform;
 pub(crate) mod scope;
 pub(crate) mod verify;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 
+use crate::config::{self, Config, ConfigError};
 use crate::domain::layout::LayoutScan;
 use crate::domain::snapshot::Snapshot;
 use crate::errors::AppError;
@@ -105,6 +106,26 @@ pub(crate) fn baseline_snapshot(
         (None, Some(manifest)) => fs::read_manifest(manifest),
         _ => unreachable!("clap argument group guarantees exactly one baseline source"),
     }
+}
+
+/// Load configuration at a command boundary, reading the ambient bits here.
+///
+/// Reads `$SCREENCOMP_CONFIG` and, when neither `explicit` nor that env var is
+/// set, auto-discovers `screencomp.toml` by walking up from the working
+/// directory. Centralized so `comment` and `scope` resolve config identically.
+pub(crate) fn load_config(explicit: Option<&Utf8Path>) -> Result<Config, ConfigError> {
+    let env = std::env::var(config::CONFIG_ENV).ok();
+    // Auto-discovery only kicks in with no explicit source, so an explicit choice
+    // is never silently overridden by a stray file up the tree.
+    let discovered = if explicit.is_none() && env.as_deref().unwrap_or("").is_empty() {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| Utf8PathBuf::from_path_buf(cwd).ok())
+            .and_then(|cwd| fs::find_up(&cwd, config::CONFIG_FILE))
+    } else {
+        None
+    };
+    config::load(explicit, env, discovered)
 }
 
 /// Map a writer failure into an [`AppError`].

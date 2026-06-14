@@ -155,7 +155,9 @@ pub struct CommentArgs {
     #[arg(long, value_name = "KEY")]
     pub platform: Option<String>,
 
-    /// Optional `screencomp.toml`; falls back to `$SCREENCOMP_CONFIG`, then built-in defaults.
+    /// Optional `screencomp.toml`. Falls back to `$SCREENCOMP_CONFIG`, then a
+    /// `screencomp.toml` auto-discovered by walking up from the working
+    /// directory, then built-in defaults.
     #[arg(long, value_name = "FILE")]
     pub config: Option<Utf8PathBuf>,
 
@@ -308,9 +310,10 @@ pub struct ScopeArgs {
     #[arg(long, value_name = "FILE", default_value = "-")]
     pub changed_from: Utf8PathBuf,
 
-    /// Optional `screencomp.toml` providing `[guard].paths`; falls back to
-    /// `$SCREENCOMP_CONFIG`, then built-in defaults (no globs, so nothing
-    /// matches).
+    /// Optional `screencomp.toml` providing `[guard].paths`. Falls back to
+    /// `$SCREENCOMP_CONFIG`, then a `screencomp.toml` auto-discovered by walking
+    /// up from the working directory, then built-in defaults (no globs, so
+    /// nothing matches).
     #[arg(long, value_name = "FILE")]
     pub config: Option<Utf8PathBuf>,
 

@@ -537,8 +537,13 @@ Human output goes to stdout; errors go to stderr; the two never mix.
 ## Configuration
 
 The `comment` and `scope` commands read optional configuration. Resolution
-order: `--config <file>` → `$SCREENCOMP_CONFIG` → built-in defaults (so no file
-is required). A path given explicitly that is missing or invalid is a hard error.
+order: `--config <file>` → `$SCREENCOMP_CONFIG` → a `screencomp.toml`
+auto-discovered by walking up from the working directory → built-in defaults (so
+no file is required). A path given *explicitly* (`--config`/env) that is missing
+is a hard error, surfacing a typo; an auto-discovered file is used when present
+and ignored when absent. Any file that is found but invalid is always an error.
+Auto-discovery means a repo-root `screencomp.toml` is picked up without flags —
+so the pre-push guard's `scope` fires even if the hook forgets `--config`.
 
 ```toml
 # screencomp.toml

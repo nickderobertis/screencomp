@@ -2,18 +2,16 @@
 
 use std::io::Write;
 
-use super::{Ctx, baseline_snapshot, discover_scoped, write_err};
+use super::{Ctx, baseline_snapshot, discover_scoped, load_config, write_err};
 use crate::cli::CommentArgs;
-use crate::config::{self, CONFIG_ENV};
 use crate::domain::classify::classify;
 use crate::domain::comment::{ImageBases, render_markdown};
 use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    // Environment is read once, here at the boundary.
-    let env = std::env::var(CONFIG_ENV).ok();
-    let cfg = config::load(args.config.as_deref(), env)?;
+    // Config (including any auto-discovered screencomp.toml) is resolved at the boundary.
+    let cfg = load_config(args.config.as_deref())?;
 
     let plat = args.platform.as_deref();
     let manifest_mode = args.baseline_manifest.is_some();
