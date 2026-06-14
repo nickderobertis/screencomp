@@ -87,6 +87,14 @@ jobs:
     permissions:
       contents: write # commit the regenerated manifest to the PR branch; push gh-pages
       pull-requests: write # post the diff comment
+    # Pin the shell so every `run:` step is bash, not the container's /bin/sh.
+    # The scripts below use `set -euo pipefail` and `bash -c`, which dash (the
+    # default `sh` in many container images) does not support — without this the
+    # verify step fails with "pipefail: unknown option". The capture step happens
+    # to survive under sh only because it has no bashisms.
+    defaults:
+      run:
+        shell: bash
     env:
       PLATFORM: ${{ inputs.platform }}
       SHOTS_OUT: shots/current/${{ inputs.platform }}
