@@ -14,6 +14,41 @@ image-free digest baseline), `verify` (the reproducibility gate — two captures
 one build must be byte-identical), and `doctor` (preflight the platform key and
 layout). Screenshots are compared by byte digest; nothing decodes images.
 
+## Stack and composition
+
+This repo is composed from the create-repo skill's reference pieces:
+
+- **Product shape — CLI** (`shapes/cli.md`). A compiled, installable command-line
+  tool: the e2e suite drives the real binary as a subprocess and asserts on exit
+  codes, stdout/stderr separation, and file effects; the one asset-naming
+  contract is shared across every install surface (GitHub Releases,
+  `scripts/install.sh`, the composite `action.yml`, and the GHCR image).
+- **Language — Rust** (`languages/rust.md`). Pinned stable toolchain in
+  `rust-toolchain.toml`; `rustfmt` and `clippy` run as strict deny-warnings
+  gates; `cargo nextest` runs unit, integration, and the binary e2e suite;
+  `cargo llvm-cov` enforces coverage in the gate; `cargo deny` + `cargo machete`
+  are the supply-chain gate. MSRV is declared (`rust-version`) and checked via
+  `just msrv`.
+- **Cross-cutting — CI** (`ci.md`, always pulled in). Every CI run starts from a
+  clean checkout, runs `just bootstrap`, then the `just check` gate across the
+  Linux/macOS/Windows matrix that matches the shipped binary; separate jobs prove
+  the end-user install path (the composite action in both source and download
+  modes) and lint the workflows/Dockerfile. The informational benchmark tier
+  lives in its own workflow and never gates.
+
+Composed across two axes — the CLI shape plus the Rust language, with `ci.md` on
+top. **Excluded:** `monorepo.md` — this is a single deliverable (one binary
+crate, no second app or package or language), so the cross-cutting monorepo
+guidance does not apply. No shape↔language intersection reference exists for
+Rust CLIs yet, so the two single-axis references are used directly (snapshot- and
+asset-naming concerns that such a reference would cover are handled in the e2e
+suite and the release workflow).
+
+**Coverage decision.** The gate enforces 95% line coverage
+(`cargo llvm-cov --fail-under-lines 95` in `just check`), the skill's default
+bar, measured on every PR rather than tracked as a badge. Lower it only with a
+documented reason here.
+
 ## Layout
 
 - `src/main.rs` — thin: parse args, call `run`, map the result to an exit code,
@@ -85,10 +120,13 @@ layout). Screenshots are compared by byte digest; nothing decodes images.
 
 ## Quality gate
 
-`just full-check` runs fmt → check → clippy → tests → e2e → coverage → deps →
-unused → security → doc → release build → publish dry-run, stopping at the first
-failure. CI mirrors this across Linux/macOS/Windows and stays a hard pass/fail
-gate.
+`just check` (aliased as `just full-check`) runs fmt → typecheck → lint → tests
+→ e2e → coverage → deps → unused → security → doc → release build → publish
+dry-run, stopping at the first failure. It is the single gate CI runs after
+`just bootstrap`, mirrored across Linux/macOS/Windows as a hard pass/fail gate.
+`check` is the skill-standard verb; `typecheck` is the bare `cargo check`
+type-check phase, and `lint`/`format` are the skill-standard names for the strict
+clippy and `rustfmt` recipes (`clippy`/`fmt` remain as short aliases).
 
 The performance suite (`benches/`, the `bench*`/`profile` recipes, the perf CI
 job) is informational and stays out of `full-check`: its timings are

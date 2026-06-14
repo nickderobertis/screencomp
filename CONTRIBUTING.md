@@ -42,20 +42,23 @@ Prefer to wire things by hand? The equivalent manual steps:
    - Installs `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`
      (via `cargo-binstall` when present, else `cargo install --locked`) and the
      pinned `lefthook` binary, then installs the hooks.
-4. Verify everything: `just full-check`.
+4. Verify everything: `just check` (the same gate CI runs; `just full-check` is
+   a kept alias).
 
 ## The quality gate
 
-`just full-check` runs every check in order and stops at the first failure:
-formatting, `cargo check`, `clippy -D warnings`, unit/integration tests,
-end-to-end tests, coverage threshold, dependency/license/source policy,
-unused-dependency check, security advisories, docs (`-D` rustdoc warnings),
-release build, and the publish dry-run.
+`just check` runs every check in order and stops at the first failure:
+formatting, `cargo check` (the `typecheck` phase), `clippy -D warnings`,
+unit/integration tests, end-to-end tests, the coverage threshold, the
+dependency/license/source policy, the unused-dependency check, security
+advisories, docs (`-D` rustdoc warnings), the release build, and the publish
+dry-run. It is the single gate CI runs after `just bootstrap`; `just full-check`
+remains as an alias.
 
 Run individual phases while iterating:
 
 ```sh
-just fmt-check     just clippy        just test
+just fmt-check     just lint          just test
 just test-e2e      just test-cov      just deps-check
 just security      just doc           just dist-plan
 ```

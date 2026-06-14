@@ -18,8 +18,13 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Cross-platform compile, lint, and the full test suite (incl. e2e binary).
-  test:
+  # The gate. A clean checkout, `just bootstrap` (dev toolchain from scratch),
+  # then `just check` — fmt, typecheck, lint, unit + integration + e2e tests,
+  # 95% coverage, supply-chain (deny + machete), docs, release build, and the
+  # publish dry-run. This is the single required correctness gate; it runs on
+  # every platform the binary ships to. Branch protection requires every
+  # `check (<os>)` context.
+  check:
     strategy:
       fail-fast: false
       matrix:
@@ -30,60 +35,16 @@ jobs:
       - name: Provision pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
-      - run: cargo check --locked --all-targets --all-features
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --locked
-      - run: cargo build --release --locked
-
-  # Formatting and documentation gate (Linux only).
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup show
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - name: Build docs (deny warnings)
-        run: cargo doc --locked --no-deps --all-features
-        env:
-          RUSTDOCFLAGS: -D warnings
-
-  # Dependency, license, and security policy (Linux only).
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup show
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny,cargo-machete
-      - run: cargo deny check advisories
-      - run: cargo deny check bans licenses sources -A license-not-encountered
-      - run: cargo machete
-
-  # Coverage with an enforced threshold (Linux only), uploaded as an artifact.
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup show
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest,cargo-llvm-cov
-      - name: Coverage (fail under threshold)
-        run: cargo llvm-cov nextest --locked --all-features --fail-under-lines 85 --lcov --output-path lcov.info
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lcov
-          path: lcov.info
-          if-no-files-found: error
+      - name: Install just
+        uses: extractions/setup-just@v2
+      - name: Bootstrap
+        run: just bootstrap
+      - name: Check
+        run: just check
 
   # Lint workflows (and their embedded shell) and the Dockerfile. No warnings.
+  # Kept separate from `check`: these lint the CI/Docker definitions themselves,
+  # which the Rust gate does not cover.
   workflows:
     runs-on: ubuntu-latest
     steps:
@@ -98,8 +59,9 @@ jobs:
           chmod +x hadolint
           ./hadolint Dockerfile
 
-  # Exercise the composite action end to end: install from source, then use the
-  # binary it put on PATH in later steps.
+  # Prove the end-user install path, separate from the dev gate: exercise the
+  # composite action end to end — install from source, then use the binary it
+  # put on PATH in later steps.
   action:
     runs-on: ubuntu-latest
     env:
