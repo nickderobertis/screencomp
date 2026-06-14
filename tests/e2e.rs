@@ -590,6 +590,42 @@ fn scope_reads_stdin_and_gates_the_pre_push_guard() {
 }
 
 #[test]
+fn scope_auto_discovers_screencomp_toml_from_the_working_dir() {
+    // Without --config, a screencomp.toml in the working directory (or an
+    // ancestor) is found by walking up — so the pre-push guard fires even when
+    // the hook forgot to pass --config. The previous behavior (defaults, empty
+    // globs) silently never matched.
+    let repo = TempDir::new().unwrap();
+    std::fs::write(
+        repo.path().join("screencomp.toml"),
+        "[guard]\npaths = [\"src/**/*.rs\"]\n",
+    )
+    .unwrap();
+    let sub = repo.path().join("crates/app");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    // Run from a SUBDIRECTORY with no --config: discovery walks up to the repo
+    // root's screencomp.toml and the relevant path matches (exit 3).
+    bin()
+        .current_dir(&sub)
+        .args(["scope", "--exit-code"])
+        .write_stdin("src/ui/button.rs\n")
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("match src/ui/button.rs"));
+
+    // In a directory with no discoverable config, scope falls back to defaults
+    // (empty globs) and matches nothing — no error, just exit 0.
+    let empty = TempDir::new().unwrap();
+    bin()
+        .current_dir(empty.path())
+        .args(["scope", "--exit-code"])
+        .write_stdin("src/ui/button.rs\n")
+        .assert()
+        .success();
+}
+
+#[test]
 fn config_from_flag_and_env_override_defaults() {
     let dir = TempDir::new().unwrap();
     let cfg = dir.path().join("screencomp.toml");

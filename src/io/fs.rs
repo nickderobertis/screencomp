@@ -168,6 +168,19 @@ pub(crate) fn read_text(path: &Utf8Path) -> Result<String, AppError> {
     fs::read_to_string(path).map_err(|e| AppError::io(format!("reading {path}"), e))
 }
 
+/// Walk from `start` up through its ancestors, returning the first existing
+/// `<dir>/<filename>`.
+///
+/// Used to auto-discover `screencomp.toml` when no config path is given
+/// explicitly, mirroring how `cargo`/`rustfmt` locate their config from any
+/// subdirectory. The nearest file wins (`start` is checked before its parents).
+pub(crate) fn find_up(start: &Utf8Path, filename: &str) -> Option<Utf8PathBuf> {
+    start
+        .ancestors()
+        .map(|dir| dir.join(filename))
+        .find(|candidate| candidate.is_file())
+}
+
 /// Write `contents` to `path`, creating parent directories as needed.
 pub(crate) fn write_string(path: &Utf8Path, contents: &str) -> Result<(), AppError> {
     if let Some(parent) = path.parent()
@@ -469,5 +482,27 @@ mod tests {
     fn read_manifest_missing_file_is_io_error() {
         let err = read_manifest(Utf8Path::new("/no/such/baseline.sha256")).unwrap_err();
         assert!(matches!(err, AppError::Io { .. }));
+    }
+
+    #[test]
+    fn find_up_returns_the_nearest_ancestor_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let nested = root.join("a/b/c");
+        fs::create_dir_all(&nested).unwrap();
+        // A config at the root and a closer one two levels up; the nearer wins.
+        fs::write(root.join("screencomp.toml"), b"root").unwrap();
+        fs::write(root.join("a/screencomp.toml"), b"closer").unwrap();
+
+        let found = find_up(&nested, "screencomp.toml").expect("walks up to a match");
+        assert_eq!(found, root.join("a/screencomp.toml"));
+    }
+
+    #[test]
+    fn find_up_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = Utf8Path::from_path(tmp.path()).unwrap().join("x/y");
+        fs::create_dir_all(&nested).unwrap();
+        assert_eq!(find_up(&nested, "screencomp.toml"), None);
     }
 }

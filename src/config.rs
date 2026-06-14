@@ -1,15 +1,22 @@
-//! Optional `screencomp.toml` configuration for the `comment` command.
+//! Optional `screencomp.toml` configuration for the `comment` and `scope`
+//! commands.
 //!
-//! Every field has a default, so the tool runs without any config file. A file
-//! is loaded only when requested explicitly (`--config`) or via the
-//! [`CONFIG_ENV`] environment variable; in either case a missing or invalid file
-//! is a hard error rather than a silent fallback.
+//! Every field has a default, so the tool runs without any config file.
+//! Resolution precedence: an explicit `--config`, then the [`CONFIG_ENV`]
+//! environment variable, then an auto-discovered [`CONFIG_FILE`] found by walking
+//! up from the working directory, then built-in defaults. An *explicit* source
+//! (`--config`/env) that names a missing file is a hard error, so a typo surfaces
+//! instead of silently falling back; an absent *auto-discovered* file simply
+//! yields defaults. A file that is found but invalid is always an error.
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
 /// Environment variable consulted for a config path when `--config` is absent.
 pub(crate) const CONFIG_ENV: &str = "SCREENCOMP_CONFIG";
+
+/// Config filename auto-discovered by walking up from the working directory.
+pub(crate) const CONFIG_FILE: &str = "screencomp.toml";
 
 /// Validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,33 +119,47 @@ pub enum ConfigError {
 
 /// Resolve and load configuration.
 ///
-/// Precedence: `explicit` (`--config`) → `env` (`$SCREENCOMP_CONFIG`) → defaults.
-/// `env` is read at the call boundary and passed in so this function performs no
-/// ambient environment access.
+/// Precedence: `explicit` (`--config`) → `env` (`$SCREENCOMP_CONFIG`) →
+/// `discovered` (an auto-found [`CONFIG_FILE`], already located by the caller) →
+/// defaults. The first two are *explicit* and strict: a path that names a missing
+/// file is a [`ConfigError::NotFound`]. `discovered` is the implicit fallback —
+/// the caller passes `Some` only when the file exists, so absence is `None` and
+/// yields defaults. `env` is read at the call boundary and passed in so this
+/// function performs no ambient environment access.
 pub(crate) fn load(
     explicit: Option<&Utf8Path>,
     env: Option<String>,
+    discovered: Option<Utf8PathBuf>,
 ) -> Result<Config, ConfigError> {
-    let path = match explicit {
-        Some(p) => Some(p.to_owned()),
-        None => env.filter(|v| !v.is_empty()).map(Utf8PathBuf::from),
-    };
+    if let Some(path) = explicit {
+        return load_file(path);
+    }
+    if let Some(path) = env.filter(|v| !v.is_empty()) {
+        return load_file(Utf8Path::new(&path));
+    }
+    match discovered {
+        Some(path) => load_file(&path),
+        None => Ok(Config::default()),
+    }
+}
 
-    let Some(path) = path else {
-        return Ok(Config::default());
-    };
-
+/// Read, parse, and validate a config file. A missing file is
+/// [`ConfigError::NotFound`]; the caller decides whether that is reachable
+/// (explicit sources) or pre-checked away (discovery).
+fn load_file(path: &Utf8Path) -> Result<Config, ConfigError> {
     if !path.is_file() {
-        return Err(ConfigError::NotFound { path });
+        return Err(ConfigError::NotFound {
+            path: path.to_owned(),
+        });
     }
 
-    let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Read {
-        path: path.clone(),
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_owned(),
         source,
     })?;
 
     let raw: RawConfig = toml::from_str(&text).map_err(|source| ConfigError::Parse {
-        path: path.clone(),
+        path: path.to_owned(),
         source,
     })?;
 
@@ -243,20 +264,45 @@ mod tests {
 
     #[test]
     fn defaults_when_no_path() {
-        let cfg = load(None, None).expect("defaults load");
+        let cfg = load(None, None, None).expect("defaults load");
         assert_eq!(cfg, Config::default());
     }
 
     #[test]
     fn empty_env_is_ignored() {
-        let cfg = load(None, Some(String::new())).expect("empty env ignored");
+        let cfg = load(None, Some(String::new()), None).expect("empty env ignored");
         assert_eq!(cfg, Config::default());
     }
 
     #[test]
     fn explicit_missing_is_error() {
-        let err = load(Some(Utf8Path::new("/no/such/screencomp.toml")), None).unwrap_err();
+        let err = load(Some(Utf8Path::new("/no/such/screencomp.toml")), None, None).unwrap_err();
         assert!(matches!(err, ConfigError::NotFound { .. }));
+    }
+
+    #[test]
+    fn discovered_present_is_loaded_but_absent_falls_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(tmp.path())
+            .unwrap()
+            .join("screencomp.toml");
+        std::fs::write(&path, "[comment]\nmarker = \"discovered\"\n").unwrap();
+
+        // A discovered file is parsed like any other.
+        let cfg = load(None, None, Some(path)).expect("discovered loads");
+        assert_eq!(cfg.comment.marker, "discovered");
+
+        // An explicit source still wins over discovery.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let explicit = Utf8Path::from_path(tmp2.path())
+            .unwrap()
+            .join("explicit.toml");
+        std::fs::write(&explicit, "[comment]\nmarker = \"explicit\"\n").unwrap();
+        let discovered = Utf8Path::from_path(tmp.path())
+            .unwrap()
+            .join("screencomp.toml");
+        let cfg = load(Some(&explicit), None, Some(discovered)).expect("explicit wins");
+        assert_eq!(cfg.comment.marker, "explicit");
     }
 
     #[test]
@@ -292,13 +338,13 @@ mod tests {
 
     #[test]
     fn embed_limit_defaults_to_ten() {
-        let cfg = load(None, None).expect("defaults load");
+        let cfg = load(None, None, None).expect("defaults load");
         assert_eq!(cfg.comment.embed_limit, 10);
     }
 
     #[test]
     fn guard_defaults_to_empty() {
-        let cfg = load(None, None).expect("defaults load");
+        let cfg = load(None, None, None).expect("defaults load");
         assert!(cfg.guard.paths.is_empty());
         assert_eq!(cfg.guard.platform, None);
         assert_eq!(cfg.guard.manifest, None);

@@ -11,17 +11,15 @@ use std::io::{Read as _, Write};
 
 use serde::Serialize;
 
-use super::{Ctx, write_err};
+use super::{Ctx, load_config, write_err};
 use crate::cli::{OutputFormat, ScopeArgs};
-use crate::config::{self, CONFIG_ENV};
 use crate::domain::scope::any_match;
 use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &ScopeArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    // Environment is read once, here at the boundary.
-    let env = std::env::var(CONFIG_ENV).ok();
-    let cfg = config::load(args.config.as_deref(), env)?;
+    // Config (including any auto-discovered screencomp.toml) is resolved at the boundary.
+    let cfg = load_config(args.config.as_deref())?;
 
     let input = read_candidates(args)?;
     // Trim and drop blanks so a trailing newline or stray empty line is harmless.
