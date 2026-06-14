@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/nickderobertis/screencomp/compare/v0.1.10...v0.1.11) - 2026-06-14
+
+### Added
+
+- *(init)* resolve --platform auto to the host key
+
+### Documentation
+
+- *(examples)* fix manifest auto-push stalling PRs under required checks ([#33](https://github.com/nickderobertis/screencomp/pull/33))
+
+### Other
+
+- Visual-docs DX: reusable workflow, manifest-mode comments, init, doctor mismatch ([#34](https://github.com/nickderobertis/screencomp/pull/34))
+- Add optional local pre-push guard and `screencomp scope` ([#32](https://github.com/nickderobertis/screencomp/pull/32))
+
 ## [0.1.10](https://github.com/nickderobertis/screencomp/compare/v0.1.9...v0.1.10) - 2026-06-08
 
 ### Added
