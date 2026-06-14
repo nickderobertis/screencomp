@@ -1,0 +1,47 @@
+# End-to-end smoke test for the reusable visual-docs workflow.
+#
+# The reusable workflow can only really be validated where it runs — GitHub
+# Actions, with a real container job, artifact handoff, and host runner — not by
+# actionlint alone. This invokes it the way a consumer would, with a fake,
+# browser-free capture, so every step actually executes in its real environment.
+# It catches the bug class that bit us repeatedly: a step that needs a tool its
+# environment lacks (gh in the capture container, pipefail under dash, …).
+#
+# `publish: false` runs every step but performs no external side effects (no PR
+# comment, no manifest push, no Pages deploy), so the test is safe to run on this
+# repo. The capture runs in the real Playwright image to exercise that container.
+name: Test reusable workflow
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/visual-docs-reusable.yml
+      - .github/workflows/test-visual-docs.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/visual-docs-reusable.yml
+      - .github/workflows/test-visual-docs.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    permissions:
+      contents: write # the reusable workflow declares it; harmless with publish:false
+      pull-requests: write
+    uses: ./.github/workflows/visual-docs-reusable.yml
+    with:
+      platform: linux-x86_64
+      container: mcr.microsoft.com/playwright:v1.60.0-noble
+      # A deterministic, browser-free capture: fixed bytes so the reproducibility
+      # gate (capture twice, require byte-identical) passes.
+      capture-command: |
+        mkdir -p "$SHOTS_OUT/demo"
+        printf 'fake-home-shot' > "$SHOTS_OUT/demo/home.png"
+        printf 'fake-about-shot' > "$SHOTS_OUT/demo/about.png"
+      verify: true
+      pages: false
+      publish: false
