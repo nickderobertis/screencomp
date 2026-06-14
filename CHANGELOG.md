@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/nickderobertis/screencomp/compare/v0.1.15...v0.2.0) - 2026-06-14
+
+### Changed
+
+- [**breaking**] *(visual-docs)* default the reusable workflow and composite action to the strict gate: `fail-on-drift: true` (CI fails on unexpected drift) and `update-manifest: false` (the baseline is no longer auto-pushed). Restore CI auto-accept with `fail-on-drift: false` + `update-manifest: true` ([#44](https://github.com/nickderobertis/screencomp/pull/44))
+
+### Added
+
+- *(init)* scaffold the strict-gate turnkey — an executable `.githooks/pre-push` guard plus a `fail-on-drift: true` caller workflow ([#44](https://github.com/nickderobertis/screencomp/pull/44))
+- *(action)* `fail-on-drift` and `comment-base-ref` inputs on the reusable workflow and composite action; `comment-base-ref` defaults to the PR base branch so the before/after comment still renders under the strict gate ([#44](https://github.com/nickderobertis/screencomp/pull/44))
+
 ## [0.1.15](https://github.com/nickderobertis/screencomp/compare/v0.1.14...v0.1.15) - 2026-06-14
 
 ### Added
