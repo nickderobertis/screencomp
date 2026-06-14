@@ -1,15 +1,15 @@
-# End-to-end smoke test for the reusable visual-docs workflow.
+# End-to-end smoke test for the reusable visual-docs workflow and the
+# `visual-docs` composite action.
 #
-# The reusable workflow can only really be validated where it runs — GitHub
-# Actions, with a real container job, artifact handoff, and host runner — not by
-# actionlint alone. This invokes it the way a consumer would, with a fake,
+# These can only really be validated where they run — GitHub Actions, with a real
+# container job, artifact handoff, host runner, and composite-action steps — not
+# by actionlint alone. The jobs invoke them the way a consumer would, with a fake,
 # browser-free capture, so every step actually executes in its real environment.
 # It catches the bug class that bit us repeatedly: a step that needs a tool its
 # environment lacks (gh in the capture container, pipefail under dash, …).
 #
 # `publish: false` runs every step but performs no external side effects (no PR
-# comment, no manifest push, no Pages deploy), so the test is safe to run on this
-# repo. The capture runs in the real Playwright image to exercise that container.
+# comment, no manifest push, no Pages deploy), so the test is safe to run here.
 name: Test reusable workflow
 
 on:
@@ -17,17 +17,21 @@ on:
     paths:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
+      - visual-docs/action.yml
   push:
     branches: [main]
     paths:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
+      - visual-docs/action.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  # The all-in-one reusable workflow: capture in the Playwright container, report
+  # on the host.
   smoke:
     permissions:
       contents: write # the reusable workflow declares it; harmless with publish:false
@@ -45,3 +49,52 @@ jobs:
       verify: true
       pages: false
       publish: false
+
+  # The composite action composed into a consumer's own host job, in both the
+  # platform-subtree and project-level (platform: "") layouts.
+  action-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        platform: ["linux-x86_64", ""]
+    steps:
+      - uses: actions/checkout@v4
+      # Fake capture (twice, byte-identical) into the right layout for the mode.
+      - name: Fake capture
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PLATFORM" ]; then sub="$PLATFORM/demo"; else sub="demo"; fi
+          for root in shots/current shots/verify; do
+            mkdir -p "$root/$sub"
+            printf 'fake-home-shot' > "$root/$sub/home.png"
+          done
+      - uses: ./ # install the screencomp CLI on the host
+        with:
+          version: latest
+      # Seed a baseline from the capture so the classify + comment-render paths
+      # (has_baseline == true) are actually exercised, not just the seed path.
+      - name: Seed baseline
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PLATFORM" ]; then
+            plat="--platform $PLATFORM"; manifest="shots/baseline/$PLATFORM.sha256"
+          else
+            plat=""; manifest="shots/baseline.sha256"
+          fi
+          mkdir -p "$(dirname "$manifest")"
+          # shellcheck disable=SC2086
+          screencomp manifest --input shots/current $plat --output "$manifest"
+      - uses: ./visual-docs
+        with:
+          platform: ${{ matrix.platform }}
+          verify-second: shots/verify
+          pages: false
+          publish: false
+          update-manifest: true
+

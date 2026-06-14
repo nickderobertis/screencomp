@@ -146,6 +146,42 @@ baseline, report against main. `screencomp init` scaffolds a caller for it
 For a fully hand-rolled equivalent you can copy and adapt, see
 [`examples/visual-docs.yml`](examples/visual-docs.yml).
 
+#### When your capture needs custom steps: the composite action
+
+A reusable workflow takes a `capture-command` *string*, so it can't host capture
+steps that must be GitHub Actions — private-registry OIDC auth, `aws-actions/*`,
+a vendored setup action. For that, compose your own job and drop in the
+`visual-docs` **composite action** (the same downstream half, as one step). Now
+"add OIDC auth", "swap the registry", or "install an extra package" is just
+another step you control — no framework to reimplement:
+
+```yaml
+jobs:
+  visual-docs:
+    runs-on: ubuntu-latest
+    permissions: { contents: write, pull-requests: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: your-org/codeartifact-npm-auth@v1          # inject any steps you need
+      - uses: your-org/install-aws-cli@v1                #   ↑
+      - run: npm ci && npx playwright install --with-deps chromium && npx playwright test
+      - uses: nickderobertis/screencomp@v1               # install the CLI
+      - uses: nickderobertis/screencomp/visual-docs@v1   # the report half, one step
+        with:
+          platform: linux-x86_64   # or "" for a project-level layout (no platform subtree)
+          update-manifest: false   # e.g. a local-only baseline model
+          pages: true
+          github-token: ${{ github.token }}
+```
+
+The action expects the capture already on disk (`current`, default `shots/current`)
+and the CLI installed; it runs the gate, classify, gallery, Pages deploy, and PR
+comment. It needs host tools (`gh`, `git`), so run it in a host job — not inside
+your capture container. Key inputs: `platform` (empty = project-level),
+`update-manifest` (false for a local-only baseline), `pages`, `publish` (false
+for a side-effect-free dry run), `verify-second` (a second capture dir to assert
+byte-identical).
+
 ### Container image
 
 Multi-arch images are published to GitHub Container Registry. The entrypoint is
