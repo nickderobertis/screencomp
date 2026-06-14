@@ -146,6 +146,16 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
   `.sha256` names must match the release workflow's `archive` pattern; change the
   pattern and you change all three. `examples/` shows the intended consumer flow
   and is excluded from the published crate.
+- The visual-docs surfaces default to the **strict gate** and must stay
+  consistent on it: the reusable workflow and the composite action default
+  `fail-on-drift: true` + `update-manifest: false`, and `init` scaffolds a matching
+  caller plus a `.githooks/pre-push` guard. CI fails on unexpected drift; the
+  developer owns the baseline. The `init`↔reusable-workflow interface is guarded by
+  an integration test — keep the inputs in lockstep.
+- Release-gating is by commit subject: `release-plz.toml`'s `release_commits`
+  releases only `feat`/`fix`/`perf` (or any `type!:` breaking) commits, so a
+  squash-merge subject without one of those prefixes ships nothing. Title PRs
+  accordingly.
 - Manage git state end-to-end; branch off the default branch for changes. Do not
   commit or push unless asked.
 
