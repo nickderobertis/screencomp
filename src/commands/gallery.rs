@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use super::{Ctx, platform, write_err};
+use super::{Ctx, discover_scoped, platform, write_err};
 use crate::cli::GalleryArgs;
 use crate::domain::classify::classify;
 use crate::domain::gallery::{render_diff_html, render_html};
@@ -13,7 +13,7 @@ use crate::io::fs;
 pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     let plat = args.platform.as_deref();
     let input_root = platform::scope(&args.input, plat);
-    let current = fs::discover(&input_root)?;
+    let current = discover_scoped(&args.input, plat)?;
     let index = args.output.join("index.html");
 
     match &args.baseline {
@@ -31,7 +31,7 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
         // Before/after diff gallery of current against baseline.
         Some(baseline_dir) => {
             let baseline_root = platform::scope(baseline_dir, plat);
-            let baseline = fs::discover(&baseline_root)?;
+            let baseline = discover_scoped(baseline_dir, plat)?;
             let classification = classify(&baseline, &current);
             let html = render_diff_html(&classification, &args.title);
             fs::write_string(&index, &html)?;

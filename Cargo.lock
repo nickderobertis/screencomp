@@ -628,7 +628,7 @@ dependencies = [
 
 [[package]]
 name = "screencomp"
-version = "0.1.10"
+version = "0.1.15"
 dependencies = [
  "assert_cmd",
  "camino",

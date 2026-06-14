@@ -1,0 +1,291 @@
+# screencomp reusable visual-docs workflow.
+#
+# Call it from a consumer repo and own only the capture; everything downstream —
+# the reproducibility gate, the classify check, the gallery, the GitHub Pages
+# deploy (a canonical gallery on the default branch, a per-PR preview on PRs),
+# and the sticky before/after PR comment — is screencomp's. `screencomp init`
+# scaffolds a caller for this file.
+#
+#   jobs:
+#     visual-docs:
+#       uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@vX.Y.Z
+#       with:
+#         platform: linux-x86_64
+#         capture-command: |
+#           npm ci
+#           npx playwright install --with-deps chromium
+#           npx playwright test          # MUST write $SHOTS_OUT/<project>/<name>.png
+#       secrets:
+#         push-token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN }}   # optional
+#
+# Architecture: the work is split across two jobs so each runs where its tools
+# live, which is the whole point.
+#   * `capture` runs INSIDE your container (Playwright/Cypress/…). It only writes
+#     screenshots and hands them off as an artifact. Container images carry your
+#     capture toolchain but NOT host tools (`gh`, a configured `git`, etc.).
+#   * `report` runs on the HOST runner (no container), where `gh`, `git`, and the
+#     screencomp binary are available. It does the reproducibility gate, classify,
+#     gallery, Pages deploy, PR comment, and manifest push.
+# Putting a `gh pr comment` or `git push` step inside the capture container is the
+# bug this split exists to prevent.
+#
+# Baselines are image-free: the repo commits only a per-platform digest manifest
+# (shots/baseline/<platform>.sha256), never the PNGs. The first run with no
+# committed manifest SEEDS it from the capture (and, when publishing, pushes it);
+# subsequent runs diff against it. Enable Pages (Settings -> Pages -> "Deploy from
+# a branch: gh-pages /") to get galleries.
+#
+# Inline comment thumbnails are fetched through GitHub's anonymous image proxy, so
+# they only render from a PUBLIC Pages site. A private Pages gallery still works as
+# a link, but its inline previews will not load.
+name: Visual docs (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Platform key to capture and classify under (e.g. linux-x86_64).
+        type: string
+        default: linux-x86_64
+      capture-command:
+        description: Shell that writes $SHOTS_OUT/<project>/<name>.png.
+        type: string
+        required: true
+      container:
+        description: Container image the capture runs in (pin to your Playwright version).
+        type: string
+        default: mcr.microsoft.com/playwright:v1.60.0-noble
+      runs-on:
+        description: Runner label for both jobs.
+        type: string
+        default: ubuntu-latest
+      screencomp-version:
+        description: screencomp release to install on the host, or "latest".
+        type: string
+        default: latest
+      gallery-title:
+        description: Title for the generated gallery.
+        type: string
+        default: Visual docs
+      verify:
+        description: Capture twice and require byte-identical output (the reproducibility gate).
+        type: boolean
+        default: true
+      pages:
+        description: Deploy the gallery to GitHub Pages (canonical on push, per-PR preview on PRs).
+        type: boolean
+        default: true
+      publish:
+        description: >-
+          Perform external side effects: post the PR comment, push the regenerated
+          manifest, and deploy Pages. Set false to run every step but produce no
+          side effects — a dry run for previewing or for testing the workflow.
+        type: boolean
+        default: true
+    secrets:
+      push-token:
+        description: >-
+          Token that can trigger workflows, used to push the regenerated manifest
+          to the PR branch. Only needed when the repo enforces required status
+          checks (the default GITHUB_TOKEN cannot trigger runs). See the README's
+          "Branch protection".
+        required: false
+
+# Serialize Pages deploys: every run writes to the same gh-pages branch, so
+# overlapping pushes would race. Per-ref cancellation keeps superseded PR runs
+# from piling up.
+concurrency:
+  group: visual-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- Capture: the ONLY job that runs inside your container ----------------
+  capture:
+    runs-on: ${{ inputs.runs-on }}
+    container: ${{ inputs.container }}
+    permissions:
+      contents: read
+    env:
+      SHOTS_OUT: shots/current/${{ inputs.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Your capture writes $SHOTS_OUT/<project>/<name>.png. No host tools are
+      # used here, so the container needs only your capture toolchain.
+      - name: Capture screenshots
+        run: ${{ inputs.capture-command }}
+
+      # Reproducibility gate, half 1: capture the SAME build again to a second
+      # tree. The byte comparison happens in `report` (screencomp lives there).
+      - name: Capture again for the reproducibility gate
+        if: ${{ inputs.verify }}
+        env:
+          SHOTS_OUT: shots/verify/${{ inputs.platform }}
+        run: ${{ inputs.capture-command }}
+
+      # Hand the screenshots to the host-side `report` job.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screencomp-shots
+          path: shots
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---- Report: runs on the HOST runner, where gh/git/screencomp live --------
+  report:
+    needs: capture
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write # push the regenerated manifest + the gh-pages gallery
+      pull-requests: write # post the diff comment
+    defaults:
+      run:
+        shell: bash # host always has bash; the scripts below use bashisms
+    env:
+      PLATFORM: ${{ inputs.platform }}
+      MANIFEST: shots/baseline/${{ inputs.platform }}.sha256
+      # The canonical gallery lives at the Pages site root; each PR gets a
+      # /pr-<n>/ preview subpath.
+      MAIN_GALLERY_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+      PR_PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }} # PR branch (empty on push -> the pushed ref)
+          token: ${{ secrets.push-token || github.token }}
+
+      - uses: nickderobertis/screencomp@v0.1.12 # install the CLI on the host
+        with:
+          version: ${{ inputs.screencomp-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: screencomp-shots
+          path: shots
+
+      # Fail loudly and early if the host is missing a tool a later step needs,
+      # instead of deep inside a publish step. This is the regression guard for
+      # the "step runs where its tool isn't" bug class.
+      - name: Check host tooling
+        run: |
+          set -euo pipefail
+          screencomp --version
+          git --version
+          gh --version
+
+      # Reproducibility gate, half 2: require the two captures to be byte-identical.
+      - name: Verify capture is reproducible
+        if: ${{ inputs.verify }}
+        run: |
+          set -euo pipefail
+          screencomp verify --first shots/current --second shots/verify --platform "$PLATFORM"
+          rm -rf shots/verify
+
+      # Diff against the committed manifest, or seed it on the first run. A diff is
+      # EXPECTED on a feature PR, so classify never fails the job.
+      - name: Classify against the baseline manifest
+        run: |
+          set -euo pipefail
+          if [ -f "$MANIFEST" ]; then
+            echo "HAS_BASELINE=true" >>"$GITHUB_ENV"
+            screencomp classify --baseline-manifest "$MANIFEST" \
+              --current shots/current --platform "$PLATFORM" || true
+          else
+            echo "HAS_BASELINE=false" >>"$GITHUB_ENV"
+            echo "no committed baseline at $MANIFEST; this run seeds it"
+          fi
+
+      # A plain gallery of the current capture. In manifest mode there are no
+      # baseline PNGs, so this is the current state only; the before/after diff in
+      # the PR comment sources "Before" from the canonical main gallery URL.
+      - name: Build gallery
+        if: ${{ inputs.pages }}
+        run: |
+          set -euo pipefail
+          screencomp gallery --input shots/current --platform "$PLATFORM" \
+            --output site --title "${{ inputs.gallery-title }}"
+
+      # Default branch -> publish the canonical gallery at the site root.
+      - name: Deploy canonical gallery
+        if: ${{ inputs.pages && inputs.publish && github.event_name == 'push' }}
+        uses: peaceiris/actions-gh-pages@v4 # pin to a release you trust
+        with:
+          github_token: ${{ github.token }}
+          publish_dir: site
+          keep_files: true # do not clobber existing /pr-<n>/ previews
+
+      # PR -> publish a preview at /pr-<n>/ alongside the canonical gallery.
+      - name: Deploy PR preview gallery
+        if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' }}
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ github.token }}
+          publish_dir: site
+          destination_dir: pr-${{ github.event.pull_request.number }}
+          keep_files: true
+
+      # Pages rebuilds asynchronously; wait so the comment's inline images resolve
+      # instead of 404ing on first view.
+      - name: Wait for the PR preview to go live
+        if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 30); do
+            if curl -fsSL -o /dev/null "${PR_PREVIEW_URL}/index.html"; then
+              echo "preview live at ${PR_PREVIEW_URL}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "preview not live yet; the comment will still link to it" >&2
+
+      # Render the sticky before/after comment. "After" comes from this PR's
+      # preview gallery; "Before" from the canonical main gallery (the blessed
+      # current state) — gate against the committed baseline, report against main.
+      # Skipped on the seeding run (no baseline to diff). Without Pages it degrades
+      # to a path listing.
+      - name: Render PR comment
+        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
+            screencomp comment --baseline-manifest "$MANIFEST" \
+              --current shots/current --platform "$PLATFORM" \
+              --gallery-url "$PR_PREVIEW_URL" \
+              --baseline-url "$MAIN_GALLERY_URL" \
+              --output comment.md
+          else
+            screencomp comment --baseline-manifest "$MANIFEST" \
+              --current shots/current --platform "$PLATFORM" --output comment.md
+          fi
+
+      - name: Post PR comment
+        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' && inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --body-file comment.md --edit-last \
+            || gh pr comment "$PR" --body-file comment.md
+
+      # Regenerate the manifest (seeds it on the first run) and push it to the PR
+      # branch. Its text diff (old hash -> new hash per shot) is the review surface;
+      # merging accepts the new baseline. Loop-safe with any token: a re-triggered
+      # run regenerates an identical manifest, sees no diff, and does not push.
+      - name: Update the baseline manifest
+        run: |
+          set -euo pipefail
+          screencomp manifest --input shots/current --platform "$PLATFORM" --output "$MANIFEST"
+
+      - name: Push the manifest to the PR branch
+        if: ${{ github.event_name == 'pull_request' && inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "$MANIFEST"
+            git commit -m "chore: update screenshot baseline manifest"
+            git push
+          fi

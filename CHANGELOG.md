@@ -6,6 +6,49 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/nickderobertis/screencomp/compare/v0.1.14...v0.1.15) - 2026-06-14
+
+### Added
+
+- *(action)* add visual-docs composite action for custom-capture jobs ([#42](https://github.com/nickderobertis/screencomp/pull/42))
+
+## [0.1.14](https://github.com/nickderobertis/screencomp/compare/v0.1.13...v0.1.14) - 2026-06-14
+
+### Added
+
+- *(config)* auto-discover screencomp.toml by walking up from the cwd ([#39](https://github.com/nickderobertis/screencomp/pull/39))
+
+## [0.1.13](https://github.com/nickderobertis/screencomp/compare/v0.1.12...v0.1.13) - 2026-06-14
+
+### Fixed
+
+- *(ci)* split the reusable visual-docs workflow into a container `capture` job
+  and a host `report` job so `gh`/`git`/screencomp run where they exist, fixing
+  `gh pr comment` failing inside the capture container; add a self-test workflow
+  that exercises the pipeline in real CI ([#38](https://github.com/nickderobertis/screencomp/pull/38))
+
+## [0.1.12](https://github.com/nickderobertis/screencomp/compare/v0.1.11...v0.1.12) - 2026-06-14
+
+### Fixed
+
+- *(ci)* run the reusable visual-docs workflow's steps under bash so the verify
+  step's `set -euo pipefail` works in container jobs whose `/bin/sh` is dash ([#36](https://github.com/nickderobertis/screencomp/pull/36))
+
+## [0.1.11](https://github.com/nickderobertis/screencomp/compare/v0.1.10...v0.1.11) - 2026-06-14
+
+### Added
+
+- *(init)* resolve --platform auto to the host key
+
+### Documentation
+
+- *(examples)* fix manifest auto-push stalling PRs under required checks ([#33](https://github.com/nickderobertis/screencomp/pull/33))
+
+### Other
+
+- Visual-docs DX: reusable workflow, manifest-mode comments, init, doctor mismatch ([#34](https://github.com/nickderobertis/screencomp/pull/34))
+- Add optional local pre-push guard and `screencomp scope` ([#32](https://github.com/nickderobertis/screencomp/pull/32))
+
 ## [0.1.10](https://github.com/nickderobertis/screencomp/compare/v0.1.9...v0.1.10) - 2026-06-08
 
 ### Added

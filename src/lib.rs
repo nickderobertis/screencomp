@@ -11,7 +11,8 @@
 //!   reproducibility gate),
 //! - **doctor** preflight a capture's platform key and `<project>/<name>.png` layout,
 //! - **scope** match a changed-path list against the `[guard].paths` globs, so
-//!   the optional local pre-push guard re-captures only when it should.
+//!   the optional local pre-push guard re-captures only when it should,
+//! - **init** scaffold a visual-docs setup (config, CI workflow, `.gitignore`).
 //!
 //! Core logic in `domain` is free of I/O; filesystem access is confined to `io`;
 //! argument parsing lives in [`cli`]. The single entrypoint is [`run`], which
@@ -57,5 +58,6 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         Command::Verify(args) => commands::verify::run(&args, &ctx, out),
         Command::Doctor(args) => commands::doctor::run(&args, &ctx, out),
         Command::Scope(args) => commands::scope::run(&args, &ctx, out),
+        Command::Init(args) => commands::init::run(&args, &ctx, out),
     }
 }

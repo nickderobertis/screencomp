@@ -5,13 +5,16 @@ pub(crate) mod classify;
 pub(crate) mod comment;
 pub(crate) mod doctor;
 pub(crate) mod gallery;
+pub(crate) mod init;
 pub(crate) mod manifest;
 pub(crate) mod platform;
 pub(crate) mod scope;
 pub(crate) mod verify;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 
+use crate::config::{self, Config, ConfigError};
+use crate::domain::layout::LayoutScan;
 use crate::domain::snapshot::Snapshot;
 use crate::errors::AppError;
 use crate::io::fs;
@@ -20,6 +23,72 @@ use crate::io::fs;
 pub(crate) struct Ctx {
     /// Suppress non-essential human output.
     pub(crate) quiet: bool,
+}
+
+/// Scope `root` to `platform` and walk it into a [`Snapshot`].
+///
+/// On a missing `--platform` subtree the bare "not a directory" error is
+/// enriched with a layout hint (see [`hint_missing_subtree`]), since that is the
+/// error a first-time integrator is most likely to misread.
+pub(crate) fn discover_scoped(
+    root: &Utf8Path,
+    platform: Option<&str>,
+) -> Result<Snapshot, AppError> {
+    let scoped = platform::scope(root, platform);
+    fs::discover(&scoped).map_err(|e| hint_missing_subtree(e, root, platform))
+}
+
+/// Scope `root` to `platform` and scan its layout, with the same hint as
+/// [`discover_scoped`] on a missing subtree.
+pub(crate) fn scan_scoped(root: &Utf8Path, platform: Option<&str>) -> Result<LayoutScan, AppError> {
+    let scoped = platform::scope(root, platform);
+    fs::scan_layout(&scoped).map_err(|e| hint_missing_subtree(e, root, platform))
+}
+
+/// Turn a bare [`AppError::NotADirectory`] for a missing `--platform` subtree
+/// into an [`AppError::InvalidLayout`] that explains the platform layer.
+///
+/// `--platform` adds a `<root>/<key>/` layer above `<project>/<name>.png`. When
+/// that subtree is absent but `root` itself exists, the usual cause is a wrong
+/// platform key (e.g. `linux-arm64` vs `linux-x86_64`) or a capture written
+/// without the platform segment — both of which the bare error hides. The hint
+/// names the host key and what the root actually holds so the fix is obvious. The
+/// error is returned untouched when no platform was requested or the root is also
+/// missing (a genuinely absent tree, not a layout mistake).
+fn hint_missing_subtree(err: AppError, root: &Utf8Path, platform: Option<&str>) -> AppError {
+    let (Some(spec), AppError::NotADirectory { path }) = (platform, &err) else {
+        return err;
+    };
+    if !root.is_dir() {
+        return err;
+    }
+    let key = platform::resolve(spec);
+    let host = platform::host_key();
+
+    let mut reason = format!(
+        "expected the platform subtree {path} \
+         (with --platform {key}, screencomp looks for {root}/{key}/<project>/<name>.png)"
+    );
+    match fs::scan_layout(root) {
+        Ok(scan) if !scan.loose_pngs.is_empty() => reason.push_str(&format!(
+            "; found {} loose .png file(s) directly under {root} \
+             — move them into {root}/{key}/<project>/, or omit --platform",
+            scan.loose_pngs.len()
+        )),
+        Ok(scan) if !scan.projects.is_empty() => {
+            let names: Vec<&str> = scan.projects.iter().map(|p| p.name.as_str()).collect();
+            reason.push_str(&format!(
+                "; {root} contains [{}] instead — check the platform key \
+                 (this host is {host}), or omit --platform",
+                names.join(", ")
+            ));
+        }
+        _ => {}
+    }
+    AppError::InvalidLayout {
+        path: path.clone(),
+        reason,
+    }
 }
 
 /// Resolve a baseline snapshot from either an image tree or a digest manifest.
@@ -33,10 +102,30 @@ pub(crate) fn baseline_snapshot(
     platform: Option<&str>,
 ) -> Result<Snapshot, AppError> {
     match (dir, manifest) {
-        (Some(dir), None) => fs::discover(&platform::scope(dir, platform)),
+        (Some(dir), None) => discover_scoped(dir, platform),
         (None, Some(manifest)) => fs::read_manifest(manifest),
         _ => unreachable!("clap argument group guarantees exactly one baseline source"),
     }
+}
+
+/// Load configuration at a command boundary, reading the ambient bits here.
+///
+/// Reads `$SCREENCOMP_CONFIG` and, when neither `explicit` nor that env var is
+/// set, auto-discovers `screencomp.toml` by walking up from the working
+/// directory. Centralized so `comment` and `scope` resolve config identically.
+pub(crate) fn load_config(explicit: Option<&Utf8Path>) -> Result<Config, ConfigError> {
+    let env = std::env::var(config::CONFIG_ENV).ok();
+    // Auto-discovery only kicks in with no explicit source, so an explicit choice
+    // is never silently overridden by a stray file up the tree.
+    let discovered = if explicit.is_none() && env.as_deref().unwrap_or("").is_empty() {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| Utf8PathBuf::from_path_buf(cwd).ok())
+            .and_then(|cwd| fs::find_up(&cwd, config::CONFIG_FILE))
+    } else {
+        None
+    };
+    config::load(explicit, env, discovered)
 }
 
 /// Map a writer failure into an [`AppError`].

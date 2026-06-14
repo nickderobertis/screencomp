@@ -171,6 +171,8 @@ fn comment_cli(t: &Trees) -> Cli {
             title: None,
             marker: None,
             gallery_url: None,
+            baseline_url: None,
+            current_url: None,
             embed_limit: None,
             output: None,
         }),

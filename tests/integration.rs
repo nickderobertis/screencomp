@@ -328,7 +328,9 @@ fn platform_auto_resolves_to_the_host_subtree() {
 }
 
 #[test]
-fn missing_platform_subtree_is_not_a_directory_error() {
+fn missing_platform_subtree_explains_the_layout() {
+    // The baseline holds a `linux-arm64` subtree but we ask for `windows-x86_64`.
+    // The absent subtree must produce a layout hint, not a bare "not a directory".
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
@@ -345,7 +347,37 @@ fn missing_platform_subtree_is_not_a_directory_error() {
         "--platform",
         "windows-x86_64",
     ]);
-    assert!(matches!(result, Err(AppError::NotADirectory { .. })));
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected an InvalidLayout hint, got {result:?}");
+    };
+    assert!(reason.contains("windows-x86_64"), "{reason}");
+    // The hint points at the platform layer and what the root actually holds.
+    assert!(reason.contains("--platform"), "{reason}");
+    assert!(reason.contains("linux-arm64"), "{reason}");
+}
+
+#[test]
+fn platform_against_loose_pngs_hints_to_add_a_project_dir() {
+    // Capture written flat (loose .png at the root) while --platform expects a
+    // subtree: the hint must call out the loose files and the fix.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    std::fs::create_dir_all(&cur).unwrap();
+    std::fs::write(cur.join("home.png"), b"x").unwrap();
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        cur.to_str().unwrap(),
+        "--platform",
+        "linux-x86_64",
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected an InvalidLayout hint, got {result:?}");
+    };
+    assert!(reason.contains("loose .png"), "{reason}");
+    assert!(reason.contains("omit --platform"), "{reason}");
 }
 
 #[test]
@@ -434,6 +466,85 @@ fn comment_accepts_a_baseline_manifest() {
     ]);
     assert_eq!(code.unwrap(), 0);
     assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
+}
+
+#[test]
+fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
+    // Manifest mode commits no baseline PNGs, so a `--gallery-url` (a plain
+    // gallery of the current shots) must source "After" images from `<URL>/...`
+    // and never emit a `baseline/` URL that would 404.
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("b.sha256"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+        "--gallery-url",
+        "https://example.test/site/",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    // Plain layout, current shots only: no `baseline/` or `current/` segment.
+    assert!(
+        out.contains("src=\"https://example.test/site/desktop/about.png\""),
+        "{out}"
+    );
+    assert!(!out.contains("/baseline/"), "{out}");
+    assert!(!out.contains("/current/"), "{out}");
+}
+
+#[test]
+fn comment_manifest_mode_sources_before_from_baseline_url() {
+    // An explicit `--baseline-url` (a canonical/main gallery) restores a real
+    // before/after diff in manifest mode: Before from it, After from --current-url.
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("b.sha256"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+        "--baseline-url",
+        "https://example.test/main",
+        "--current-url",
+        "https://example.test/pr/9",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("| Before | After |"), "{out}");
+    assert!(
+        out.contains("src=\"https://example.test/main/desktop/about.png\""),
+        "{out}"
+    );
+    assert!(
+        out.contains("src=\"https://example.test/pr/9/desktop/about.png\""),
+        "{out}"
+    );
 }
 
 #[test]
@@ -977,4 +1088,247 @@ fn valid_config_overrides_title_and_marker() {
     assert_eq!(code.unwrap(), 0);
     assert!(out.starts_with("<!-- ui-shots -->"), "{out}");
     assert!(out.contains("## UI shots"), "{out}");
+}
+
+#[test]
+fn init_scaffolds_config_workflow_and_gitignore() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "init",
+        "--dir",
+        &root,
+        "--platform",
+        "macos-arm64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("created") && out.contains("screencomp.toml"),
+        "{out}"
+    );
+
+    // The config is valid and platform-substituted.
+    let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+    assert!(toml.contains("shots/baseline/macos-arm64.sha256"), "{toml}");
+
+    // The workflow calls the reusable workflow and carries the platform through.
+    let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+    assert!(
+        wf.contains("nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v"),
+        "{wf}"
+    );
+    assert!(wf.contains("platform: macos-arm64"), "{wf}");
+
+    // The .gitignore commits baselines but ignores generated images: no ignore
+    // entry (a non-comment line) targets shots/baseline/.
+    let ignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(ignore.contains("shots/current/"), "{ignore}");
+    assert!(
+        !ignore
+            .lines()
+            .any(|l| !l.starts_with('#') && l.contains("shots/baseline/")),
+        "{ignore}"
+    );
+}
+
+#[test]
+fn init_is_idempotent_and_respects_force() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let gitignore = dir.path().join(".gitignore");
+    std::fs::write(&gitignore, "node_modules/\n").unwrap();
+
+    invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
+    // A second run leaves existing files untouched and does not duplicate the
+    // .gitignore block.
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("skipped") && out.contains("screencomp.toml"),
+        "{out}"
+    );
+
+    let ignore = std::fs::read_to_string(&gitignore).unwrap();
+    assert!(ignore.starts_with("node_modules/"), "{ignore}");
+    assert_eq!(
+        ignore.matches("shots/current/").count(),
+        1,
+        "block must not duplicate: {ignore}"
+    );
+
+    // --force overwrites the config and workflow; the .gitignore block stays
+    // skipped because its marker is already present (re-appending would dupe it).
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root, "--force"]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("updated") && l.contains("screencomp.toml")),
+        "{out}"
+    );
+}
+
+#[test]
+fn doctor_warns_on_a_cross_platform_baseline_manifest() {
+    // A baseline manifest named for a different platform, against a capture where
+    // every shot's bytes differ, is the "everything changed" trap doctor exists
+    // to surface as a platform mismatch rather than a real diff.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_flat(&cur, "desktop", "home", b"new-bytes");
+
+    // Manifest holds the same shot name but a different digest, named for a
+    // platform that cannot be the host.
+    let other = if host_key().contains("x86_64") {
+        "linux-arm64"
+    } else {
+        "linux-x86_64"
+    };
+    let manifest = dir.path().join(format!("{other}.sha256"));
+    std::fs::write(&manifest, format!("{}  desktop/home.png\n", "a".repeat(64))).unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    // Both the filename heuristic and the all-differ heuristic fire.
+    assert!(
+        out.contains(&format!("baseline manifest '{other}'")),
+        "{out}"
+    );
+    assert!(out.contains("every shared shot differs"), "{out}");
+
+    // The JSON contract carries the same warnings.
+    let (code, json) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(json.lines().count(), 1, "JSON must be one line: {json}");
+    assert!(json.contains(r#""warnings":["#), "{json}");
+    assert!(json.contains("every shared shot differs"), "{json}");
+}
+
+#[test]
+fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
+    // A manifest not named after a platform (baseline.sha256) must not trip the
+    // filename heuristic, and a matching, identical shot leaves doctor clean.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_flat(&cur, "desktop", "home", b"pixels");
+
+    // Generate a correct digest from the capture itself, named non-platform-like.
+    let manifest = dir.path().join("baseline.sha256");
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        cur.to_str().unwrap(),
+        "--output",
+        manifest.to_str().unwrap(),
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        cur.to_str().unwrap(),
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(!out.contains("baseline manifest"), "{out}");
+    assert!(!out.contains("every shared shot differs"), "{out}");
+    assert!(out.contains("ok: layout matches"), "{out}");
+}
+
+#[test]
+fn init_platform_auto_resolves_to_the_host_key() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let (code, _) = invoke(&["screencomp", "init", "--dir", &root, "--platform", "auto"]);
+    assert_eq!(code.unwrap(), 0);
+
+    // The scaffold is wired to the host's own key, not the literal "auto".
+    let key = host_key();
+    let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+    assert!(
+        toml.contains(&format!("shots/baseline/{key}.sha256")),
+        "{toml}"
+    );
+    assert!(!toml.contains("auto"), "{toml}");
+    let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+    assert!(wf.contains(&format!("platform: {key}")), "{wf}");
+}
+
+#[test]
+fn init_json_reports_each_file_action() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root, "--format", "json"]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(out.contains(r#""action":"created""#), "{out}");
+    assert!(out.contains("screencomp.toml"), "{out}");
+}
+
+#[test]
+fn init_caller_matches_the_reusable_workflow_interface() {
+    // The scaffolded caller must stay consistent with the reusable workflow this
+    // repo ships: a rename of an input/secret there (or moving the file) would
+    // silently break every consumer's `init` output, and actionlint never lints
+    // the runtime-generated caller, so guard the interface here.
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
+    let caller =
+        std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+
+    let reusable_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".github/workflows/visual-docs-reusable.yml");
+    let reusable = std::fs::read_to_string(&reusable_path)
+        .expect("the reusable workflow the caller references must exist in this repo");
+
+    // The caller's `uses:` points at that very file.
+    assert!(
+        caller.contains(".github/workflows/visual-docs-reusable.yml@"),
+        "{caller}"
+    );
+
+    // Every `with:` input the caller passes is declared by the reusable workflow
+    // (both indent inputs six spaces under their respective blocks).
+    for input in ["platform", "capture-command"] {
+        let decl = format!("\n      {input}:");
+        assert!(
+            reusable.contains(&decl),
+            "reusable workflow missing input {input}"
+        );
+        assert!(
+            caller.contains(&decl),
+            "caller stopped passing input {input}"
+        );
+    }
+    // The wired secret is declared too.
+    assert!(
+        reusable.contains("\n      push-token:"),
+        "reusable workflow missing secret push-token"
+    );
+    assert!(
+        caller.contains("push-token:"),
+        "caller stopped wiring push-token"
+    );
 }

@@ -1,0 +1,235 @@
+# screencomp "visual docs" composite action — the report half of a visual-docs
+# pipeline as a single step you drop into your OWN job.
+#
+# Unlike a reusable workflow (which cannot accept injected steps), this is just a
+# step, so you compose it with any steps your capture needs — private-registry
+# OIDC auth, extra package installs, a custom container, whatever — without
+# reimplementing the framework:
+#
+#   jobs:
+#     visual-docs:
+#       runs-on: ubuntu-latest
+#       permissions: { contents: write, pull-requests: write }
+#       steps:
+#         - uses: actions/checkout@v4
+#         - uses: your-org/codeartifact-npm-auth@v1     # inject anything
+#         - run: npm ci && npx playwright test          # your capture -> shots/current/<platform>/...
+#         - uses: nickderobertis/screencomp@vX.Y.Z       # install the CLI
+#         - uses: nickderobertis/screencomp/visual-docs@vX.Y.Z
+#           with:
+#             platform: linux-x86_64        # "" for a project-level layout (no platform subtree)
+#             github-token: ${{ github.token }}
+#
+# It expects the capture to already be on disk (default shots/current) and
+# screencomp to be installed (run nickderobertis/screencomp first). It needs host
+# tools (gh, git) — run it in a host job, not inside your capture container.
+name: screencomp visual docs
+description: >-
+  Classify a capture against the baseline digest manifest, build the gallery,
+  deploy GitHub Pages, and post the sticky before/after PR comment. Compose it in
+  your own job after your capture step.
+author: screencomp contributors
+branding:
+  icon: camera
+  color: purple
+
+inputs:
+  platform:
+    description: 'Platform key (e.g. linux-x86_64). Empty means a project-level layout with no platform subtree.'
+    required: false
+    default: linux-x86_64
+  current:
+    description: 'Directory holding the current capture (<dir>/[<platform>/]<project>/<name>.png).'
+    required: false
+    default: shots/current
+  verify-second:
+    description: 'A second capture of the same build; when set, assert it is byte-identical to `current` (the reproducibility gate).'
+    required: false
+    default: ''
+  manifest:
+    description: 'Committed baseline manifest. Defaults to shots/baseline/<platform>.sha256 (or shots/baseline.sha256 when platform is empty).'
+    required: false
+    default: ''
+  gallery-title:
+    description: 'Title for the generated gallery.'
+    required: false
+    default: Visual docs
+  pages:
+    description: 'Build the gallery and (when publishing) deploy it to GitHub Pages.'
+    required: false
+    default: 'true'
+  publish:
+    description: 'Perform external side effects (PR comment, manifest push, Pages deploy). Set false for a dry run.'
+    required: false
+    default: 'true'
+  update-manifest:
+    description: 'Regenerate the baseline manifest and (when publishing, on a PR) push it. Set false for a local-only baseline.'
+    required: false
+    default: 'true'
+  gallery-url:
+    description: 'Override the "After" image base URL for the comment (defaults to this PR''s Pages preview).'
+    required: false
+    default: ''
+  baseline-url:
+    description: 'Override the "Before" image base URL for the comment (defaults to the canonical main gallery).'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token for posting the PR comment and deploying Pages.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve config
+      id: cfg
+      shell: bash
+      run: |
+        set -euo pipefail
+        platform='${{ inputs.platform }}'
+        if [ -n "$platform" ]; then
+          echo "platform_arg=--platform $platform" >>"$GITHUB_OUTPUT"
+          default_manifest="shots/baseline/${platform}.sha256"
+        else
+          echo "platform_arg=" >>"$GITHUB_OUTPUT"
+          default_manifest="shots/baseline.sha256"
+        fi
+        manifest='${{ inputs.manifest }}'
+        [ -n "$manifest" ] || manifest="$default_manifest"
+        echo "manifest=$manifest" >>"$GITHUB_OUTPUT"
+        if [ -f "$manifest" ]; then
+          echo "has_baseline=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "has_baseline=false" >>"$GITHUB_OUTPUT"
+          echo "no committed baseline at $manifest; this run seeds it"
+        fi
+
+        # Comment image URLs: derive from the Pages deployment unless overridden.
+        gallery_url='${{ inputs.gallery-url }}'
+        baseline_url='${{ inputs.baseline-url }}'
+        main_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+        preview_url="${main_url}/pr-${{ github.event.pull_request.number }}"
+        if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
+          [ -n "$gallery_url" ] || gallery_url="$preview_url"
+          [ -n "$baseline_url" ] || baseline_url="$main_url"
+        fi
+        echo "gallery_url=$gallery_url" >>"$GITHUB_OUTPUT"
+        echo "baseline_url=$baseline_url" >>"$GITHUB_OUTPUT"
+        echo "preview_url=$preview_url" >>"$GITHUB_OUTPUT"
+
+    # Fail loudly if a needed host tool is missing — the usual symptom of running
+    # this inside a capture container instead of a host job.
+    - name: Check tooling
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp --version
+        git --version
+        gh --version
+
+    - name: Verify capture is reproducible
+      if: ${{ inputs.verify-second != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp verify --first '${{ inputs.current }}' --second '${{ inputs.verify-second }}' ${{ steps.cfg.outputs.platform_arg }}
+
+    - name: Classify against the baseline manifest
+      if: ${{ steps.cfg.outputs.has_baseline == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp classify --baseline-manifest '${{ steps.cfg.outputs.manifest }}' \
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} || true
+
+    - name: Build gallery
+      if: ${{ inputs.pages == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp gallery --input '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} \
+          --output site --title '${{ inputs.gallery-title }}'
+
+    - name: Deploy canonical gallery
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'push' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ inputs.github-token }}
+        publish_dir: site
+        keep_files: true
+
+    - name: Deploy PR preview gallery
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ inputs.github-token }}
+        publish_dir: site
+        destination_dir: pr-${{ github.event.pull_request.number }}
+        keep_files: true
+
+    - name: Wait for the PR preview to go live
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        url='${{ steps.cfg.outputs.preview_url }}'
+        for _ in $(seq 1 30); do
+          if curl -fsSL -o /dev/null "${url}/index.html"; then
+            echo "preview live at ${url}"
+            exit 0
+          fi
+          sleep 10
+        done
+        echo "preview not live yet; the comment will still link to it" >&2
+
+    - name: Render PR comment
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=(--baseline-manifest '${{ steps.cfg.outputs.manifest }}'
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }}
+          --output comment.md)
+        # Explicit `if`, not `cond && cmd`: the latter trips `set -e` when the
+        # condition is false.
+        if [ -n '${{ steps.cfg.outputs.gallery_url }}' ]; then
+          args+=(--gallery-url '${{ steps.cfg.outputs.gallery_url }}')
+        fi
+        if [ -n '${{ steps.cfg.outputs.baseline_url }}' ]; then
+          args+=(--baseline-url '${{ steps.cfg.outputs.baseline_url }}')
+        fi
+        screencomp comment "${args[@]}"
+
+    - name: Post PR comment
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.publish == 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        gh pr comment "$PR" --body-file comment.md --edit-last \
+          || gh pr comment "$PR" --body-file comment.md
+
+    - name: Update the baseline manifest
+      if: ${{ inputs.update-manifest == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp manifest --input '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} \
+          --output '${{ steps.cfg.outputs.manifest }}'
+
+    - name: Push the baseline manifest
+      if: ${{ inputs.update-manifest == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        manifest='${{ steps.cfg.outputs.manifest }}'
+        if [ -n "$(git status --porcelain "$manifest")" ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$manifest"
+          git commit -m "chore: update screenshot baseline manifest"
+          git push
+        fi
