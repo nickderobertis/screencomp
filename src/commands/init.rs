@@ -13,7 +13,7 @@ use std::io::Write;
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use super::{Ctx, write_err};
+use super::{Ctx, platform, write_err};
 use crate::cli::{InitArgs, OutputFormat};
 use crate::errors::AppError;
 use crate::io::fs::{self, Scaffold};
@@ -23,8 +23,11 @@ use crate::io::fs::{self, Scaffold};
 const GITIGNORE_MARKER: &str = "# screencomp: commit the digest baselines";
 
 pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    let toml = render_config(&args.platform);
-    let workflow = render_workflow(&args.platform);
+    // Resolve `auto` to the host `<os>-<arch>` so the scaffold matches the
+    // machine it is generated on, consistent with `--platform auto` elsewhere.
+    let platform = platform::resolve(&args.platform);
+    let toml = render_config(&platform);
+    let workflow = render_workflow(&platform);
     let gitignore = render_gitignore();
 
     // The config and workflow are plain scaffolds; .gitignore is appended so a
@@ -50,7 +53,7 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
 
     match args.format {
         OutputFormat::Json => write_json(&outcomes, out)?,
-        OutputFormat::Human if !ctx.quiet => write_human(&args.platform, &outcomes, out)?,
+        OutputFormat::Human if !ctx.quiet => write_human(&platform, &outcomes, out)?,
         OutputFormat::Human => {}
     }
     Ok(0)

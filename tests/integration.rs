@@ -1257,6 +1257,25 @@ fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
 }
 
 #[test]
+fn init_platform_auto_resolves_to_the_host_key() {
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    let (code, _) = invoke(&["screencomp", "init", "--dir", &root, "--platform", "auto"]);
+    assert_eq!(code.unwrap(), 0);
+
+    // The scaffold is wired to the host's own key, not the literal "auto".
+    let key = host_key();
+    let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+    assert!(
+        toml.contains(&format!("shots/baseline/{key}.sha256")),
+        "{toml}"
+    );
+    assert!(!toml.contains("auto"), "{toml}");
+    let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+    assert!(wf.contains(&format!("platform: {key}")), "{wf}");
+}
+
+#[test]
 fn init_json_reports_each_file_action() {
     let dir = TempDir::new().unwrap();
     let root = path_str(dir.path());

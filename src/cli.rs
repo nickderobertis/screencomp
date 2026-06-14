@@ -284,7 +284,7 @@ pub struct InitArgs {
 
     /// Platform key the scaffolded config and workflow capture under (e.g.
     /// `linux-x86_64`). Determines the committed manifest path and shot output
-    /// directory.
+    /// directory. Use `auto` to resolve the host `<os>-<arch>`.
     #[arg(long, value_name = "KEY", default_value = "linux-x86_64")]
     pub platform: String,
 
