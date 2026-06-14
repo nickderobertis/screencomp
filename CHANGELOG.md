@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/nickderobertis/screencomp/compare/v0.1.13...v0.1.14) - 2026-06-14
+
+### Added
+
+- *(config)* auto-discover screencomp.toml by walking up from the cwd ([#39](https://github.com/nickderobertis/screencomp/pull/39))
+
 ## [0.1.13](https://github.com/nickderobertis/screencomp/compare/v0.1.12...v0.1.13) - 2026-06-14
 
 ### Fixed
