@@ -1310,8 +1310,9 @@ fn init_caller_matches_the_reusable_workflow_interface() {
     );
 
     // Every `with:` input the caller passes is declared by the reusable workflow
-    // (both indent inputs six spaces under their respective blocks).
-    for input in ["platform", "capture-command"] {
+    // (both indent inputs six spaces under their respective blocks). The strict
+    // scaffold opts into `fail-on-drift` explicitly, so it must stay a real input.
+    for input in ["platform", "capture-command", "fail-on-drift"] {
         let decl = format!("\n      {input}:");
         assert!(
             reusable.contains(&decl),
@@ -1322,13 +1323,11 @@ fn init_caller_matches_the_reusable_workflow_interface() {
             "caller stopped passing input {input}"
         );
     }
-    // The wired secret is declared too.
+    // The strict scaffold does not auto-push the manifest, so it wires no
+    // push-token; the secret stays declared for consumers who opt into
+    // CI auto-accept (update-manifest: true).
     assert!(
         reusable.contains("\n      push-token:"),
         "reusable workflow missing secret push-token"
-    );
-    assert!(
-        caller.contains("push-token:"),
-        "caller stopped wiring push-token"
     );
 }

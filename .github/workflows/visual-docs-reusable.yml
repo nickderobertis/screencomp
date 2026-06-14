@@ -82,6 +82,33 @@ on:
           side effects — a dry run for previewing or for testing the workflow.
         type: boolean
         default: true
+      fail-on-drift:
+        description: >-
+          Fail the job when the capture drifts from the committed baseline manifest
+          (the strict gate, default). The developer regenerates and commits the
+          baseline locally with the pre-push guard; CI is the backstop that goes
+          red on anything they missed. Set false to auto-accept drift instead — a
+          loud warning, not a failed check (the lighter model, where changes can
+          slip through unnoticed).
+        type: boolean
+        default: true
+      update-manifest:
+        description: >-
+          Regenerate the baseline manifest and, on a PR when publishing, push it to
+          the PR branch. Off by default: under the strict gate the developer owns
+          the baseline. Turn it on (with fail-on-drift:false) for the CI-auto-accept
+          model, where CI moves the baseline for you.
+        type: boolean
+        default: false
+      comment-base-ref:
+        description: >-
+          Git ref whose committed manifest is the PR comment's "Before". Defaults to
+          the PR base branch, so the sticky comment shows the intended before/after
+          even though classify gates against the (already-updated) committed
+          baseline. Set to a single space or an unknown ref to fall back to diffing
+          the committed manifest.
+        type: string
+        default: ''
     secrets:
       push-token:
         description: >-
@@ -181,18 +208,31 @@ jobs:
           screencomp verify --first shots/current --second shots/verify --platform "$PLATFORM"
           rm -rf shots/verify
 
-      # Diff against the committed manifest, or seed it on the first run. A diff is
-      # EXPECTED on a feature PR, so classify never fails the job.
+      # Diff against the committed manifest, or seed it on the first run. Under the
+      # strict gate (fail-on-drift:true, the default) drift FAILS the job — the
+      # developer was meant to regenerate and commit the baseline locally. Set
+      # fail-on-drift:false to auto-accept instead, surfacing the drift as a loud
+      # warning rather than a red check.
       - name: Classify against the baseline manifest
         run: |
-          set -euo pipefail
-          if [ -f "$MANIFEST" ]; then
-            echo "HAS_BASELINE=true" >>"$GITHUB_ENV"
-            screencomp classify --baseline-manifest "$MANIFEST" \
-              --current shots/current --platform "$PLATFORM" || true
-          else
+          set -uo pipefail
+          if [ ! -f "$MANIFEST" ]; then
             echo "HAS_BASELINE=false" >>"$GITHUB_ENV"
             echo "no committed baseline at $MANIFEST; this run seeds it"
+            exit 0
+          fi
+          echo "HAS_BASELINE=true" >>"$GITHUB_ENV"
+          screencomp classify --baseline-manifest "$MANIFEST" \
+            --current shots/current --platform "$PLATFORM" --exit-code
+          status=$?
+          if [ "$status" -eq 3 ]; then
+            if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
+              echo "::error::Screenshots drifted from the committed baseline ($MANIFEST). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
+              exit 3
+            fi
+            echo "::warning::Baseline drifted from $MANIFEST and was auto-accepted (fail-on-drift:false); changes can slip through unnoticed. Set fail-on-drift:true plus the pre-push guard for a hard gate." >&2
+          elif [ "$status" -ne 0 ]; then
+            exit "$status"
           fi
 
       # A plain gallery of the current capture. In manifest mode there are no
@@ -239,9 +279,34 @@ jobs:
           done
           echo "preview not live yet; the comment will still link to it" >&2
 
+      # Resolve the manifest the COMMENT diffs against. Under the strict gate the
+      # committed manifest already matches the current capture (the developer
+      # updated it), so diffing against it would show "no changes" for a real UI
+      # change. Sourcing "Before" from the PR base branch's manifest instead makes
+      # the comment show the intended before/after. classify still gates against
+      # the committed manifest — gate vs committed, comment vs base.
+      - name: Resolve comment baseline
+        id: cbase
+        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' }}
+        run: |
+          set -euo pipefail
+          base_ref='${{ inputs.comment-base-ref }}'
+          [ -n "$base_ref" ] || base_ref='${{ github.base_ref }}'
+          comment_manifest="$MANIFEST"
+          if [ -n "${base_ref// }" ]; then
+            git fetch --depth=1 origin "$base_ref" || true
+            if git show "origin/${base_ref}:${MANIFEST}" >base-manifest.sha256 2>/dev/null; then
+              comment_manifest="base-manifest.sha256"
+              echo "comment 'Before' sourced from origin/${base_ref}:${MANIFEST}"
+            else
+              echo "no manifest at origin/${base_ref}:${MANIFEST}; comparing against the committed one"
+            fi
+          fi
+          echo "manifest=$comment_manifest" >>"$GITHUB_OUTPUT"
+
       # Render the sticky before/after comment. "After" comes from this PR's
       # preview gallery; "Before" from the canonical main gallery (the blessed
-      # current state) — gate against the committed baseline, report against main.
+      # current state). The diff itself uses the base-ref manifest resolved above.
       # Skipped on the seeding run (no baseline to diff). Without Pages it degrades
       # to a path listing.
       - name: Render PR comment
@@ -249,13 +314,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
-            screencomp comment --baseline-manifest "$MANIFEST" \
+            screencomp comment --baseline-manifest "${{ steps.cbase.outputs.manifest }}" \
               --current shots/current --platform "$PLATFORM" \
               --gallery-url "$PR_PREVIEW_URL" \
               --baseline-url "$MAIN_GALLERY_URL" \
               --output comment.md
           else
-            screencomp comment --baseline-manifest "$MANIFEST" \
+            screencomp comment --baseline-manifest "${{ steps.cbase.outputs.manifest }}" \
               --current shots/current --platform "$PLATFORM" --output comment.md
           fi
 
@@ -269,17 +334,19 @@ jobs:
           gh pr comment "$PR" --body-file comment.md --edit-last \
             || gh pr comment "$PR" --body-file comment.md
 
-      # Regenerate the manifest (seeds it on the first run) and push it to the PR
-      # branch. Its text diff (old hash -> new hash per shot) is the review surface;
-      # merging accepts the new baseline. Loop-safe with any token: a re-triggered
-      # run regenerates an identical manifest, sees no diff, and does not push.
+      # CI-auto-accept model only (update-manifest:true): regenerate the manifest
+      # (seeding it on the first run) and push it to the PR branch, so CI moves the
+      # baseline for the developer. Off under the strict gate, where the developer
+      # owns the baseline. Loop-safe with any token: a re-triggered run regenerates
+      # an identical manifest, sees no diff, and does not push.
       - name: Update the baseline manifest
+        if: ${{ inputs.update-manifest }}
         run: |
           set -euo pipefail
           screencomp manifest --input shots/current --platform "$PLATFORM" --output "$MANIFEST"
 
       - name: Push the manifest to the PR branch
-        if: ${{ github.event_name == 'pull_request' && inputs.publish }}
+        if: ${{ github.event_name == 'pull_request' && inputs.publish && inputs.update-manifest }}
         run: |
           set -euo pipefail
           if [ -n "$(git status --porcelain "$MANIFEST")" ]; then

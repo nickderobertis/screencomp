@@ -49,6 +49,9 @@ jobs:
       verify: true
       pages: false
       publish: false
+      # Exercise the manifest-regeneration path even though it is off by default
+      # under the strict gate (publish:false keeps it side-effect-free here).
+      update-manifest: true
 
   # The composite action composed into a consumer's own host job, in both the
   # platform-subtree and project-level (platform: "") layouts.
