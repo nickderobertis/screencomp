@@ -659,3 +659,102 @@ fn init_scaffolds_a_working_setup() {
     );
     assert!(dir.path().join(".gitignore").exists());
 }
+
+#[test]
+fn comment_manifest_mode_before_after_from_separate_urls() {
+    // Manifest mode with explicit --baseline-url/--current-url restores a real
+    // before/after diff: "Before" from a canonical gallery, "After" from the PR
+    // one. This is the decoupling that makes manifest-mode comments usable.
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--baseline-url")
+        .arg("https://example.test/main")
+        .arg("--current-url")
+        .arg("https://example.test/pr/4")
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    assert!(md.contains("| Before | After |"), "{md}");
+    assert!(
+        md.contains("src=\"https://example.test/main/desktop/about.png\""),
+        "{md}"
+    );
+    assert!(
+        md.contains("src=\"https://example.test/pr/4/desktop/about.png\""),
+        "{md}"
+    );
+}
+
+#[test]
+fn comment_urls_resolve_to_real_gallery_files() {
+    // The regression guard for "gallery and comment disagree on URL layout":
+    // build a plain gallery, then assert every inline image the comment emits
+    // (via --current-url) resolves to a file the gallery actually wrote.
+    let dir = TempDir::new().unwrap();
+    let gallery_dir = dir.path().join("site");
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--output")
+        .arg(&gallery_dir)
+        .assert()
+        .success();
+
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let base = "https://example.test/site";
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--current-url")
+        .arg(base)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    let prefix = format!("{base}/");
+    let mut checked = 0;
+    for piece in md.split("src=\"").skip(1) {
+        let url = &piece[..piece.find('"').expect("closing quote")];
+        if let Some(rel) = url.strip_prefix(&prefix) {
+            assert!(
+                gallery_dir.join(rel).exists(),
+                "comment references {rel}, but the gallery never wrote it (layouts disagree)"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "expected at least one inline image to verify: {md}"
+    );
+}

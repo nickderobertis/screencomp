@@ -1266,3 +1266,50 @@ fn init_json_reports_each_file_action() {
     assert!(out.contains(r#""action":"created""#), "{out}");
     assert!(out.contains("screencomp.toml"), "{out}");
 }
+
+#[test]
+fn init_caller_matches_the_reusable_workflow_interface() {
+    // The scaffolded caller must stay consistent with the reusable workflow this
+    // repo ships: a rename of an input/secret there (or moving the file) would
+    // silently break every consumer's `init` output, and actionlint never lints
+    // the runtime-generated caller, so guard the interface here.
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
+    let caller =
+        std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+
+    let reusable_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(".github/workflows/visual-docs-reusable.yml");
+    let reusable = std::fs::read_to_string(&reusable_path)
+        .expect("the reusable workflow the caller references must exist in this repo");
+
+    // The caller's `uses:` points at that very file.
+    assert!(
+        caller.contains(".github/workflows/visual-docs-reusable.yml@"),
+        "{caller}"
+    );
+
+    // Every `with:` input the caller passes is declared by the reusable workflow
+    // (both indent inputs six spaces under their respective blocks).
+    for input in ["platform", "capture-command"] {
+        let decl = format!("\n      {input}:");
+        assert!(
+            reusable.contains(&decl),
+            "reusable workflow missing input {input}"
+        );
+        assert!(
+            caller.contains(&decl),
+            "caller stopped passing input {input}"
+        );
+    }
+    // The wired secret is declared too.
+    assert!(
+        reusable.contains("\n      push-token:"),
+        "reusable workflow missing secret push-token"
+    );
+    assert!(
+        caller.contains("push-token:"),
+        "caller stopped wiring push-token"
+    );
+}
