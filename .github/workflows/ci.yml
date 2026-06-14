@@ -37,6 +37,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install just
         uses: extractions/setup-just@v2
+      # `just bootstrap` installs cargo-nextest/llvm-cov/deny/machete. With only
+      # `cargo install` available it compiles them from source against the pinned
+      # 1.89 toolchain, and the newest nextest's MSRV is higher — it fails to
+      # build. cargo-binstall fetches the prebuilt release binaries instead, so
+      # bootstrap is fast and toolchain-independent (and `_ensure-tools` already
+      # prefers it when present).
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
       - name: Bootstrap
         run: just bootstrap
       - name: Check

@@ -264,7 +264,12 @@ doctor:
 
 # --- internal helpers -------------------------------------------------------
 
-# Install missing cargo-based dev tools (prefers cargo-binstall when present).
+# Install missing cargo-based dev tools as prebuilt binaries via cargo-binstall.
+# Building these from source compiles them against the pinned toolchain, and the
+# latest releases (e.g. cargo-nextest) carry an MSRV newer than what this repo
+# pins — so a `cargo install` fallback fails on a clean machine. cargo-binstall
+# fetches prebuilt release binaries, which is both faster and toolchain-agnostic;
+# bootstrap installs it first if it is absent so the path works from scratch.
 _ensure-tools:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -273,13 +278,15 @@ _ensure-tools:
     for t in cargo-nextest cargo-llvm-cov cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        if command -v cargo-binstall >/dev/null 2>&1; then
-            cargo binstall --no-confirm "${missing[@]}"
-        else
-            cargo install --locked "${missing[@]}"
-        fi
+    if [ "${#missing[@]}" -eq 0 ]; then
+        exit 0
     fi
+    if ! command -v cargo-binstall >/dev/null 2>&1; then
+        echo "installing cargo-binstall (prebuilt-binary installer)"
+        curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    fi
+    cargo binstall --no-confirm "${missing[@]}"
 
 # Install the pinned lefthook binary onto PATH if it is missing.
 _ensure-lefthook:
