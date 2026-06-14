@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/nickderobertis/screencomp/compare/v0.1.14...v0.1.15) - 2026-06-14
+
+### Added
+
+- *(action)* add visual-docs composite action for custom-capture jobs ([#42](https://github.com/nickderobertis/screencomp/pull/42))
+
 ## [0.1.14](https://github.com/nickderobertis/screencomp/compare/v0.1.13...v0.1.14) - 2026-06-14
 
 ### Added
