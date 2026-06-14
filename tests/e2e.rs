@@ -157,6 +157,44 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
 }
 
 #[test]
+fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
+    // The headline image-free feature: with a digest-manifest baseline there are
+    // no baseline PNGs to host, so a `--gallery-url` (a plain gallery of the
+    // current shots) must embed only "After" images at `<URL>/<project>/<name>.png`
+    // — never a `baseline/` URL that would 404 in the rendered comment.
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("baseline.sha256");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    let out = dir.path().join("comment.md");
+    bin()
+        .args(["comment", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(current())
+        .arg("--gallery-url")
+        .arg("https://example.test/site/")
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    assert!(
+        md.contains("src=\"https://example.test/site/desktop/about.png\""),
+        "{md}"
+    );
+    assert!(!md.contains("/baseline/"), "{md}");
+    assert!(!md.contains("/current/"), "{md}");
+}
+
+#[test]
 fn gallery_creates_index_html() {
     let dir = TempDir::new().unwrap();
 
@@ -270,7 +308,7 @@ fn gallery_diff_scopes_both_trees_by_platform() {
 }
 
 #[test]
-fn missing_platform_subtree_names_the_path_on_stderr() {
+fn missing_platform_subtree_hints_the_layout_on_stderr() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
@@ -286,8 +324,10 @@ fn missing_platform_subtree_names_the_path_on_stderr() {
         .failure()
         .code(1)
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("not a directory"))
-        .stderr(predicate::str::contains("windows-x86_64"));
+        // A layout hint naming the missing key and the platform layer, not a bare
+        // "not a directory".
+        .stderr(predicate::str::contains("windows-x86_64"))
+        .stderr(predicate::str::contains("--platform"));
 }
 
 #[test]

@@ -15,16 +15,15 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use super::{Ctx, platform, write_err};
+use super::{Ctx, discover_scoped, write_err};
 use crate::cli::{OutputFormat, VerifyArgs};
 use crate::domain::classify::{Classification, Status, classify};
 use crate::errors::AppError;
-use crate::io::fs;
 
 pub(crate) fn run(args: &VerifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     let plat = args.platform.as_deref();
-    let first = fs::discover(&platform::scope(&args.first, plat))?;
-    let second = fs::discover(&platform::scope(&args.second, plat))?;
+    let first = discover_scoped(&args.first, plat)?;
+    let second = discover_scoped(&args.second, plat)?;
     // `first` plays the baseline role: a shot only in `first` is `Removed`
     // (only-in-first), one only in `second` is `Added` (only-in-second).
     let result = classify(&first, &second);

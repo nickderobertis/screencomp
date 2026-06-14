@@ -165,10 +165,27 @@ pub struct CommentArgs {
     #[arg(long, value_name = "ID")]
     pub marker: Option<String>,
 
-    /// Optional gallery URL to link from the comment. When set, it is also the
-    /// base URL for inline image previews.
+    /// Optional gallery URL linked from the comment as "View full gallery". When
+    /// `--baseline-url`/`--current-url` are not set, it also derives the inline
+    /// preview bases from the layout `gallery` writes: with an image-tree baseline
+    /// (`--baseline`) a diff gallery's `<URL>/baseline/...` and `<URL>/current/...`;
+    /// with `--baseline-manifest` a plain gallery's `<URL>/...` for the current
+    /// shots only (manifest mode hosts no baseline images).
     #[arg(long, value_name = "URL")]
     pub gallery_url: Option<String>,
+
+    /// Base URL hosting the baseline ("Before") images in the plain
+    /// `<URL>/<project>/<name>.png` layout (e.g. a canonical/main gallery).
+    /// Overrides whatever `--gallery-url` would derive. The way to show a real
+    /// before/after diff in manifest mode, where no baseline PNGs are committed.
+    #[arg(long, value_name = "URL")]
+    pub baseline_url: Option<String>,
+
+    /// Base URL hosting the current ("After") images in the plain
+    /// `<URL>/<project>/<name>.png` layout. Overrides whatever `--gallery-url`
+    /// would derive; pair with `--baseline-url` to source each side independently.
+    #[arg(long, value_name = "URL")]
+    pub current_url: Option<String>,
 
     /// Embed inline image previews when at most this many screenshots differ
     /// (requires `--gallery-url`). Overrides `comment.embed_limit` (default 10);

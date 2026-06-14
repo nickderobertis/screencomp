@@ -328,7 +328,9 @@ fn platform_auto_resolves_to_the_host_subtree() {
 }
 
 #[test]
-fn missing_platform_subtree_is_not_a_directory_error() {
+fn missing_platform_subtree_explains_the_layout() {
+    // The baseline holds a `linux-arm64` subtree but we ask for `windows-x86_64`.
+    // The absent subtree must produce a layout hint, not a bare "not a directory".
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
@@ -345,7 +347,13 @@ fn missing_platform_subtree_is_not_a_directory_error() {
         "--platform",
         "windows-x86_64",
     ]);
-    assert!(matches!(result, Err(AppError::NotADirectory { .. })));
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected an InvalidLayout hint, got {result:?}");
+    };
+    assert!(reason.contains("windows-x86_64"), "{reason}");
+    // The hint points at the platform layer and what the root actually holds.
+    assert!(reason.contains("--platform"), "{reason}");
+    assert!(reason.contains("linux-arm64"), "{reason}");
 }
 
 #[test]
@@ -434,6 +442,85 @@ fn comment_accepts_a_baseline_manifest() {
     ]);
     assert_eq!(code.unwrap(), 0);
     assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
+}
+
+#[test]
+fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
+    // Manifest mode commits no baseline PNGs, so a `--gallery-url` (a plain
+    // gallery of the current shots) must source "After" images from `<URL>/...`
+    // and never emit a `baseline/` URL that would 404.
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("b.sha256"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+        "--gallery-url",
+        "https://example.test/site/",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    // Plain layout, current shots only: no `baseline/` or `current/` segment.
+    assert!(
+        out.contains("src=\"https://example.test/site/desktop/about.png\""),
+        "{out}"
+    );
+    assert!(!out.contains("/baseline/"), "{out}");
+    assert!(!out.contains("/current/"), "{out}");
+}
+
+#[test]
+fn comment_manifest_mode_sources_before_from_baseline_url() {
+    // An explicit `--baseline-url` (a canonical/main gallery) restores a real
+    // before/after diff in manifest mode: Before from it, After from --current-url.
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("b.sha256"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "comment",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &current(),
+        "--baseline-url",
+        "https://example.test/main",
+        "--current-url",
+        "https://example.test/pr/9",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("| Before | After |"), "{out}");
+    assert!(
+        out.contains("src=\"https://example.test/main/desktop/about.png\""),
+        "{out}"
+    );
+    assert!(
+        out.contains("src=\"https://example.test/pr/9/desktop/about.png\""),
+        "{out}"
+    );
 }
 
 #[test]

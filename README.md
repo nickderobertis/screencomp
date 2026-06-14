@@ -162,14 +162,30 @@ screencomp comment --baseline baseline --current current \
 ```
 
 The diff gallery groups shots into Changed (rendered before/after), Added,
-Removed, and Unchanged, and copies both image trees so it is self-contained.
+Removed, and Unchanged, and copies both image trees so it is self-contained at
+`<output>/baseline/<project>/<name>.png` and `<output>/current/<project>/<name>.png`.
+A plain gallery (no `--baseline`) instead lays a single tree out flat at
+`<output>/<project>/<name>.png`.
 
-When `--gallery-url` is given and the diff is small (at most `comment.embed_limit`
-screenshots differ — 10 by default), the comment embeds the changed shots inline
-(changed before/after, added/removed as a single image) resolved against that
-URL, and still links to the full gallery. Larger diffs fall back to a path
-listing plus the link. Override the threshold with `--embed-limit <N>` (`0`
-disables embedding).
+When the diff is small (at most `comment.embed_limit` screenshots differ — 10 by
+default) and the comment can resolve an image URL, it embeds the changed shots
+inline (changed before/after, added/removed as a single image) and still links to
+the full gallery. Larger diffs fall back to a path listing plus the link.
+Override the threshold with `--embed-limit <N>` (`0` disables embedding).
+
+The comment resolves its "Before" and "After" image URLs to match the gallery
+layout above:
+
+- `--gallery-url <URL>` is the "View full gallery" link and, on its own, derives
+  the preview bases from what `gallery` writes. With an image-tree baseline
+  (`--baseline`) that is a diff gallery, so `<URL>/baseline/…` and `<URL>/current/…`.
+  With `--baseline-manifest` no baseline PNGs exist, so it points "After" at a
+  plain gallery of the current shots (`<URL>/…`) and omits "Before" rather than
+  emit a baseline URL that would 404.
+- `--baseline-url <URL>` / `--current-url <URL>` override either side explicitly,
+  each in the plain `<URL>/<project>/<name>.png` layout. This is how manifest mode
+  still shows a real before/after diff: point `--baseline-url` at a canonical/main
+  gallery and `--current-url` at the per-PR one.
 
 `classify --exit-code` returns a non-zero status when differences exist, for
 automation that wants a signal without parsing output:

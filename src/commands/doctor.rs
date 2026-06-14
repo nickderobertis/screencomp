@@ -13,11 +13,10 @@ use std::io::Write;
 use camino::Utf8Path;
 use serde::Serialize;
 
-use super::{Ctx, platform, write_err};
+use super::{Ctx, platform, scan_scoped, write_err};
 use crate::cli::{DoctorArgs, OutputFormat};
 use crate::domain::layout::LayoutScan;
 use crate::errors::AppError;
-use crate::io::fs;
 
 pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     let plat = args.platform.as_deref();
@@ -26,8 +25,8 @@ pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
     let resolved = plat.map(platform::resolve);
     let scoped = platform::scope(&args.input, plat);
     // A missing scoped directory is the same hard error every command raises, so
-    // a typo in `--platform` fails identically here.
-    let scan = fs::scan_layout(&scoped)?;
+    // a typo in `--platform` fails identically here (with a layout hint).
+    let scan = scan_scoped(&args.input, plat)?;
 
     match args.format {
         OutputFormat::Json => write_json(&args.input, resolved.as_deref(), &scoped, &scan, out)?,
