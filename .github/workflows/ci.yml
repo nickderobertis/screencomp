@@ -30,6 +30,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Authenticate cargo-binstall's GitHub API calls in `just bootstrap` so it
+      # is not rate-limited into falling back to a source compile.
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - name: Provision pinned toolchain

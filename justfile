@@ -286,7 +286,12 @@ _ensure-tools:
         curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
         export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
     fi
-    cargo binstall --no-confirm "${missing[@]}"
+    # Only ever install the published prebuilt binaries. The `compile` fallback
+    # would build the tool from source against the pinned toolchain, and the
+    # latest releases carry a newer MSRV — so a failed/rate-limited download must
+    # error loudly, not silently compile. Authenticated GitHub API calls
+    # (GITHUB_TOKEN, set in CI) avoid the rate-limiting that triggers fallback.
+    cargo binstall --no-confirm --disable-strategies compile "${missing[@]}"
 
 # Install the pinned lefthook binary onto PATH if it is missing.
 _ensure-lefthook:
