@@ -22,7 +22,10 @@
 #
 # It expects the capture to already be on disk (default shots/current) and
 # screencomp to be installed (run nickderobertis/screencomp first). It needs host
-# tools (gh, git) — run it in a host job, not inside your capture container.
+# tools (gh, git) AND a real git checkout — run it in a HOST job that consumes the
+# capture as an artifact, never inside the capture container (container checkouts
+# often lack .git, which breaks the manifest push and the comment's base-ref diff).
+# Keep git/hook steps out of the capture container; keep capture byte-stable there.
 name: screencomp visual docs
 description: >-
   Classify a capture against the baseline digest manifest, build the gallery,
@@ -62,10 +65,29 @@ inputs:
     description: 'Perform external side effects (PR comment, manifest push, Pages deploy). Set false for a dry run.'
     required: false
     default: 'true'
-  update-manifest:
-    description: 'Regenerate the baseline manifest and (when publishing, on a PR) push it. Set false for a local-only baseline.'
+  fail-on-drift:
+    description: >-
+      Fail the step when the capture drifts from the committed baseline manifest
+      (the strict gate, default). The developer regenerates and commits the
+      baseline locally with the pre-push guard; this is the backstop. Set false to
+      auto-accept drift as a loud warning instead of a failed check.
     required: false
     default: 'true'
+  update-manifest:
+    description: >-
+      Regenerate the baseline manifest and (when publishing, on a PR) push it. Off
+      by default: under the strict gate the developer owns the baseline. Turn on
+      (with fail-on-drift:false) for the CI-auto-accept model.
+    required: false
+    default: 'false'
+  comment-base-ref:
+    description: >-
+      Git ref whose committed manifest is the PR comment's "Before". Defaults to the
+      PR base branch, so the comment shows the intended before/after even though
+      classify gates against the (already-updated) committed baseline. Empty/unknown
+      falls back to diffing the committed manifest.
+    required: false
+    default: ''
   gallery-url:
     description: 'Override the "After" image base URL for the comment (defaults to this PR''s Pages preview).'
     required: false
@@ -139,9 +161,19 @@ runs:
       if: ${{ steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
       run: |
-        set -euo pipefail
+        set -uo pipefail
         screencomp classify --baseline-manifest '${{ steps.cfg.outputs.manifest }}' \
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} || true
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} --exit-code
+        status=$?
+        if [ "$status" -eq 3 ]; then
+          if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
+            echo "::error::Screenshots drifted from the committed baseline (${{ steps.cfg.outputs.manifest }}). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
+            exit 3
+          fi
+          echo "::warning::Baseline drifted and was auto-accepted (fail-on-drift:false); changes can slip through unnoticed. Set fail-on-drift:true plus the pre-push guard for a hard gate." >&2
+        elif [ "$status" -ne 0 ]; then
+          exit "$status"
+        fi
 
     - name: Build gallery
       if: ${{ inputs.pages == 'true' }}
@@ -183,12 +215,38 @@ runs:
         done
         echo "preview not live yet; the comment will still link to it" >&2
 
+    # Resolve the manifest the COMMENT diffs against. Under the strict gate the
+    # committed manifest already matches the current capture, so source "Before"
+    # from the PR base branch's manifest to show the intended before/after.
+    # classify still gates against the committed manifest — gate vs committed,
+    # comment vs base.
+    - name: Resolve comment baseline
+      id: cbase
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        manifest='${{ steps.cfg.outputs.manifest }}'
+        base_ref='${{ inputs.comment-base-ref }}'
+        [ -n "$base_ref" ] || base_ref='${{ github.base_ref }}'
+        comment_manifest="$manifest"
+        if [ -n "${base_ref// }" ]; then
+          git fetch --depth=1 origin "$base_ref" || true
+          if git show "origin/${base_ref}:${manifest}" >base-manifest.sha256 2>/dev/null; then
+            comment_manifest="base-manifest.sha256"
+            echo "comment 'Before' sourced from origin/${base_ref}:${manifest}"
+          else
+            echo "no manifest at origin/${base_ref}:${manifest}; comparing against the committed one"
+          fi
+        fi
+        echo "manifest=$comment_manifest" >>"$GITHUB_OUTPUT"
+
     - name: Render PR comment
       if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
-        args=(--baseline-manifest '${{ steps.cfg.outputs.manifest }}'
+        args=(--baseline-manifest '${{ steps.cbase.outputs.manifest }}'
           --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }}
           --output comment.md)
         # Explicit `if`, not `cond && cmd`: the latter trips `set -e` when the

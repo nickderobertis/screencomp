@@ -688,12 +688,26 @@ fn init_scaffolds_a_working_setup() {
         .success()
         .stdout(predicate::str::contains("<!-- screencomp -->"));
 
-    assert!(
-        dir.path()
-            .join(".github/workflows/visual-docs.yml")
-            .exists()
-    );
+    let workflow =
+        std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+    // The scaffold opts into the strict gate explicitly.
+    assert!(workflow.contains("fail-on-drift: true"), "{workflow}");
     assert!(dir.path().join(".gitignore").exists());
+
+    // The strict scaffold also drops the local pre-push guard, executable and
+    // baked for the chosen platform, with the robust scope-exit handling.
+    let hook_path = dir.path().join(".githooks/pre-push");
+    let hook = std::fs::read_to_string(&hook_path).unwrap();
+    assert!(hook.contains("PLATFORM=\"linux-x86_64\""), "{hook}");
+    assert!(hook.contains("DOCKER_PLATFORM=\"linux/amd64\""), "{hook}");
+    // Only exit 3 means "relevant"; an errored scope check skips, not captures.
+    assert!(hook.contains("scope_status"), "{hook}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&hook_path).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "hook must be executable: {mode:o}");
+    }
 }
 
 #[test]

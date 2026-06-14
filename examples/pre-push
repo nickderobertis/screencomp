@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# screencomp local pre-push guard (optional) — COPY-PASTE TEMPLATE.
+# screencomp local pre-push guard — COPY-PASTE TEMPLATE.
 #
-# This complements, and does NOT replace, the CI workflow in
-# examples/visual-docs.yml. CI silently regenerates the digest manifest on every
-# PR, so a developer can change UI, pass their whole local gate, and push without
-# ever learning the visual baseline moved. This hook closes that gap locally: it
-# re-captures ONLY when screenshot-relevant files changed (see [guard].paths in
-# screencomp.toml) and makes any baseline change loud and reviewable before you
-# push. Capture and git stay in your hands — the capture step below is yours to
-# adapt, exactly like visual-docs.yml's "Capture screenshots" step.
+# Local half of the STRICT gate (the recommended model): CI hard-fails when a
+# capture drifts from the committed baseline, and this hook lets you regenerate
+# and COMMIT the new baseline before pushing, so CI stays green on intended
+# changes and goes red only on ones you missed. It re-captures ONLY when
+# screenshot-relevant files changed (see [guard].paths in screencomp.toml) and
+# makes any baseline change loud and reviewable before you push. Capture and git
+# stay in your hands — the capture step below is yours to adapt, exactly like
+# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds a
+# version of this hook with your platform baked in (.githooks/pre-push).
 #
 # What it does on a push:
 #   1. Compute the push range from git's stdin (new branches fall back to the
@@ -34,7 +35,13 @@
 set -euo pipefail
 
 # ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
-PLATFORM="linux-x86_64"                       # [guard].platform
+PLATFORM="linux-x86_64"                        # [guard].platform
+# Capture container arch for $PLATFORM: linux/arm64 for an arm64/aarch64 key,
+# linux/amd64 otherwise. (`screencomp init` bakes the right value in for you.)
+case "$PLATFORM" in
+  *arm64* | *aarch64*) DOCKER_PLATFORM="linux/arm64" ;;
+  *) DOCKER_PLATFORM="linux/amd64" ;;
+esac
 MANIFEST="shots/baseline/${PLATFORM}.sha256"  # [guard].manifest (committed)
 GALLERY="shots/review"                        # [guard].gallery  (review output)
 CURRENT="shots/current"                       # capture root, mirrors visual-docs.yml
@@ -86,11 +93,24 @@ fi
 changed="$(for r in "${ranges[@]}"; do git diff --name-only "$r"; done | sort -u)"
 
 # --- 2. Cheap path: is anything screenshot-relevant? -------------------------
-# `scope` exits 3 when a path matches [guard].paths, 0 when none do. Piping the
-# change set in keeps the relevance check robust instead of fragile shell globs.
-if printf '%s\n' "$changed" | screencomp scope --config "$CONFIG" --changed-from - --exit-code --quiet; then
-  exit 0 # exit 0 from scope == nothing relevant; pass silently, no capture
-fi
+# `scope` exits 3 when a changed path matches [guard].paths, 0 when none do, and
+# any OTHER non-zero on error (an old CLI without `scope`, a bad config, ...).
+# Treat ONLY exit 3 as relevant; on an error, warn and skip rather than assume
+# relevance and pay for a full capture — CI is the backstop, so a false "relevant"
+# here is the wrong bet (and the bug an "any non-zero == relevant" check caused).
+set +e
+printf '%s\n' "$changed" | screencomp scope --config "$CONFIG" --changed-from - --exit-code --quiet
+scope_status=$?
+set -e
+case "$scope_status" in
+  0) exit 0 ;; # nothing relevant: pass silently, no capture
+  3) : ;;      # a relevant path matched: fall through to capture
+  *)
+    echo "pre-push: 'screencomp scope' failed (exit $scope_status); skipping the" >&2
+    echo "          visual guard. Is screencomp current? CI still gates this." >&2
+    exit 0
+    ;;
+esac
 
 # --- 3. Relevant change: capture requires Docker -----------------------------
 # A green push without a working capture environment is FALSE assurance, so a
@@ -113,7 +133,7 @@ fi
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
 # Capture into $CURRENT/$PLATFORM/<project>/<name>.png using the SAME pinned
 # container and flags as examples/visual-docs.yml, so local bytes match CI.
-docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
+docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
   -v "$PWD:/work" -w /work \
   mcr.microsoft.com/playwright:v1.60.0-noble \
   bash -lc "npm ci && SHOTS_OUT=$CURRENT/$PLATFORM npx playwright test"

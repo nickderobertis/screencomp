@@ -92,6 +92,30 @@ just build-release   # binary at target/release/screencomp
 
 ### As a GitHub Action
 
+#### Pick your gate
+
+Decide how CI should react to a visual change before wiring the workflow — this is
+the one choice that shapes everything downstream:
+
+- **Strict gate + local pre-push guard (recommended).** CI **fails** when a
+  capture drifts from the committed baseline. You regenerate and commit the
+  baseline locally — the [pre-push guard](#local-pre-push-guard-the-strict-gates-local-half)
+  re-captures only when screenshot-relevant files change and blocks the push until
+  you do — so an intended change is already committed by the time CI runs: green on
+  intended changes, red only on drift you missed. Pushes nothing back, so it needs
+  no elevated token and just works under branch protection. This is what
+  [`screencomp init`](#scaffold-a-setup-init) scaffolds.
+- **CI auto-accept (lighter).** CI regenerates the baseline and pushes it to the
+  PR branch; drift never turns the check red. Less to set up, but an unintended
+  visual change can slip through unnoticed, and the manifest push needs a
+  trigger-capable token under branch protection.
+
+The reusable workflow and composite action default to the strict gate
+(`fail-on-drift: true`, `update-manifest: false`). For auto-accept, set
+`fail-on-drift: false` and `update-manifest: true`.
+
+#### Installing the CLI
+
 A composite action installs the CLI (and optionally runs it) on a runner:
 
 ```yaml
@@ -127,12 +151,17 @@ jobs:
 ```
 
 It runs the reproducibility gate, classifies against the committed digest
-manifest, builds the gallery, deploys a canonical gallery from the default branch
-and a per-PR `/pr-<n>/` preview on pull requests, waits for Pages to go live, and
-posts a sticky before/after comment that sources "After" from the PR preview and
-"Before" from the canonical main gallery — i.e. gate against the committed
-baseline, report against main. `screencomp init` scaffolds a caller for it
-([`init`](#scaffold-a-setup-init)).
+manifest (failing the job on drift under the default strict gate), builds the
+gallery, deploys a canonical gallery from the default branch and a per-PR
+`/pr-<n>/` preview on pull requests, waits for Pages to go live, and posts a
+sticky before/after comment that sources "After" from the PR preview and "Before"
+from the canonical main gallery — and diffs against the PR base branch's manifest
+so the intended change still shows even when the committed baseline already
+matches. `screencomp init` scaffolds a caller for it
+([`init`](#scaffold-a-setup-init)). Key gate inputs: `fail-on-drift` (default
+`true`; set `false` to auto-accept), `update-manifest` (default `false`; set
+`true` to have CI push the regenerated baseline), and `comment-base-ref` (the ref
+the comment's "Before" comes from; defaults to the PR base branch).
 
 > [!IMPORTANT]
 > **Inline thumbnails need a *public* Pages site.** GitHub renders comment images
@@ -169,18 +198,22 @@ jobs:
       - uses: nickderobertis/screencomp/visual-docs@v1   # the report half, one step
         with:
           platform: linux-x86_64   # or "" for a project-level layout (no platform subtree)
-          update-manifest: false   # e.g. a local-only baseline model
+          fail-on-drift: true      # strict gate (default): fail on unexpected drift
           pages: true
           github-token: ${{ github.token }}
 ```
 
 The action expects the capture already on disk (`current`, default `shots/current`)
 and the CLI installed; it runs the gate, classify, gallery, Pages deploy, and PR
-comment. It needs host tools (`gh`, `git`), so run it in a host job — not inside
-your capture container. Key inputs: `platform` (empty = project-level),
-`update-manifest` (false for a local-only baseline), `pages`, `publish` (false
-for a side-effect-free dry run), `verify-second` (a second capture dir to assert
-byte-identical).
+comment. It needs host tools (`gh`, `git`) **and a real git checkout**, so run it
+in a host job that consumes the capture as an artifact — never inside your capture
+container, whose checkout often lacks `.git` (which breaks the manifest push and
+the comment's base-ref diff). Key inputs: `platform` (empty = project-level),
+`fail-on-drift` (default `true`, the strict gate; `false` to auto-accept),
+`update-manifest` (default `false`; `true` to push the regenerated baseline),
+`comment-base-ref` (the "Before" ref; defaults to the PR base branch), `pages`,
+`publish` (false for a side-effect-free dry run), `verify-second` (a second
+capture dir to assert byte-identical).
 
 ### Container image
 
@@ -208,15 +241,24 @@ New to screencomp? Scaffold the day-one boilerplate, then fill in your capture:
 screencomp init --platform linux-x86_64
 ```
 
-This writes a `screencomp.toml`, a `.github/workflows/visual-docs.yml` that calls
-the [reusable workflow](#batteries-included-reusable-workflow), and the
-`.gitignore` lines that commit the tiny digest baselines while ignoring generated
-PNGs and galleries. It never overwrites existing files (pass `--force` to), and
-appends the `.gitignore` block idempotently, so it is safe to re-run. After
-wiring your capture, seed the baseline once and commit it (the `init` output
-prints the exact command), then promote `verify` to a hard parity check on every
-PR — capture the same build twice and require byte-identical output (see
-[Reproducibility gate](#reproducibility-gate-verify)).
+This scaffolds the [strict gate](#pick-your-gate) turnkey — the safe path is the
+one-command one:
+
+- `screencomp.toml` — config, including the `[guard]` globs the pre-push hook uses.
+- `.github/workflows/visual-docs.yml` — a caller for the
+  [reusable workflow](#batteries-included-reusable-workflow) with `fail-on-drift:
+  true`, so CI fails on unexpected drift.
+- `.githooks/pre-push` — the local guard, executable and with your platform baked
+  in; enable it once per clone with `git config core.hooksPath .githooks`.
+- the `.gitignore` lines that commit the tiny digest baselines while ignoring
+  generated PNGs and galleries.
+
+It never overwrites existing files (pass `--force` to), and appends the
+`.gitignore` block idempotently, so it is safe to re-run. After wiring your
+capture into both the workflow and the hook, seed the baseline once and commit it
+(the `init` output prints the exact command). The gate is strict by default; to
+switch to [CI auto-accept](#pick-your-gate) set `fail-on-drift: false` and
+`update-manifest: true` in the workflow.
 
 Given trees laid out as `<root>/<project>/<name>.png`:
 
@@ -526,14 +568,15 @@ await page.locator(".chart").screenshot({ path: out, animations: "disabled" });
 Re-run `screencomp verify` until it is green; a remaining diff means a widget is
 still settling at capture time.
 
-## Local pre-push guard (optional)
+## Local pre-push guard (the strict gate's local half)
 
-The recommended setup wires the [`visual-docs.yml`](examples/visual-docs.yml) CI
-workflow, which silently regenerates the digest manifest on every PR. That is
-convenient but quiet: you can change UI, pass your whole local gate, and push
-without ever learning the visual baseline moved. The optional pre-push hook in
-[`examples/pre-push`](examples/pre-push) **complements** that workflow (it does
-not replace it) by surfacing baseline changes on your machine, before the push.
+Under the [strict gate](#pick-your-gate), CI hard-fails on drift and the developer
+owns the baseline. This hook is what makes that ergonomic: it regenerates and lets
+you **commit** the new baseline before pushing, so CI stays green on intended
+changes and goes red only on ones you missed. `screencomp init` scaffolds it at
+`.githooks/pre-push`; [`examples/pre-push`](examples/pre-push) is the copy-paste
+template. (Without it — or under CI auto-accept — you can change UI, pass your
+whole local gate, and push without ever learning the visual baseline moved.)
 
 The hook fires **only when a pushed change matches the `[guard].paths` globs** in
 `screencomp.toml`, so the common push pays nothing — no capture, no Docker. When
@@ -605,12 +648,13 @@ baseline and writes its review gallery.
 [`examples/visual-docs.yml`](examples/visual-docs.yml) is a copy-paste GitHub
 Actions workflow for a consuming repository: capture screenshots → build a gallery
 → publish to GitHub Pages → post a sticky screenshot-diff comment on pull
-requests. [`examples/pre-push`](examples/pre-push) is the optional local guard
-that complements it (see [Local pre-push guard](#local-pre-push-guard-optional)).
-See [`examples/README.md`](examples/README.md) for prerequisites — in
-particular the branch-protection note: the workflow's manifest auto-push needs
-a token that can re-trigger CI once any status check is required, or PRs stall
-waiting on checks that never run.
+requests. [`examples/pre-push`](examples/pre-push) is the local guard that pairs
+with it (see [Local pre-push guard](#local-pre-push-guard-the-strict-gates-local-half)).
+See [`examples/README.md`](examples/README.md) for prerequisites and the
+[gate choice](#pick-your-gate): the strict default pushes nothing and needs no
+special token, while the CI-auto-accept opt-in needs a token that can re-trigger
+CI once any status check is required, or PRs stall waiting on checks that never
+run.
 
 ## Development
 

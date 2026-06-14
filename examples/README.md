@@ -60,17 +60,32 @@ the QEMU fallback, `--use-angle=swiftshader` can crash Chromium
 one browser per context, keeping `--disable-skia-runtime-opts`) is byte-identical
 to native CI — see `screencomp-demo` for a worked configuration.
 
-### Branch protection / required status checks
+### Pick your gate: strict (recommended) vs CI auto-accept
 
-The workflow pushes the regenerated manifest back to the PR branch. GitHub never
-starts workflow runs for pushes made with the default `GITHUB_TOKEN`, so after
-that bot commit the new head has **no** runs at all — and every required status
-check (this workflow or any other, e.g. your test suite) sits at "Expected —
-Waiting for status to be reported" until the branch moves again. Without
-required checks this is harmless (and saves a re-capture); with branch
-protection it blocks the PR.
+The workflow ships the **strict gate** by default: `classify --exit-code` FAILS
+the job when a capture drifts from the committed baseline, and you regenerate and
+commit the baseline locally (the [pre-push guard](#local-pre-push-guard-the-strict-gates-local-half))
+before pushing. CI goes red only on drift you missed. Because nothing is pushed
+back to the branch, this needs no elevated token and never trips the
+required-status-check problem below — it just works under branch protection.
 
-Two ways to run under branch protection:
+The lighter alternative is **CI auto-accept**: drop `--exit-code` and re-enable
+the "Update the baseline manifest" step so CI regenerates and pushes the manifest
+to the PR branch for you (no red check on drift). The trade-off is that an
+unintended visual change can slip through unnoticed, which is exactly why the
+strict gate is the default.
+
+### Branch protection (only relevant to CI auto-accept)
+
+If you opt into CI auto-accept, the workflow pushes the regenerated manifest back
+to the PR branch. GitHub never starts workflow runs for pushes made with the
+default `GITHUB_TOKEN`, so after that bot commit the new head has **no** runs at
+all — and every required status check (this workflow or any other, e.g. your test
+suite) sits at "Expected — Waiting for status to be reported" until the branch
+moves again. Without required checks this is harmless; with branch protection it
+blocks the PR.
+
+Two ways to run CI auto-accept under branch protection:
 
 - **Set the `VISUAL_DOCS_PUSH_TOKEN` secret** to a credential that can trigger
   workflows — a fine-grained PAT or a GitHub App installation token with
@@ -79,11 +94,10 @@ Two ways to run under branch protection:
   The bot push then re-runs CI on the updated head. This cannot loop: the
   re-triggered run regenerates an identical manifest, finds no diff, and does
   not push, so it converges after one extra run.
-- **Delete the "Update the baseline manifest" step** and commit the manifest
-  yourself when visuals change — the [local pre-push guard](#local-pre-push-guard-optional)
-  regenerates it on your machine and blocks the push until you do. This keeps
-  the workflow on the default token at the cost of requiring the hook (or a
-  manual `screencomp manifest` run) whenever the baseline moves.
+- **Use the strict gate instead** and commit the manifest yourself when visuals
+  change — the [local pre-push guard](#local-pre-push-guard-the-strict-gates-local-half)
+  regenerates it on your machine and blocks the push until you do. This keeps the
+  workflow on the default token (the recommended path).
 
 A PR already stuck this way recovers as soon as its branch is pushed with real
 user credentials — for example, fold the bot's manifest commit into your own
@@ -96,13 +110,15 @@ Prerequisites:
   `shots/current/linux-x86_64/<project>/<name>.png` inside the pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
 
-## Local pre-push guard (optional)
+## Local pre-push guard (the strict gate's local half)
 
-[`pre-push`](pre-push) is a copy-paste Git hook that **complements** the CI
-workflow (it does not replace it). CI silently regenerates the digest manifest on
-every PR, so without a local guard you can change UI, pass your whole local gate,
-and push without ever learning the visual baseline moved. The hook closes that
-gap on your machine.
+[`pre-push`](pre-push) is a copy-paste Git hook — the local half of the strict
+gate. CI hard-fails on drift; this hook lets you regenerate and **commit** the new
+baseline before pushing, so CI stays green on intended changes and goes red only
+on ones you missed. Without it (or under CI auto-accept) you can change UI, pass
+your whole local gate, and push without ever learning the visual baseline moved.
+The hook closes that gap on your machine, before CI runs. `screencomp init`
+scaffolds it for you at `.githooks/pre-push` with your platform baked in.
 
 It fires **only when a pushed change matches the `[guard].paths` globs** in
 `screencomp.toml`, so most pushes pay nothing. When a relevant file changes it is

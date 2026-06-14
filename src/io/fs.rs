@@ -223,6 +223,31 @@ pub(crate) fn write_scaffold(
     })
 }
 
+/// Like [`write_scaffold`], but also marks the file executable on Unix.
+///
+/// Used for the scaffolded pre-push hook: a Git hook (whether under
+/// `core.hooksPath` or `.git/hooks`) must be executable to run at all. The bit is
+/// a no-op concept on Windows, where Git decides executability differently, so it
+/// is set only on Unix and a skipped (already-present) file is left untouched.
+pub(crate) fn write_executable_scaffold(
+    path: &Utf8Path,
+    contents: &str,
+    force: bool,
+) -> Result<Scaffold, AppError> {
+    let outcome = write_scaffold(path, contents, force)?;
+    #[cfg(unix)]
+    if outcome != Scaffold::Skipped {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perms = fs::metadata(path)
+            .map_err(|e| AppError::io(format!("reading {path}"), e))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)
+            .map_err(|e| AppError::io(format!("setting mode on {path}"), e))?;
+    }
+    Ok(outcome)
+}
+
 /// Append `block` to the `.gitignore` at `path`, idempotently.
 ///
 /// `block` is added only when `marker` (a sentinel line within it) is not already

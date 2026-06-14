@@ -1,14 +1,20 @@
-# Local pre-push guard (optional)
+# Local pre-push guard (the strict gate's local half)
 
 [`../pre-push`](../pre-push) is a copy-paste Git pre-push hook that re-captures
 your screenshots **only when screenshot-relevant files change** and makes any
 baseline change loud and reviewable before you push.
 
-It **complements** the CI workflow in [`../visual-docs.yml`](../visual-docs.yml);
-it does not replace it. CI silently regenerates the digest manifest on every PR,
-so without this hook you can change UI, pass your whole local gate, and push
-without ever learning the visual baseline moved. The hook closes that gap on your
-machine.
+It is the local half of the **strict gate** (the recommended model): CI
+hard-fails when a capture drifts from the committed baseline, and this hook lets
+you regenerate and **commit** the new baseline before pushing — so CI stays green
+on intended changes and goes red only on ones you missed. Without it (or under the
+lighter CI-auto-accept model) you can change UI, pass your whole local gate, and
+push without ever learning the visual baseline moved. The hook closes that gap on
+your machine, before CI ever runs.
+
+`screencomp init` scaffolds this hook with your platform baked in at
+`.githooks/pre-push`; the steps below are for wiring the copy-paste template by
+hand or with a hook manager.
 
 ## How it decides whether to run
 
@@ -55,6 +61,18 @@ shell variables at the top of `pre-push`.
 ## Wiring
 
 Pick the manager you already use. Each runs the same script on `pre-push`.
+
+### Committed `.githooks/` (what `init` scaffolds)
+
+Commit the hook to a tracked directory and point Git at it — no hook manager
+needed, and every clone enables it with one command:
+
+```sh
+mkdir -p .githooks
+cp examples/pre-push .githooks/pre-push   # `screencomp init` writes this for you
+chmod +x .githooks/pre-push
+git config core.hooksPath .githooks       # once per clone
+```
 
 ### Raw `.git/hooks/pre-push`
 

@@ -1,22 +1,34 @@
 # Standard visual-docs configuration: image-free baselines via digest manifest,
-# capture in one pinned Linux/amd64 container.
+# capture in one pinned Linux/amd64 container. This hand-rolled workflow is the
+# strict gate (the recommended model); for the batteries-included version see the
+# reusable workflow in the screencomp README ("Batteries-included reusable
+# workflow"), which this mirrors.
 #
 # The repository commits only a tiny per-platform digest *manifest*
 # (`shots/baseline/<platform>.sha256`), never the baseline PNGs — so it never
 # accumulates binary history and grows without bound. screencomp compares by
 # content digest, so the manifest is all that `classify`/`comment` need.
 #
-# Lifecycle:
+# Lifecycle (STRICT gate — the developer owns the baseline):
 #   * Seed once:   capture, then `screencomp manifest ... > the .sha256`, commit.
-#   * On a PR:     capture, classify against the committed manifest, post a
-#                  listing comment, and push a regenerated manifest to the PR
-#                  branch. Its text diff (old hash -> new hash per shot) is the
-#                  review record; merging the PR accepts the new baseline.
-#                  If the repo enforces required status checks, that push needs
-#                  a token that can trigger workflows — see the checkout step.
+#   * Locally:     the pre-push guard (examples/pre-push) re-captures on relevant
+#                  changes, regenerates the manifest, and blocks the push until you
+#                  COMMIT it — so an intended change is already reflected by the
+#                  time CI runs.
+#   * On a PR:     capture, then `classify --exit-code` FAILS the job on any drift
+#                  from the committed manifest. A red check means the baseline
+#                  wasn't updated locally; regenerate and commit it. The comment
+#                  shows before/after by diffing the PR base branch's manifest.
 #   * On main:     capture and publish the gallery to Pages — the browseable,
 #                  blessed "current state". Pages is NOT a baseline store (the
 #                  manifest is), so it is only deployed here, never from a PR.
+#
+# Because nothing is pushed back to the PR branch, this needs no elevated token
+# and never trips the required-status-check problem that auto-push has. To switch
+# to the lighter CI-auto-accept model instead (CI moves the baseline for you),
+# drop `--exit-code` from classify and re-enable the manifest push step at the
+# bottom; that variant needs `contents: write` and, under branch protection, a
+# trigger-capable token (see examples/README.md, "Branch protection").
 #
 # Why a container, even on macOS: a screenshot's bytes depend on the OS, CPU,
 # fonts, and GPU that rendered it. macOS cannot run Linux containers natively
@@ -28,8 +40,8 @@
 #
 # Prerequisites:
 #   * A committed baseline manifest at shots/baseline/linux-x86_64.sha256. Seed
-#     it once (before the first PR, or the manifest steps below have nothing to
-#     compare against): run the capture, then
+#     it once (before the first PR, or the classify step has nothing to compare
+#     against): run the capture, then
 #       screencomp manifest --input shots/current --platform auto \
 #         --output shots/baseline/linux-x86_64.sha256
 #     and commit it.
@@ -53,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest # amd64; the container therefore runs native amd64.
     container: mcr.microsoft.com/playwright:v1.60.0-noble # pin to your Playwright version
     permissions:
-      contents: write # commit the regenerated manifest to the PR branch
+      contents: read # nothing is pushed back to the branch under the strict gate
       pull-requests: write # post the diff comment
       pages: write # deploy the gallery (on main)
       id-token: write # Pages deployment auth
@@ -80,18 +92,6 @@ jobs:
       #                       # "Capturing an interactive app".
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }} # PR branch (empty on push -> the main ref)
-          # Token for the manifest push below. The default GITHUB_TOKEN is fine
-          # ONLY while this repo has no required status checks: GitHub never
-          # starts workflow runs for GITHUB_TOKEN pushes, so after the bot
-          # commit the new head has NO runs and every required check — this
-          # workflow or any other — sticks at "Expected — Waiting for status to
-          # be reported", blocking the PR. If you enforce required checks, set
-          # VISUAL_DOCS_PUSH_TOKEN to a credential that can trigger workflows: a
-          # fine-grained PAT or GitHub App token with contents read/write. See
-          # examples/README.md ("Branch protection") for the trade-offs.
-          token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN || github.token }}
 
       - uses: nickderobertis/screencomp@v0.1.9 # pin to a released tag
         with:
@@ -117,56 +117,63 @@ jobs:
           screencomp verify --first shots/current --second shots/verify --platform auto
           rm -rf shots/verify
 
-      # The check: compare the capture against the committed digest manifest.
-      # Differences are EXPECTED on a feature PR, so this does not fail the job —
-      # the change is surfaced by the comment and the committed manifest diff,
-      # not a red check. Drop `|| true` if you want changes to block instead.
+      # The strict gate: FAIL the job when the capture drifts from the committed
+      # baseline. You regenerate and COMMIT the baseline locally (the pre-push
+      # guard) before pushing, so an intended change is already reflected here and
+      # this stays green; CI goes red only on drift you missed. To auto-accept
+      # instead, drop `--exit-code` and re-enable the manifest push step below.
       - name: Classify against the baseline manifest
         run: |
+          set -euo pipefail
           screencomp classify --baseline-manifest "$MANIFEST" \
-            --current shots/current --platform auto || true
+            --current shots/current --platform auto --exit-code
 
-      # ---- PR only: comment + push the regenerated manifest -----------------
+      # ---- PR only: before/after comment ------------------------------------
 
-      # Sticky comment listing changed shots. No --gallery-url: a live per-PR
-      # gallery would need its own hosting (a single Pages site can't preview
-      # PRs without clobbering main). Review is the listing plus the manifest
-      # diff below; the browseable gallery is the main deployment. To add a link,
-      # set --gallery-url to your published Pages URL.
+      # Sticky comment listing changed shots. Under the strict gate the committed
+      # manifest already matches the capture, so source "Before" from the PR base
+      # branch's manifest to show the intended diff (gate vs committed, comment vs
+      # base). No --gallery-url: a live per-PR gallery would need its own hosting
+      # (a single Pages site can't preview PRs without clobbering main). To add a
+      # link, set --gallery-url to your published Pages URL.
       - name: Comment screenshot diff
         if: ${{ github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          screencomp comment --baseline-manifest "$MANIFEST" \
+          set -euo pipefail
+          comment_manifest="$MANIFEST"
+          if [ -n "$BASE_REF" ]; then
+            git fetch --depth=1 origin "$BASE_REF" || true
+            if git show "origin/${BASE_REF}:${MANIFEST}" >base-manifest.sha256 2>/dev/null; then
+              comment_manifest="base-manifest.sha256"
+            fi
+          fi
+          screencomp comment --baseline-manifest "$comment_manifest" \
             --current shots/current --platform auto --output comment.md
           gh pr comment "${PR}" --body-file comment.md --edit-last \
             || gh pr comment "${PR}" --body-file comment.md
 
-      # Regenerate the manifest from this run and push it to the PR branch. Its
-      # text diff (old hash -> new hash per shot) is the review surface; merging
-      # accepts the new baseline. Tiny, so the repo never accrues binary history.
+      # CI-auto-accept opt-in (DISABLED under the strict gate). Re-enable this step,
+      # drop `--exit-code` from classify above, and grant `contents: write` to have
+      # CI regenerate and push the manifest to the PR branch instead of failing on
+      # drift. Under branch protection that push needs a trigger-capable token (see
+      # examples/README.md, "Branch protection"); the strict gate above avoids it.
       #
-      # Loop-safe with ANY token: a re-triggered run regenerates an identical
-      # manifest, sees no diff below, and does not push — at most one extra run.
-      # With the default GITHUB_TOKEN the push triggers no CI at all, which is
-      # fine without required checks but strands the PR with them (see the
-      # checkout step). A PR already stranded this way recovers as soon as the
-      # branch moves under real user credentials — e.g. amend the bot's manifest
-      # commit into your own and push.
-      - name: Update the baseline manifest on the PR branch
-        if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          set -euo pipefail
-          screencomp manifest --input shots/current --platform auto --output "$MANIFEST"
-          if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add "$MANIFEST"
-            git commit -m "chore: update screenshot baseline manifest"
-            git push
-          fi
+      # - name: Update the baseline manifest on the PR branch
+      #     if: ${{ github.event_name == 'pull_request' }}
+      #     run: |
+      #       set -euo pipefail
+      #       screencomp manifest --input shots/current --platform auto --output "$MANIFEST"
+      #       if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
+      #         git config user.name "github-actions[bot]"
+      #         git config user.email "github-actions[bot]@users.noreply.github.com"
+      #         git add "$MANIFEST"
+      #         git commit -m "chore: update screenshot baseline manifest"
+      #         git push
+      #       fi
 
       # ---- main only: publish the blessed gallery to Pages -----------------
 
@@ -192,4 +199,4 @@ jobs:
 #     mcr.microsoft.com/playwright:v1.60.0-noble \
 #     bash -lc 'npm ci && SHOTS_OUT=shots/current/linux-x86_64 npx playwright test'
 #   screencomp classify --baseline-manifest shots/baseline/linux-x86_64.sha256 \
-#     --current shots/current --platform linux-x86_64
+#     --current shots/current --platform linux-x86_64 --exit-code
