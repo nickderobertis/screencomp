@@ -703,6 +703,12 @@ fn init_scaffolds_a_working_setup() {
         workflow.contains("schedule:") && workflow.contains("cron:"),
         "{workflow}"
     );
+    // Maintenance is on by default and the knob is visible in the consumer's own
+    // file (so the opt-out is discoverable), mirroring the explicit strict gate.
+    assert!(
+        workflow.contains("gh-pages-maintenance: true"),
+        "{workflow}"
+    );
     assert!(dir.path().join(".gitignore").exists());
 
     // The strict scaffold also drops the local pre-push guard, executable and

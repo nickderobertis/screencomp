@@ -217,6 +217,12 @@ jobs:
       # instead, set `fail-on-drift: false` and `update-manifest: true` (and wire
       # `push-token` under `secrets:` so the bot's manifest push can trigger CI).
       fail-on-drift: true
+      # Keep the gh-pages gallery bounded (the safe default): delete this PR's
+      # preview when it closes and squash gh-pages history on the schedule below.
+      # The `closed` PR type and the `schedule:` trigger above are what let these
+      # run. Set false to opt out (e.g. you serve Pages from somewhere other than
+      # the gh-pages branch).
+      gh-pages-maintenance: true
       # Replace with your real capture. It MUST write $SHOTS_OUT/<project>/<name>.png
       # ($SHOTS_OUT is exported as shots/current/{platform}).
       capture-command: |

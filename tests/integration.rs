@@ -1311,8 +1311,14 @@ fn init_caller_matches_the_reusable_workflow_interface() {
 
     // Every `with:` input the caller passes is declared by the reusable workflow
     // (both indent inputs six spaces under their respective blocks). The strict
-    // scaffold opts into `fail-on-drift` explicitly, so it must stay a real input.
-    for input in ["platform", "capture-command", "fail-on-drift"] {
+    // scaffold opts into `fail-on-drift` and `gh-pages-maintenance` explicitly, so
+    // both must stay real inputs.
+    for input in [
+        "platform",
+        "capture-command",
+        "fail-on-drift",
+        "gh-pages-maintenance",
+    ] {
         let decl = format!("\n      {input}:");
         assert!(
             reusable.contains(&decl),

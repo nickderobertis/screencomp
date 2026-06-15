@@ -42,13 +42,15 @@
 # Keeping gh-pages bounded: galleries DO commit PNGs to the gh-pages branch (the
 # source repo never does — only the digest manifest), so left alone that branch
 # grows without bound: stale /pr-<n>/ previews are never removed (keep_files), and
-# every changed shot leaves its old blob in history forever. Two opt-in jobs cap
-# this when the CALLER forwards their triggers:
+# every changed shot leaves its old blob in history forever. Two jobs cap this,
+# ON BY DEFAULT (gh-pages-maintenance: true):
 #   * cleanup-preview — on `pull_request: closed`, deletes that PR's /pr-<n>/.
 #   * prune-history   — on `schedule:`, squashes gh-pages to a single fresh commit
 #                       holding the current site, discarding the accreted history.
-# `screencomp init` scaffolds a caller that forwards both. Add them to a
-# hand-rolled caller to get the same lifecycle.
+# `screencomp init` scaffolds a caller that forwards both triggers; a reusable
+# workflow can't self-trigger on schedule/PR-close, so the caller must forward
+# them for the jobs to fire. Opt out with gh-pages-maintenance: false (no need to
+# touch the triggers).
 name: Visual docs (reusable)
 
 on:
@@ -91,6 +93,17 @@ on:
           Perform external side effects: post the PR comment, push the regenerated
           manifest, and deploy Pages. Set false to run every step but produce no
           side effects — a dry run for previewing or for testing the workflow.
+        type: boolean
+        default: true
+      gh-pages-maintenance:
+        description: >-
+          Keep the gh-pages branch bounded: delete a PR's /pr-<n>/ preview when the
+          PR closes (cleanup-preview) and squash gh-pages history to one commit on a
+          schedule (prune-history). On by default — set false to opt out (e.g. you
+          serve Pages from a source other than the gh-pages branch, or prune it with
+          your own tooling). Only fires when the caller also forwards the matching
+          `pull_request: closed` and `schedule:` triggers; the `screencomp init`
+          scaffold does. Also gated on pages + publish, so dry runs skip it.
         type: boolean
         default: true
       fail-on-drift:
@@ -380,7 +393,7 @@ jobs:
   # against a disposable branch); we fetch it at THIS workflow's pinned ref so the
   # script and workflow versions never diverge.
   cleanup-preview:
-    if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' && github.event.action == 'closed' }}
+    if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write # rewrite the gh-pages branch
@@ -419,7 +432,7 @@ jobs:
   # hour: the force-push shares a concurrency group with default-branch deploys
   # (same github.ref) but not with in-flight PR previews, which simply redeploy.
   prune-history:
-    if: ${{ inputs.pages && inputs.publish && github.event_name == 'schedule' }}
+    if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'schedule' }}
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write
