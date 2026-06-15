@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/nickderobertis/screencomp/compare/v0.2.0...v0.2.1) - 2026-06-15
+
+### Added
+
+- bound gh-pages gallery growth with preview cleanup and history prune ([#47](https://github.com/nickderobertis/screencomp/pull/47))
+
 ## [0.2.0](https://github.com/nickderobertis/screencomp/compare/v0.1.15...v0.2.0) - 2026-06-14
 
 ### Changed
