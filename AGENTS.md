@@ -150,8 +150,13 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
   consistent on it: the reusable workflow and the composite action default
   `fail-on-drift: true` + `update-manifest: false`, and `init` scaffolds a matching
   caller plus a `.githooks/pre-push` guard. CI fails on unexpected drift; the
-  developer owns the baseline. The `init`↔reusable-workflow interface is guarded by
-  an integration test — keep the inputs in lockstep.
+  developer owns the baseline. gh-pages bounding follows the same default-on,
+  opt-out shape: the reusable workflow defaults `gh-pages-maintenance: true`
+  (gating the `cleanup-preview`/`prune-history` jobs) and `init` forwards the
+  `pull_request: closed` + `schedule:` triggers they need — a reusable workflow
+  can't self-trigger those, so the caller must forward them. The
+  `init`↔reusable-workflow interface is guarded by an integration test — keep the
+  inputs in lockstep.
 - Release-gating is by commit subject: `release-plz.toml`'s `release_commits`
   releases only `feat`/`fix`/`perf` (or any `type!:` breaking) commits, so a
   squash-merge subject without one of those prefixes ships nothing. Title PRs

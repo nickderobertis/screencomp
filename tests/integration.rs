@@ -1311,8 +1311,14 @@ fn init_caller_matches_the_reusable_workflow_interface() {
 
     // Every `with:` input the caller passes is declared by the reusable workflow
     // (both indent inputs six spaces under their respective blocks). The strict
-    // scaffold opts into `fail-on-drift` explicitly, so it must stay a real input.
-    for input in ["platform", "capture-command", "fail-on-drift"] {
+    // scaffold opts into `fail-on-drift` and `gh-pages-maintenance` explicitly, so
+    // both must stay real inputs.
+    for input in [
+        "platform",
+        "capture-command",
+        "fail-on-drift",
+        "gh-pages-maintenance",
+    ] {
         let decl = format!("\n      {input}:");
         assert!(
             reusable.contains(&decl),
@@ -1329,5 +1335,17 @@ fn init_caller_matches_the_reusable_workflow_interface() {
     assert!(
         reusable.contains("\n      push-token:"),
         "reusable workflow missing secret push-token"
+    );
+
+    // gh-pages stays bounded only if the caller forwards the maintenance
+    // triggers AND the reusable workflow has the jobs that act on them. Both
+    // halves must move together or the bound silently breaks.
+    assert!(
+        caller.contains("closed]") && caller.contains("schedule:") && caller.contains("cron:"),
+        "caller stopped forwarding the gh-pages cleanup/prune triggers:\n{caller}"
+    );
+    assert!(
+        reusable.contains("cleanup-preview:") && reusable.contains("prune-history:"),
+        "reusable workflow missing the gh-pages cleanup/prune jobs"
     );
 }

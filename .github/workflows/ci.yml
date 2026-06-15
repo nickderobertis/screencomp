@@ -71,12 +71,20 @@ jobs:
       - name: actionlint
         run: |
           curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz | tar -xz actionlint
-          ./actionlint -color .github/workflows/*.yml examples/*.yml
+          # job_workflow_ref is a real github-context property (the reusable
+          # workflow uses it to pin the gh-pages maintenance script to its own
+          # ref); actionlint 1.7.7's schema lacks it, so ignore that one message.
+          ./actionlint -color -ignore 'property "job_workflow_ref" is not defined' .github/workflows/*.yml examples/*.yml
       - name: hadolint
         run: |
           curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
           chmod +x hadolint
           ./hadolint Dockerfile
+      # The gh-pages maintenance script is shared by the reusable workflow and the
+      # maintenance test; actionlint only lints shell embedded in workflows, so
+      # lint the extracted script here (shellcheck ships on the runner image).
+      - name: shellcheck
+        run: shellcheck scripts/visual-docs-gh-pages.sh
 
   # Prove the end-user install path, separate from the dev gate: exercise the
   # composite action end to end — install from source, then use the binary it

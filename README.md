@@ -172,6 +172,32 @@ the comment's "Before" comes from; defaults to the PR base branch).
 > credential that can trigger workflows (a fine-grained PAT or App token), because
 > the default `GITHUB_TOKEN`'s manifest push starts no runs and strands the PR.
 
+**Keeping the `gh-pages` branch bounded.** The source repo never accumulates
+binary history — it commits only the [digest manifest](#image-free-baselines-digest-manifest),
+never PNGs. But the *galleries* do commit PNGs to the `gh-pages` branch, so left
+alone that branch grows without bound: per-PR `/pr-<n>/` previews are never
+removed (a `main` deploy must not clobber live previews, so it can't prune them
+either), and every changed shot leaves its old blob in history forever. The
+reusable workflow caps both **by default** (`gh-pages-maintenance: true`) with
+two jobs; the `init` scaffold forwards the triggers they need, so it just works:
+
+- `pull_request: closed` runs a **cleanup** job that deletes that PR's
+  `/pr-<n>/` preview from `gh-pages`, so closed PRs stop piling up.
+- a `schedule:` (cron) trigger runs a **prune** job that squashes `gh-pages` to a
+  single fresh commit holding the current site, discarding the accreted blob
+  history. It's a destructive rewrite of the *generated* branch only — nothing
+  bases work on it, and the canonical gallery is rebuilt on the next default-branch
+  push. Schedule it at a quiet hour.
+
+Both are gated on `pages` + `publish`, so a dry run or a Pages-less setup skips
+them. Opt out with `gh-pages-maintenance: false` — no need to touch your
+triggers. A reusable workflow can't add its own `schedule:`/`pull_request: closed`
+triggers, so a hand-rolled caller must still forward those two for the jobs to
+fire (then they run by default, like the scaffold). The
+[`actions/deploy-pages`](examples/visual-docs.yml) example below uses the GitHub
+Actions Pages source instead of a branch, so it has no `gh-pages` history to
+prune — at the cost of per-PR previews, which that source can't host.
+
 For a fully hand-rolled equivalent you can copy and adapt, see
 [`examples/visual-docs.yml`](examples/visual-docs.yml).
 
