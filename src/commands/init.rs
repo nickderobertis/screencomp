@@ -198,8 +198,9 @@ on:
   push:
     branches: [main]
   schedule:
-    # Monthly: squash the gh-pages gallery history to a single commit so the
-    # committed PNGs do not grow the branch without bound. Adjust or drop freely.
+    # Monthly: prune the gh-pages gallery history so the committed PNGs do not grow
+    # the branch without bound. Keeps the 20 most recent versions by default (see
+    # `gh-pages-history-versions` below). Adjust or drop freely.
     - cron: \"27 4 1 * *\"
 
 permissions:
@@ -218,11 +219,15 @@ jobs:
       # `push-token` under `secrets:` so the bot's manifest push can trigger CI).
       fail-on-drift: true
       # Keep the gh-pages gallery bounded (the safe default): delete this PR's
-      # preview when it closes and squash gh-pages history on the schedule below.
+      # preview when it closes and prune gh-pages history on the schedule below.
       # The `closed` PR type and the `schedule:` trigger above are what let these
       # run. Set false to opt out (e.g. you serve Pages from somewhere other than
       # the gh-pages branch).
       gh-pages-maintenance: true
+      # Most recent gallery versions (gh-pages commits) the scheduled prune keeps
+      # intact; older history is collapsed into one base commit. Default 20; set 0
+      # to collapse to a single commit.
+      gh-pages-history-versions: 20
       # Replace with your real capture. It MUST write $SHOTS_OUT/<project>/<name>.png
       # ($SHOTS_OUT is exported as shots/current/{platform}).
       capture-command: |

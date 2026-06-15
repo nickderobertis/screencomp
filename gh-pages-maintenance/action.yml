@@ -12,14 +12,15 @@
 #   # delete a closed PR's preview
 #   - uses: nickderobertis/screencomp/gh-pages-maintenance@vX.Y.Z
 #     with: { mode: cleanup, pr: '${{ github.event.pull_request.number }}' }
-#   # squash gh-pages history (on a schedule)
+#   # prune gh-pages history to the most recent versions (on a schedule)
 #   - uses: nickderobertis/screencomp/gh-pages-maintenance@vX.Y.Z
-#     with: { mode: prune }
+#     with: { mode: prune }            # keeps the 20 most recent by default
+#     # with: { mode: prune, keep-versions: 50 }   # ...or keep more
 name: screencomp gh-pages maintenance
 description: >-
   Keep the published gh-pages gallery branch bounded: delete a closed PR's
-  /pr-<n>/ preview (mode: cleanup) or squash the branch history to a single fresh
-  commit (mode: prune).
+  /pr-<n>/ preview (mode: cleanup) or prune the branch history to the most recent
+  gallery versions (mode: prune).
 author: screencomp contributors
 branding:
   icon: scissors
@@ -27,8 +28,12 @@ branding:
 
 inputs:
   mode:
-    description: 'cleanup (delete a closed PR''s /pr-<n>/ preview) or prune (squash history to one commit).'
+    description: 'cleanup (delete a closed PR''s /pr-<n>/ preview) or prune (keep the most recent gallery versions, collapse older history).'
     required: true
+  keep-versions:
+    description: 'mode: prune only. Most recent commits (gallery versions) to keep intact before collapsing older history into one base commit. 0 collapses to a single commit.'
+    required: false
+    default: '20'
   repo:
     description: 'owner/name whose gallery branch to maintain.'
     required: false
@@ -56,6 +61,7 @@ runs:
         REPO: ${{ inputs.repo }}
         BRANCH: ${{ inputs.branch }}
         PR: ${{ inputs.pr }}
+        KEEP_VERSIONS: ${{ inputs.keep-versions }}
       run: |
         set -euo pipefail
         case '${{ inputs.mode }}' in

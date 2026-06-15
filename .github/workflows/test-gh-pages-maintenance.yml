@@ -63,8 +63,8 @@ jobs:
             echo "run=true" >>"$GITHUB_OUTPUT"
           fi
 
-      # Seed a disposable branch with a canonical page, a pr-7/ preview, and >1
-      # commit so prune has real history to collapse.
+      # Seed a disposable branch with a canonical page, several version commits,
+      # and a pr-7/ preview so prune has real history to collapse and bound.
       - name: Seed the disposable branch
         if: steps.guard.outputs.run == 'true'
         run: |
@@ -80,6 +80,13 @@ jobs:
           printf 'canonical\n' > index.html
           git add index.html
           git commit -qm "seed: canonical gallery"
+          # Several successive gallery versions so prune has a window to keep and a
+          # tail to collapse; the last one is the current site.
+          for v in 1 2 3 4; do
+            printf 'version %s\n' "$v" > index.html
+            git add index.html
+            git commit -qm "seed: gallery version $v"
+          done
           mkdir -p pr-7
           printf 'preview\n' > pr-7/index.html
           git add pr-7
@@ -108,10 +115,14 @@ jobs:
           PR: "7"
         run: bash scripts/visual-docs-gh-pages.sh cleanup-preview
 
-      - name: prune-history squashes the branch to one commit
+      # After cleanup the branch has 6 commits (canonical + 4 versions + the
+      # cleanup commit). Keep 3: expect those 3 plus one squashed base = 4 commits,
+      # with the current site (the latest version) intact.
+      - name: prune-history keeps the configured number of recent versions
         if: steps.guard.outputs.run == 'true'
         env:
           REPO: ${{ env.DEMO_REPO }}
+          KEEP_VERSIONS: "3"
         run: |
           set -euo pipefail
           bash scripts/visual-docs-gh-pages.sh prune-history
@@ -120,9 +131,42 @@ jobs:
             "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" "$chk"
           cd "$chk"
           count="$(git rev-list --count HEAD)"
-          if [ "$count" -ne 1 ]; then echo "expected 1 commit after prune, got $count" >&2; exit 1; fi
+          if [ "$count" -ne 4 ]; then echo "expected 4 commits after keep=3 prune, got $count" >&2; exit 1; fi
+          if [ "$(cat index.html)" != "version 4" ]; then echo "prune lost the current site" >&2; exit 1; fi
+          echo "prune-history ok (kept 3 versions + base)"
+
+      # The branch now has 4 commits; keeping 20 leaves it untouched.
+      - name: prune-history is a no-op within the version limit
+        if: steps.guard.outputs.run == 'true'
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+          KEEP_VERSIONS: "20"
+        run: |
+          set -euo pipefail
+          bash scripts/visual-docs-gh-pages.sh prune-history
+          chk="$(mktemp -d)"
+          git clone --quiet --branch "$BRANCH" \
+            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" "$chk"
+          count="$(git -C "$chk" rev-list --count HEAD)"
+          if [ "$count" -ne 4 ]; then echo "expected 4 commits unchanged, got $count" >&2; exit 1; fi
+          echo "prune-history ok (no-op within limit)"
+
+      - name: prune-history with keep=0 squashes to one commit
+        if: steps.guard.outputs.run == 'true'
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+          KEEP_VERSIONS: "0"
+        run: |
+          set -euo pipefail
+          bash scripts/visual-docs-gh-pages.sh prune-history
+          chk="$(mktemp -d)"
+          git clone --quiet --branch "$BRANCH" \
+            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" "$chk"
+          cd "$chk"
+          count="$(git rev-list --count HEAD)"
+          if [ "$count" -ne 1 ]; then echo "expected 1 commit after keep=0 prune, got $count" >&2; exit 1; fi
           if [ ! -f index.html ]; then echo "prune lost the current site" >&2; exit 1; fi
-          echo "prune-history ok (single commit)"
+          echo "prune-history ok (keep=0 single commit)"
 
       # Always remove the throwaway branch, even if an assertion above failed.
       # Tolerate only the genuinely-already-gone case (ls-remote exit 2); a real

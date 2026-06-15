@@ -24,7 +24,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Monthly: prune-history squashes the gh-pages gallery history to one commit.
+    # Monthly: prune-history keeps the most recent gallery versions on gh-pages
+    # (20 by default) and collapses older history into one base commit.
     - cron: "27 4 1 * *"
 
 permissions:
@@ -124,3 +125,6 @@ jobs:
       - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: prune
+          # Most recent gallery versions to keep intact (default 20); older history
+          # is collapsed into one base commit. Set 0 to collapse to a single commit.
+          keep-versions: 20
