@@ -375,7 +375,10 @@ jobs:
   # keep_files:true keeps a main deploy from clobbering live /pr-<n>/ previews,
   # but nothing else removes them — so without this they pile up forever. Runs
   # only when the caller forwards `pull_request: closed` (merged or not). No
-  # capture: this just rewrites the generated branch.
+  # capture: this just rewrites the generated branch. The actual git surgery
+  # lives in scripts/visual-docs-gh-pages.sh (one source of truth, CI-tested
+  # against a disposable branch); we fetch it at THIS workflow's pinned ref so the
+  # script and workflow versions never diverge.
   cleanup-preview:
     if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ${{ inputs.runs-on }}
@@ -385,29 +388,26 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Resolve this workflow's ref
+        id: ref
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+        run: echo "ref=${JOB_WORKFLOW_REF##*@}" >>"$GITHUB_OUTPUT"
+      - name: Fetch the gh-pages maintenance script
+        uses: actions/checkout@v4
+        with:
+          repository: nickderobertis/screencomp
+          ref: ${{ steps.ref.outputs.ref }}
+          sparse-checkout: scripts/visual-docs-gh-pages.sh
+          sparse-checkout-cone-mode: false
+          path: .screencomp-maint
       - name: Remove the closed PR's preview
         env:
           GIT_TOKEN: ${{ secrets.push-token || github.token }}
           REPO: ${{ github.repository }}
+          BRANCH: gh-pages
           PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          workdir="$(mktemp -d)"
-          if ! git clone --quiet --depth 1 --branch gh-pages --single-branch \
-              "https://x-access-token:${GIT_TOKEN}@github.com/${REPO}.git" "$workdir"; then
-            echo "no gh-pages branch yet; nothing to clean"
-            exit 0
-          fi
-          cd "$workdir"
-          if [ ! -d "pr-${PR}" ]; then
-            echo "no preview at pr-${PR}; nothing to clean"
-            exit 0
-          fi
-          git rm -rq "pr-${PR}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -qm "chore(visual-docs): drop preview for closed PR #${PR}"
-          git push -q origin gh-pages
+        run: bash .screencomp-maint/scripts/visual-docs-gh-pages.sh cleanup-preview
 
   # ---- Prune: squash gh-pages history so old galleries don't accrete ---------
   # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
@@ -427,22 +427,22 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Resolve this workflow's ref
+        id: ref
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+        run: echo "ref=${JOB_WORKFLOW_REF##*@}" >>"$GITHUB_OUTPUT"
+      - name: Fetch the gh-pages maintenance script
+        uses: actions/checkout@v4
+        with:
+          repository: nickderobertis/screencomp
+          ref: ${{ steps.ref.outputs.ref }}
+          sparse-checkout: scripts/visual-docs-gh-pages.sh
+          sparse-checkout-cone-mode: false
+          path: .screencomp-maint
       - name: Squash gh-pages to a single commit
         env:
           GIT_TOKEN: ${{ secrets.push-token || github.token }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          workdir="$(mktemp -d)"
-          if ! git clone --quiet --depth 1 --branch gh-pages --single-branch \
-              "https://x-access-token:${GIT_TOKEN}@github.com/${REPO}.git" "$workdir"; then
-            echo "no gh-pages branch yet; nothing to prune"
-            exit 0
-          fi
-          cd "$workdir"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -q --orphan squashed
-          git add -A
-          git commit -qm "chore(visual-docs): squash gallery history $(date -u +%Y-%m-%d)"
-          git push -qf origin squashed:gh-pages
+          BRANCH: gh-pages
+        run: bash .screencomp-maint/scripts/visual-docs-gh-pages.sh prune-history

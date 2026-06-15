@@ -1,0 +1,117 @@
+# Behavioral test for scripts/visual-docs-gh-pages.sh — the gh-pages cleanup and
+# prune logic the reusable workflow ships. The Rust e2e suite can't reach this
+# (it's git-against-a-remote, not the binary), so cover it here by running the
+# REAL script against a DISPOSABLE branch on the demo consumer. It never touches
+# the demo's real gh-pages: it seeds, asserts, and deletes a throwaway branch
+# named per run.
+#
+# Requires a repo secret SCREENCOMP_DEMO_PAT: a token with contents:write on
+# nickderobertis/screencomp-demo (the default GITHUB_TOKEN can't push cross-repo).
+# Without it the job no-ops (so forks and unconfigured clones stay green). Manual
+# and weekly, not on PRs — it mutates an external repo and needs the secret.
+name: Test gh-pages maintenance
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 5 * * 1" # Mondays, a quiet hour
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-gh-pages-maintenance
+  cancel-in-progress: false
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    env:
+      DEMO_REPO: nickderobertis/screencomp-demo
+      GIT_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
+      BRANCH: ci-gh-pages-maint-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard on the demo PAT
+        id: guard
+        env:
+          PAT: ${{ secrets.SCREENCOMP_DEMO_PAT }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PAT:-}" ]; then
+            echo "SCREENCOMP_DEMO_PAT not set; skipping the gh-pages maintenance test"
+            echo "run=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "run=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      # Seed a disposable branch with a canonical page, a pr-7/ preview, and >1
+      # commit so prune has real history to collapse.
+      - name: Seed the disposable branch
+        if: steps.guard.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git"
+          work="$(mktemp -d)"
+          git clone --quiet --depth 1 "$url" "$work"
+          cd "$work"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan "$BRANCH"
+          git rm -rfq . >/dev/null 2>&1 || true
+          printf 'canonical\n' > index.html
+          git add index.html
+          git commit -qm "seed: canonical gallery"
+          mkdir -p pr-7
+          printf 'preview\n' > pr-7/index.html
+          git add pr-7
+          git commit -qm "seed: pr-7 preview"
+          git push -q origin "$BRANCH"
+
+      - name: cleanup-preview removes the closed PR's directory
+        if: steps.guard.outputs.run == 'true'
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+          PR: "7"
+        run: |
+          set -euo pipefail
+          bash scripts/visual-docs-gh-pages.sh cleanup-preview
+          chk="$(mktemp -d)"
+          git clone --quiet --depth 1 --branch "$BRANCH" \
+            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" "$chk"
+          if [ -d "$chk/pr-7" ]; then echo "pr-7 was not removed" >&2; exit 1; fi
+          if [ ! -f "$chk/index.html" ]; then echo "cleanup clobbered the canonical site" >&2; exit 1; fi
+          echo "cleanup-preview ok"
+
+      - name: cleanup-preview is a no-op when the preview is gone
+        if: steps.guard.outputs.run == 'true'
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+          PR: "7"
+        run: bash scripts/visual-docs-gh-pages.sh cleanup-preview
+
+      - name: prune-history squashes the branch to one commit
+        if: steps.guard.outputs.run == 'true'
+        env:
+          REPO: ${{ env.DEMO_REPO }}
+        run: |
+          set -euo pipefail
+          bash scripts/visual-docs-gh-pages.sh prune-history
+          chk="$(mktemp -d)"
+          git clone --quiet --branch "$BRANCH" \
+            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" "$chk"
+          cd "$chk"
+          count="$(git rev-list --count HEAD)"
+          if [ "$count" -ne 1 ]; then echo "expected 1 commit after prune, got $count" >&2; exit 1; fi
+          if [ ! -f index.html ]; then echo "prune lost the current site" >&2; exit 1; fi
+          echo "prune-history ok (single commit)"
+
+      # Always remove the throwaway branch, even if an assertion above failed.
+      - name: Delete the disposable branch
+        if: ${{ always() && steps.guard.outputs.run == 'true' }}
+        run: |
+          set -euo pipefail
+          git push --quiet \
+            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" \
+            --delete "$BRANCH" || echo "branch already gone"

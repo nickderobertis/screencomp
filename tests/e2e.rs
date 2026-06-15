@@ -673,6 +673,9 @@ fn init_scaffolds_a_working_setup() {
         .success()
         .stdout(predicate::str::contains("created"))
         .stdout(predicate::str::contains("Next steps"))
+        // The reusable workflow deploys to the gh-pages branch (peaceiris), so the
+        // scaffold must point at that Pages source, not "GitHub Actions".
+        .stdout(predicate::str::contains("Deploy from a branch: gh-pages"))
         .stderr(predicate::str::is_empty());
 
     // The scaffolded config parses: feeding it back to `comment` succeeds.
@@ -692,6 +695,14 @@ fn init_scaffolds_a_working_setup() {
         std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
     // The scaffold opts into the strict gate explicitly.
     assert!(workflow.contains("fail-on-drift: true"), "{workflow}");
+    // It forwards the gh-pages maintenance triggers so the reusable workflow's
+    // cleanup-preview (on a closed PR) and prune-history (on schedule) can fire —
+    // without these the published branch grows without bound.
+    assert!(workflow.contains("closed]"), "{workflow}");
+    assert!(
+        workflow.contains("schedule:") && workflow.contains("cron:"),
+        "{workflow}"
+    );
     assert!(dir.path().join(".gitignore").exists());
 
     // The strict scaffold also drops the local pre-push guard, executable and

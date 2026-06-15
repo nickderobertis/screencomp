@@ -205,9 +205,11 @@ image:
 image-run *args:
     docker run --rm screencomp:dev {{args}}
 
-# Lint GitHub Actions workflows and the example (also enforced in CI).
+# Lint GitHub Actions workflows and the example (also enforced in CI). The ignore
+# covers job_workflow_ref, a real github-context property actionlint 1.7.7's
+# schema is missing (used to pin the gh-pages maintenance script to its ref).
 lint-actions: _ensure-actionlint
-    actionlint .github/workflows/*.yml examples/*.yml
+    actionlint -ignore 'property "job_workflow_ref" is not defined' .github/workflows/*.yml examples/*.yml
 
 # Lint the Dockerfile.
 lint-docker: _ensure-hadolint
