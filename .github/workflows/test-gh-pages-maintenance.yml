@@ -42,7 +42,13 @@ jobs:
       GIT_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
       BRANCH: ci-gh-pages-maint-${{ github.run_id }}
     steps:
+      # persist-credentials: false so checkout leaves no github-actions[bot]
+      # http.extraheader in git config. That header overrides the PAT embedded in
+      # the demo-repo URLs below (notably the delete step, the one git push run
+      # from this checkout dir), and the bot has no access to screencomp-demo.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Guard on the demo PAT
         id: guard
@@ -119,10 +125,22 @@ jobs:
           echo "prune-history ok (single commit)"
 
       # Always remove the throwaway branch, even if an assertion above failed.
+      # Tolerate only the genuinely-already-gone case (ls-remote exit 2); a real
+      # failure to delete must fail the job, or leaked branches accumulate
+      # unnoticed — the exact rot this workflow exists to prevent. Don't blanket
+      # `|| echo`: that masked a 403 once already.
       - name: Delete the disposable branch
         if: ${{ always() && steps.guard.outputs.run == 'true' }}
         run: |
           set -euo pipefail
-          git push --quiet \
-            "https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git" \
-            --delete "$BRANCH" || echo "branch already gone"
+          url="https://x-access-token:${GIT_TOKEN}@github.com/${DEMO_REPO}.git"
+          rc=0
+          git ls-remote --exit-code --heads "$url" "$BRANCH" >/dev/null 2>&1 || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            git push --quiet "$url" --delete "$BRANCH"
+          elif [ "$rc" -eq 2 ]; then
+            echo "branch already gone"
+          else
+            echo "ls-remote failed (rc=$rc); cannot confirm the throwaway branch is gone" >&2
+            exit 1
+          fi
