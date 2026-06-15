@@ -183,11 +183,14 @@ two jobs; the `init` scaffold forwards the triggers they need, so it just works:
 
 - `pull_request: closed` runs a **cleanup** job that deletes that PR's
   `/pr-<n>/` preview from `gh-pages`, so closed PRs stop piling up.
-- a `schedule:` (cron) trigger runs a **prune** job that squashes `gh-pages` to a
-  single fresh commit holding the current site, discarding the accreted blob
-  history. It's a destructive rewrite of the *generated* branch only — nothing
-  bases work on it, and the canonical gallery is rebuilt on the next default-branch
-  push. Schedule it at a quiet hour.
+- a `schedule:` (cron) trigger runs a **prune** job that keeps the most recent
+  gallery versions on `gh-pages` (the last 20 commits by default — set
+  `gh-pages-history-versions` to keep more or fewer, or `0` to collapse to a
+  single fresh commit) and squashes everything older into one base commit,
+  discarding the accreted blob history below the window. It's a destructive
+  rewrite of the *generated* branch only — nothing bases work on it, and the
+  canonical gallery is rebuilt on the next default-branch push. Schedule it at a
+  quiet hour.
 
 Both are gated on `pages` + `publish`, so a dry run or a Pages-less setup skips
 them. Opt out with `gh-pages-maintenance: false` — no need to touch your

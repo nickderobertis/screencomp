@@ -46,8 +46,9 @@
 # every changed shot leaves its old blob in history forever. Two jobs cap this,
 # ON BY DEFAULT (gh-pages-maintenance: true):
 #   * cleanup-preview — on `pull_request: closed`, deletes that PR's /pr-<n>/.
-#   * prune-history   — on `schedule:`, squashes gh-pages to a single fresh commit
-#                       holding the current site, discarding the accreted history.
+#   * prune-history   — on `schedule:`, keeps the most recent gallery versions
+#                       (gh-pages-history-versions, default 20) and collapses older
+#                       history into one base commit, discarding the accreted blobs.
 # `screencomp init` scaffolds a caller that forwards both triggers; a reusable
 # workflow can't self-trigger on schedule/PR-close, so the caller must forward
 # them for the jobs to fire. Opt out with gh-pages-maintenance: false (no need to
@@ -99,14 +100,23 @@ on:
       gh-pages-maintenance:
         description: >-
           Keep the gh-pages branch bounded: delete a PR's /pr-<n>/ preview when the
-          PR closes (cleanup-preview) and squash gh-pages history to one commit on a
-          schedule (prune-history). On by default — set false to opt out (e.g. you
+          PR closes (cleanup-preview) and prune gh-pages history to the most recent
+          gallery versions on a schedule (prune-history; see
+          gh-pages-history-versions). On by default — set false to opt out (e.g. you
           serve Pages from a source other than the gh-pages branch, or prune it with
           your own tooling). Only fires when the caller also forwards the matching
           `pull_request: closed` and `schedule:` triggers; the `screencomp init`
           scaffold does. Also gated on pages + publish, so dry runs skip it.
         type: boolean
         default: true
+      gh-pages-history-versions:
+        description: >-
+          How many of the most recent gallery versions (gh-pages commits) the
+          scheduled prune-history job keeps intact; everything older is collapsed
+          into a single base commit. 0 collapses the branch to one fresh commit.
+          Ignored when gh-pages-maintenance is off.
+        type: number
+        default: 20
       fail-on-drift:
         description: >-
           Fail the job when the capture drifts from the committed baseline manifest
@@ -247,11 +257,12 @@ jobs:
           pr: ${{ github.event.pull_request.number }}
           token: ${{ secrets.push-token || github.token }}
 
-  # ---- Prune: squash gh-pages history so old galleries don't accrete ---------
+  # ---- Prune: bound gh-pages history so old galleries don't accrete ----------
   # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
-  # forever. The `gh-pages-maintenance` action rewrites gh-pages to a SINGLE fresh
-  # commit holding the current site, discarding the accreted blob history. Runs
-  # only when the caller forwards a `schedule:` trigger. A destructive rewrite of
+  # forever. The `gh-pages-maintenance` action keeps the most recent gallery
+  # versions (gh-pages-history-versions, default 20) and collapses older history
+  # into one base commit, discarding the accreted blobs. Runs only when the caller
+  # forwards a `schedule:` trigger. A destructive rewrite of
   # the GENERATED branch only — nothing bases work on gh-pages, and the canonical
   # gallery is regenerated on the next default-branch push regardless. Schedule it
   # at a quiet hour: the force-push shares a concurrency group with default-branch
@@ -265,4 +276,5 @@ jobs:
       - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: prune
+          keep-versions: ${{ inputs.gh-pages-history-versions }}
           token: ${{ secrets.push-token || github.token }}

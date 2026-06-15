@@ -1318,6 +1318,7 @@ fn init_caller_matches_the_reusable_workflow_interface() {
         "capture-command",
         "fail-on-drift",
         "gh-pages-maintenance",
+        "gh-pages-history-versions",
     ] {
         let decl = format!("\n      {input}:");
         assert!(
