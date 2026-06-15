@@ -1,0 +1,124 @@
+# Thin CUSTOM visual-docs workflow — copy, paste, adapt.
+#
+# Same pipeline as screencomp's reusable workflow, but written out so you OWN the
+# capture job and can inject steps a reusable workflow's `capture-command` *string*
+# can't host: OIDC auth, a private registry (AWS CodeArtifact, shown below), a
+# vendored setup action. Everything downstream is screencomp's composable actions,
+# pinned to a released tag — the heavy logic stays in lockstep with the CLI while
+# only this thin wiring is yours to keep.
+#
+# If you do NOT need custom capture steps, prefer the reusable workflow instead
+# (less to own, auto-updates with the tag) — see the screencomp README,
+# "Batteries-included reusable workflow". This file is the escape hatch, not the
+# default.
+#
+# Pin every `nickderobertis/screencomp...@vX.Y.Z` below to the SAME released tag.
+name: Visual docs
+
+on:
+  pull_request:
+    # `closed` lets cleanup-preview drop this PR's gh-pages preview when it closes.
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+  schedule:
+    # Monthly: prune-history squashes the gh-pages gallery history to one commit.
+    - cron: "27 4 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: visual-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- Capture: YOUR steps, in YOUR pinned container -------------------------
+  # This is the whole reason to hand-roll instead of calling the reusable
+  # workflow: the capture is real steps, so you can inject anything before it.
+  capture:
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
+    runs-on: ubuntu-latest
+    container: mcr.microsoft.com/playwright:v1.60.0-noble # pin to your Playwright version
+    permissions:
+      contents: read
+      id-token: write # OIDC for the AWS auth below; drop if you don't need it
+    env:
+      SHOTS_OUT: shots/current/linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- inject whatever your capture needs (example: AWS CodeArtifact npm) ---
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Authenticate npm to CodeArtifact
+        run: aws codeartifact login --tool npm --domain my-domain --repository my-repo
+      # --------------------------------------------------------------------------
+
+      # Replace with your real capture; it MUST write $SHOTS_OUT/<project>/<name>.png.
+      - name: Capture screenshots
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+
+      # Reproducibility gate, half 1: capture the same build again to a second tree
+      # (the byte comparison happens in `report`, where screencomp is installed).
+      - name: Capture again for the reproducibility gate
+        env:
+          SHOTS_OUT: shots/verify/linux-x86_64
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screencomp-shots
+          path: shots
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---- Report: screencomp's downstream half, on the HOST runner --------------
+  # One composable action: reproducibility gate, classify, gallery, Pages deploy,
+  # sticky PR comment, manifest push. Same action the reusable workflow calls.
+  report:
+    needs: capture
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh-pages gallery (+ manifest push under CI auto-accept)
+      pull-requests: write # post the diff comment
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nickderobertis/screencomp@v0.2.0 # install the CLI on the host
+      - uses: actions/download-artifact@v4
+        with:
+          name: screencomp-shots
+          path: shots
+      - uses: nickderobertis/screencomp/visual-docs@v0.2.0
+        with:
+          platform: linux-x86_64
+          verify-second: shots/verify # the gate's second capture
+          fail-on-drift: true # strict gate (default); false to auto-accept
+          github-token: ${{ github.token }}
+
+  # ---- gh-pages upkeep: the same composable action the reusable workflow uses -
+  cleanup-preview:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'closed' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+        with:
+          mode: cleanup
+          pr: ${{ github.event.pull_request.number }}
+
+  prune-history:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+        with:
+          mode: prune

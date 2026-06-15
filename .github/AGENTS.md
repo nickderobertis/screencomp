@@ -15,12 +15,20 @@
   CI lints them (actionlint/hadolint), runs the action against its own checkout,
   and builds the image. Keep `action.yml` asset names in lockstep with the
   release workflow's `archive` pattern.
+- The downstream half lives in composable actions, not inline workflow steps:
+  `action.yml` (install), `visual-docs/action.yml` (gate/gallery/Pages/comment),
+  `gh-pages-maintenance/action.yml` (cleanup/prune). The reusable workflow is thin
+  glue that `uses:` them, and a hand-rolled caller composes the SAME actions
+  (`examples/visual-docs-custom.yml`), so the two paths can't diverge. Because
+  `uses:` can't interpolate a ref, the reusable workflow pins each internal action
+  to a literal `@vX.Y.Z`; an integration test
+  (`reusable_workflow_pins_its_own_actions_to_this_version`) fails if a pin lags
+  the crate version, so a release must bump the pins. Consumer-facing *examples*
+  use the floating `@vN` tag instead and are excluded from that test.
 - The gh-pages cleanup/prune logic is `scripts/visual-docs-gh-pages.sh` — the one
-  source of truth. The reusable workflow's `cleanup-preview`/`prune-history` jobs
-  fetch it at their own ref (`github.job_workflow_ref`) rather than inlining it, so
-  the shipped logic and the tested logic cannot diverge. `lint-actions` and CI
-  `-ignore` the `job_workflow_ref` schema-gap message (it is a real context
-  property actionlint 1.7.7 lacks); the script is shellcheck-linted in CI since
+  source of truth. The `gh-pages-maintenance` action runs it via
+  `$GITHUB_ACTION_PATH` (the script ships beside the action), so the shipped and
+  tested logic cannot diverge. The script is shellcheck-linted in CI since
   actionlint only covers shell embedded in workflows.
 - `test-gh-pages-maintenance.yml` exercises that script against a *disposable*
   branch on `screencomp-demo` (never its real gh-pages) via the

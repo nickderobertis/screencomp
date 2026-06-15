@@ -25,7 +25,8 @@
 #     capture toolchain but NOT host tools (`gh`, a configured `git`, etc.).
 #   * `report` runs on the HOST runner (no container), where `gh`, `git`, and the
 #     screencomp binary are available. It does the reproducibility gate, classify,
-#     gallery, Pages deploy, PR comment, and manifest push.
+#     gallery, Pages deploy, PR comment, and manifest push — all via the
+#     `visual-docs` composable action, so this job is thin glue (see below).
 # Putting a `gh pr comment` or `git push` step inside the capture container is the
 # bug this split exists to prevent.
 #
@@ -186,29 +187,26 @@ jobs:
           retention-days: 1
 
   # ---- Report: runs on the HOST runner, where gh/git/screencomp live --------
+  # Thin glue: check out the PR branch, install the CLI, pull the capture
+  # artifact, then hand the entire downstream half — reproducibility gate,
+  # classify, gallery, Pages deploy, sticky PR comment, manifest push — to the
+  # `visual-docs` composite action. That action is the ONE implementation of this
+  # logic; a custom workflow that needs injectable capture steps composes the SAME
+  # action directly (see examples/visual-docs-custom.yml), so the two paths can't
+  # diverge. The action ref is pinned to this release and drift-tested.
   report:
     needs: capture
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write # push the regenerated manifest + the gh-pages gallery
       pull-requests: write # post the diff comment
-    defaults:
-      run:
-        shell: bash # host always has bash; the scripts below use bashisms
-    env:
-      PLATFORM: ${{ inputs.platform }}
-      MANIFEST: shots/baseline/${{ inputs.platform }}.sha256
-      # The canonical gallery lives at the Pages site root; each PR gets a
-      # /pr-<n>/ preview subpath.
-      MAIN_GALLERY_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-      PR_PREVIEW_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.head_ref }} # PR branch (empty on push -> the pushed ref)
           token: ${{ secrets.push-token || github.token }}
 
-      - uses: nickderobertis/screencomp@v0.1.12 # install the CLI on the host
+      - uses: nickderobertis/screencomp@v0.2.0 # install the CLI on the host
         with:
           version: ${{ inputs.screencomp-version }}
 
@@ -217,245 +215,53 @@ jobs:
           name: screencomp-shots
           path: shots
 
-      # Fail loudly and early if the host is missing a tool a later step needs,
-      # instead of deep inside a publish step. This is the regression guard for
-      # the "step runs where its tool isn't" bug class.
-      - name: Check host tooling
-        run: |
-          set -euo pipefail
-          screencomp --version
-          git --version
-          gh --version
-
-      # Reproducibility gate, half 2: require the two captures to be byte-identical.
-      - name: Verify capture is reproducible
-        if: ${{ inputs.verify }}
-        run: |
-          set -euo pipefail
-          screencomp verify --first shots/current --second shots/verify --platform "$PLATFORM"
-          rm -rf shots/verify
-
-      # Diff against the committed manifest, or seed it on the first run. Under the
-      # strict gate (fail-on-drift:true, the default) drift FAILS the job — the
-      # developer was meant to regenerate and commit the baseline locally. Set
-      # fail-on-drift:false to auto-accept instead, surfacing the drift as a loud
-      # warning rather than a red check.
-      - name: Classify against the baseline manifest
-        run: |
-          set -uo pipefail
-          if [ ! -f "$MANIFEST" ]; then
-            echo "HAS_BASELINE=false" >>"$GITHUB_ENV"
-            echo "no committed baseline at $MANIFEST; this run seeds it"
-            exit 0
-          fi
-          echo "HAS_BASELINE=true" >>"$GITHUB_ENV"
-          screencomp classify --baseline-manifest "$MANIFEST" \
-            --current shots/current --platform "$PLATFORM" --exit-code
-          status=$?
-          if [ "$status" -eq 3 ]; then
-            if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
-              echo "::error::Screenshots drifted from the committed baseline ($MANIFEST). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
-              exit 3
-            fi
-            echo "::warning::Baseline drifted from $MANIFEST and was auto-accepted (fail-on-drift:false); changes can slip through unnoticed. Set fail-on-drift:true plus the pre-push guard for a hard gate." >&2
-          elif [ "$status" -ne 0 ]; then
-            exit "$status"
-          fi
-
-      # A plain gallery of the current capture. In manifest mode there are no
-      # baseline PNGs, so this is the current state only; the before/after diff in
-      # the PR comment sources "Before" from the canonical main gallery URL.
-      - name: Build gallery
-        if: ${{ inputs.pages }}
-        run: |
-          set -euo pipefail
-          screencomp gallery --input shots/current --platform "$PLATFORM" \
-            --output site --title "${{ inputs.gallery-title }}"
-
-      # Default branch -> publish the canonical gallery at the site root.
-      - name: Deploy canonical gallery
-        if: ${{ inputs.pages && inputs.publish && github.event_name == 'push' }}
-        uses: peaceiris/actions-gh-pages@v4 # pin to a release you trust
+      - uses: nickderobertis/screencomp/visual-docs@v0.2.0
         with:
-          github_token: ${{ github.token }}
-          publish_dir: site
-          keep_files: true # do not clobber existing /pr-<n>/ previews
-
-      # PR -> publish a preview at /pr-<n>/ alongside the canonical gallery.
-      - name: Deploy PR preview gallery
-        if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' }}
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ github.token }}
-          publish_dir: site
-          destination_dir: pr-${{ github.event.pull_request.number }}
-          keep_files: true
-
-      # Pages rebuilds asynchronously; wait so the comment's inline images resolve
-      # instead of 404ing on first view.
-      - name: Wait for the PR preview to go live
-        if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' }}
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 30); do
-            if curl -fsSL -o /dev/null "${PR_PREVIEW_URL}/index.html"; then
-              echo "preview live at ${PR_PREVIEW_URL}"
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "preview not live yet; the comment will still link to it" >&2
-
-      # Resolve the manifest the COMMENT diffs against. Under the strict gate the
-      # committed manifest already matches the current capture (the developer
-      # updated it), so diffing against it would show "no changes" for a real UI
-      # change. Sourcing "Before" from the PR base branch's manifest instead makes
-      # the comment show the intended before/after. classify still gates against
-      # the committed manifest — gate vs committed, comment vs base.
-      - name: Resolve comment baseline
-        id: cbase
-        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' }}
-        run: |
-          set -euo pipefail
-          base_ref='${{ inputs.comment-base-ref }}'
-          [ -n "$base_ref" ] || base_ref='${{ github.base_ref }}'
-          comment_manifest="$MANIFEST"
-          if [ -n "${base_ref// }" ]; then
-            git fetch --depth=1 origin "$base_ref" || true
-            if git show "origin/${base_ref}:${MANIFEST}" >base-manifest.sha256 2>/dev/null; then
-              comment_manifest="base-manifest.sha256"
-              echo "comment 'Before' sourced from origin/${base_ref}:${MANIFEST}"
-            else
-              echo "no manifest at origin/${base_ref}:${MANIFEST}; comparing against the committed one"
-            fi
-          fi
-          echo "manifest=$comment_manifest" >>"$GITHUB_OUTPUT"
-
-      # Render the sticky before/after comment. "After" comes from this PR's
-      # preview gallery; "Before" from the canonical main gallery (the blessed
-      # current state). The diff itself uses the base-ref manifest resolved above.
-      # Skipped on the seeding run (no baseline to diff). Without Pages it degrades
-      # to a path listing.
-      - name: Render PR comment
-        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' }}
-        run: |
-          set -euo pipefail
-          if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
-            screencomp comment --baseline-manifest "${{ steps.cbase.outputs.manifest }}" \
-              --current shots/current --platform "$PLATFORM" \
-              --gallery-url "$PR_PREVIEW_URL" \
-              --baseline-url "$MAIN_GALLERY_URL" \
-              --output comment.md
-          else
-            screencomp comment --baseline-manifest "${{ steps.cbase.outputs.manifest }}" \
-              --current shots/current --platform "$PLATFORM" --output comment.md
-          fi
-
-      - name: Post PR comment
-        if: ${{ github.event_name == 'pull_request' && env.HAS_BASELINE == 'true' && inputs.publish }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          gh pr comment "$PR" --body-file comment.md --edit-last \
-            || gh pr comment "$PR" --body-file comment.md
-
-      # CI-auto-accept model only (update-manifest:true): regenerate the manifest
-      # (seeding it on the first run) and push it to the PR branch, so CI moves the
-      # baseline for the developer. Off under the strict gate, where the developer
-      # owns the baseline. Loop-safe with any token: a re-triggered run regenerates
-      # an identical manifest, sees no diff, and does not push.
-      - name: Update the baseline manifest
-        if: ${{ inputs.update-manifest }}
-        run: |
-          set -euo pipefail
-          screencomp manifest --input shots/current --platform "$PLATFORM" --output "$MANIFEST"
-
-      - name: Push the manifest to the PR branch
-        if: ${{ github.event_name == 'pull_request' && inputs.publish && inputs.update-manifest }}
-        run: |
-          set -euo pipefail
-          if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add "$MANIFEST"
-            git commit -m "chore: update screenshot baseline manifest"
-            git push
-          fi
+          platform: ${{ inputs.platform }}
+          gallery-title: ${{ inputs.gallery-title }}
+          # verify (half 1) re-captured into shots/verify; point the gate at it.
+          verify-second: ${{ inputs.verify && 'shots/verify' || '' }}
+          pages: ${{ inputs.pages }}
+          publish: ${{ inputs.publish }}
+          fail-on-drift: ${{ inputs.fail-on-drift }}
+          update-manifest: ${{ inputs.update-manifest }}
+          comment-base-ref: ${{ inputs.comment-base-ref }}
+          github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Cleanup: drop a closed PR's preview from gh-pages ---------------------
   # keep_files:true keeps a main deploy from clobbering live /pr-<n>/ previews,
   # but nothing else removes them — so without this they pile up forever. Runs
-  # only when the caller forwards `pull_request: closed` (merged or not). No
-  # capture: this just rewrites the generated branch. The actual git surgery
-  # lives in scripts/visual-docs-gh-pages.sh (one source of truth, CI-tested
-  # against a disposable branch); we fetch it at THIS workflow's pinned ref so the
-  # script and workflow versions never diverge.
+  # only when the caller forwards `pull_request: closed` (merged or not). The git
+  # surgery is the `gh-pages-maintenance` action (which wraps the one tested
+  # script), pinned to this release — no capture, just a branch rewrite.
   cleanup-preview:
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write # rewrite the gh-pages branch
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Resolve this workflow's ref
-        id: ref
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-        run: echo "ref=${JOB_WORKFLOW_REF##*@}" >>"$GITHUB_OUTPUT"
-      - name: Fetch the gh-pages maintenance script
-        uses: actions/checkout@v4
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
         with:
-          repository: nickderobertis/screencomp
-          ref: ${{ steps.ref.outputs.ref }}
-          sparse-checkout: scripts/visual-docs-gh-pages.sh
-          sparse-checkout-cone-mode: false
-          path: .screencomp-maint
-      - name: Remove the closed PR's preview
-        env:
-          GIT_TOKEN: ${{ secrets.push-token || github.token }}
-          REPO: ${{ github.repository }}
-          BRANCH: gh-pages
-          PR: ${{ github.event.pull_request.number }}
-        run: bash .screencomp-maint/scripts/visual-docs-gh-pages.sh cleanup-preview
+          mode: cleanup
+          pr: ${{ github.event.pull_request.number }}
+          token: ${{ secrets.push-token || github.token }}
 
   # ---- Prune: squash gh-pages history so old galleries don't accrete ---------
   # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
-  # forever. This rewrites gh-pages to a SINGLE fresh commit holding the current
-  # site byte-for-byte, discarding the accreted blob history. Runs only when the
-  # caller forwards a `schedule:` trigger. A destructive rewrite of the GENERATED
-  # branch only — nothing bases work on gh-pages, and the canonical gallery is
-  # regenerated on the next default-branch push regardless. Schedule it at a quiet
-  # hour: the force-push shares a concurrency group with default-branch deploys
-  # (same github.ref) but not with in-flight PR previews, which simply redeploy.
+  # forever. The `gh-pages-maintenance` action rewrites gh-pages to a SINGLE fresh
+  # commit holding the current site, discarding the accreted blob history. Runs
+  # only when the caller forwards a `schedule:` trigger. A destructive rewrite of
+  # the GENERATED branch only — nothing bases work on gh-pages, and the canonical
+  # gallery is regenerated on the next default-branch push regardless. Schedule it
+  # at a quiet hour: the force-push shares a concurrency group with default-branch
+  # deploys (same github.ref) but not with in-flight PR previews, which redeploy.
   prune-history:
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'schedule' }}
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Resolve this workflow's ref
-        id: ref
-        env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-        run: echo "ref=${JOB_WORKFLOW_REF##*@}" >>"$GITHUB_OUTPUT"
-      - name: Fetch the gh-pages maintenance script
-        uses: actions/checkout@v4
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
         with:
-          repository: nickderobertis/screencomp
-          ref: ${{ steps.ref.outputs.ref }}
-          sparse-checkout: scripts/visual-docs-gh-pages.sh
-          sparse-checkout-cone-mode: false
-          path: .screencomp-maint
-      - name: Squash gh-pages to a single commit
-        env:
-          GIT_TOKEN: ${{ secrets.push-token || github.token }}
-          REPO: ${{ github.repository }}
-          BRANCH: gh-pages
-        run: bash .screencomp-maint/scripts/visual-docs-gh-pages.sh prune-history
+          mode: prune
+          token: ${{ secrets.push-token || github.token }}
