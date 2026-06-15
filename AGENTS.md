@@ -147,11 +147,13 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
   constructed archive and `.sha256` names must match the release workflow's
   `archive` pattern; change the pattern and you change all three. `examples/` shows
   the intended consumer flow and is excluded from the published crate.
-- The reusable workflow is thin glue that `uses:` those composable actions at a
-  literal `@vX.Y.Z` pin (a `uses:` ref can't be interpolated). Cutting a release
-  must bump those pins in lockstep with `Cargo.toml`; the
-  `reusable_workflow_pins_its_own_actions_to_this_version` test fails the release
-  PR until they match.
+- The reusable workflow is thin glue that `uses:` those composable actions via the
+  floating major tag `@v0` (a `uses:` ref can't be interpolated, and an exact pin
+  would go stale every release and couldn't reference a brand-new action before it
+  ships). `release.yml`'s `advance-major-tag` job force-moves `v0` to each release,
+  so `@v0` always resolves to the latest 0.x. An integration test
+  (`reusable_workflow_floats_its_own_action_pins`) guards against a regression back
+  to exact pins. Bump the floated tag to `v1` only at the 1.0 release.
 - The visual-docs surfaces default to the **strict gate** and must stay
   consistent on it: the reusable workflow and the composite action default
   `fail-on-drift: true` + `update-manifest: false`, and `init` scaffolds a matching

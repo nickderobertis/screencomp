@@ -20,11 +20,12 @@
   `gh-pages-maintenance/action.yml` (cleanup/prune). The reusable workflow is thin
   glue that `uses:` them, and a hand-rolled caller composes the SAME actions
   (`examples/visual-docs-custom.yml`), so the two paths can't diverge. Because
-  `uses:` can't interpolate a ref, the reusable workflow pins each internal action
-  to a literal `@vX.Y.Z`; an integration test
-  (`reusable_workflow_pins_its_own_actions_to_this_version`) fails if a pin lags
-  the crate version, so a release must bump the pins. Consumer-facing *examples*
-  use the floating `@vN` tag instead and are excluded from that test.
+  `uses:` can't interpolate a ref, the reusable workflow (and the examples)
+  reference these actions via the floating major tag `@v0`; `release.yml`'s
+  `advance-major-tag` job force-moves `v0` to each release, so `@v0` always
+  resolves to the latest 0.x (and a brand-new action becomes referenceable the
+  moment it ships). `reusable_workflow_floats_its_own_action_pins` guards against a
+  regression to exact pins.
 - The gh-pages cleanup/prune logic is `scripts/visual-docs-gh-pages.sh` — the one
   source of truth. The `gh-pages-maintenance` action runs it via
   `$GITHUB_ACTION_PATH` (the script ships beside the action), so the shipped and

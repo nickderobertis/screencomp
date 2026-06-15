@@ -119,7 +119,7 @@ The reusable workflow and composite action default to the strict gate
 A composite action installs the CLI (and optionally runs it) on a runner:
 
 ```yaml
-- uses: nickderobertis/screencomp@v1
+- uses: nickderobertis/screencomp@v0
   with:
     version: latest        # or a pinned tag like v0.1.0
 - run: screencomp classify --baseline shots/baseline --current shots/current
@@ -228,8 +228,8 @@ jobs:
       - uses: your-org/codeartifact-npm-auth@v1          # inject any steps you need
       - uses: your-org/install-aws-cli@v1                #   ↑
       - run: npm ci && npx playwright install --with-deps chromium && npx playwright test
-      - uses: nickderobertis/screencomp@v1               # install the CLI
-      - uses: nickderobertis/screencomp/visual-docs@v1   # the report half, one step
+      - uses: nickderobertis/screencomp@v0               # install the CLI
+      - uses: nickderobertis/screencomp/visual-docs@v0   # the report half, one step
         with:
           platform: linux-x86_64   # or "" for a project-level layout (no platform subtree)
           fail-on-drift: true      # strict gate (default): fail on unexpected drift

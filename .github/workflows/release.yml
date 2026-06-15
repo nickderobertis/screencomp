@@ -86,3 +86,30 @@ jobs:
       - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Advance the floating major tag (v0 for a 0.x release) to this release, so the
+  # reusable workflow and consumers can pin the composable actions to `@v0` and
+  # always resolve the latest release. Gated on `upload` so the tag only moves once
+  # the release actually has its binary assets (the install action downloads them).
+  advance-major-tag:
+    needs: [upload]
+    permissions:
+      contents: write # move the major tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Move v<major> to this release
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v*.*.*) ;;
+            *) echo "::error::unexpected release tag '$TAG' (want vX.Y.Z)"; exit 1 ;;
+          esac
+          major="${TAG%%.*}" # v0.2.2 -> v0
+          git tag -f "$major" "$TAG"
+          git push -f origin "refs/tags/$major"
+          echo "moved $major -> $TAG"
