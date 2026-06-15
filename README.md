@@ -198,17 +198,25 @@ fire (then they run by default, like the scaffold). The
 Actions Pages source instead of a branch, so it has no `gh-pages` history to
 prune — at the cost of per-PR previews, which that source can't host.
 
-For a fully hand-rolled equivalent you can copy and adapt, see
-[`examples/visual-docs.yml`](examples/visual-docs.yml).
+Two copy-paste templates: [`examples/visual-docs-custom.yml`](examples/visual-docs-custom.yml)
+is the **thin** one — the reusable workflow written out as plain jobs over
+screencomp's composable actions, so you own only the capture steps;
+[`examples/visual-docs.yml`](examples/visual-docs.yml) is the **raw-CLI** one that
+calls the binary step by step and deploys via the Actions Pages source.
 
-#### When your capture needs custom steps: the composite action
+#### When your capture needs custom steps: the composite actions
 
 A reusable workflow takes a `capture-command` *string*, so it can't host capture
 steps that must be GitHub Actions — private-registry OIDC auth, `aws-actions/*`,
-a vendored setup action. For that, compose your own job and drop in the
-`visual-docs` **composite action** (the same downstream half, as one step). Now
-"add OIDC auth", "swap the registry", or "install an extra package" is just
-another step you control — no framework to reimplement:
+a vendored setup action. The reusable workflow is itself just thin glue over
+**composable actions** — `screencomp` (install), `screencomp/visual-docs` (the
+gate/gallery/Pages/comment half), and `screencomp/gh-pages-maintenance` (preview
+cleanup + history prune) — so for custom capture you write the same jobs yourself
+and inject whatever you need. "Add OIDC auth", "swap the registry", or "install an
+extra package" is just another step you control, no framework to reimplement.
+The full worked version (AWS CodeArtifact via OIDC, plus the gh-pages upkeep jobs)
+is [`examples/visual-docs-custom.yml`](examples/visual-docs-custom.yml); the core
+is just the report half:
 
 ```yaml
 jobs:

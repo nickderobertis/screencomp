@@ -1,0 +1,66 @@
+# screencomp gh-pages maintenance composite action — keep the published gallery
+# branch bounded, as one step a thin workflow drops into an event-triggered job.
+#
+# It wraps scripts/visual-docs-gh-pages.sh — the ONE source of truth for the git
+# surgery, CI-tested against a disposable branch (see
+# .github/workflows/test-gh-pages-maintenance.yml). The script ships in this repo
+# next to the action, so the action runs it via $GITHUB_ACTION_PATH at the action's
+# pinned ref; this replaces the reusable workflow's old `job_workflow_ref` +
+# sparse-checkout dance, and the shipped logic still can't diverge from the tested
+# logic because there is still exactly one script.
+#
+#   # delete a closed PR's preview
+#   - uses: nickderobertis/screencomp/gh-pages-maintenance@vX.Y.Z
+#     with: { mode: cleanup, pr: '${{ github.event.pull_request.number }}' }
+#   # squash gh-pages history (on a schedule)
+#   - uses: nickderobertis/screencomp/gh-pages-maintenance@vX.Y.Z
+#     with: { mode: prune }
+name: screencomp gh-pages maintenance
+description: >-
+  Keep the published gh-pages gallery branch bounded: delete a closed PR's
+  /pr-<n>/ preview (mode: cleanup) or squash the branch history to a single fresh
+  commit (mode: prune).
+author: screencomp contributors
+branding:
+  icon: scissors
+  color: purple
+
+inputs:
+  mode:
+    description: 'cleanup (delete a closed PR''s /pr-<n>/ preview) or prune (squash history to one commit).'
+    required: true
+  repo:
+    description: 'owner/name whose gallery branch to maintain.'
+    required: false
+    default: ${{ github.repository }}
+  branch:
+    description: 'The published gallery branch.'
+    required: false
+    default: gh-pages
+  pr:
+    description: 'PR number whose /pr-<n>/ preview to remove (mode: cleanup only).'
+    required: false
+    default: ''
+  token:
+    description: 'Token with contents:write on `repo` (push, force-push, delete). The default GITHUB_TOKEN cannot push cross-repo.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run gh-pages maintenance
+      shell: bash
+      env:
+        GIT_TOKEN: ${{ inputs.token }}
+        REPO: ${{ inputs.repo }}
+        BRANCH: ${{ inputs.branch }}
+        PR: ${{ inputs.pr }}
+      run: |
+        set -euo pipefail
+        case '${{ inputs.mode }}' in
+          cleanup) subcommand=cleanup-preview ;;
+          prune)   subcommand=prune-history ;;
+          *) echo "::error::gh-pages-maintenance: unknown mode '${{ inputs.mode }}' (want cleanup|prune)" >&2; exit 2 ;;
+        esac
+        bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-gh-pages.sh" "$subcommand"

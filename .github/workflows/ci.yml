@@ -71,10 +71,7 @@ jobs:
       - name: actionlint
         run: |
           curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz | tar -xz actionlint
-          # job_workflow_ref is a real github-context property (the reusable
-          # workflow uses it to pin the gh-pages maintenance script to its own
-          # ref); actionlint 1.7.7's schema lacks it, so ignore that one message.
-          ./actionlint -color -ignore 'property "job_workflow_ref" is not defined' .github/workflows/*.yml examples/*.yml
+          ./actionlint -color .github/workflows/*.yml examples/*.yml
       - name: hadolint
         run: |
           curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
