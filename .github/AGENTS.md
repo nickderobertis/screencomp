@@ -25,5 +25,11 @@
 - `test-gh-pages-maintenance.yml` exercises that script against a *disposable*
   branch on `screencomp-demo` (never its real gh-pages) via the
   `SCREENCOMP_DEMO_PAT` secret (a token with `contents: write` on the demo repo;
-  the default `GITHUB_TOKEN` cannot push cross-repo). It is manual/scheduled and
-  no-ops without the secret, so it never blocks forks or unconfigured clones.
+  the default `GITHUB_TOKEN` cannot push cross-repo). It runs on PRs that touch
+  the script or the reusable/maintenance workflows (plus manual and weekly), and
+  no-ops without the secret, so it never blocks forks or unconfigured clones —
+  fork PRs get no secret and skip. Use plain `pull_request`, never
+  `pull_request_target`, so untrusted fork code never runs with the secret. A
+  single static concurrency group (`test-gh-pages-maintenance`, not keyed by ref,
+  `cancel-in-progress: false`) serializes every run so two never mutate the shared
+  demo repo at once and an in-flight run always finishes its branch cleanup.

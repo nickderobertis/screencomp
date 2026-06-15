@@ -7,18 +7,29 @@
 #
 # Requires a repo secret SCREENCOMP_DEMO_PAT: a token with contents:write on
 # nickderobertis/screencomp-demo (the default GITHUB_TOKEN can't push cross-repo).
-# Without it the job no-ops (so forks and unconfigured clones stay green). Manual
-# and weekly, not on PRs — it mutates an external repo and needs the secret.
+# Without it the job no-ops (so forks and unconfigured clones stay green) — and
+# a fork PR never receives the secret, so it no-ops there too. Runs on PRs that
+# touch the script or the reusable/maintenance workflows, plus manual and weekly.
+# Plain pull_request (never pull_request_target): fork code runs without secrets.
 name: Test gh-pages maintenance
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "41 5 * * 1" # Mondays, a quiet hour
+  pull_request:
+    paths:
+      - "scripts/visual-docs-gh-pages.sh"
+      - ".github/workflows/test-gh-pages-maintenance.yml"
+      - ".github/workflows/visual-docs-reusable.yml"
 
 permissions:
   contents: read
 
+# One global lock: serialize every run (PR/dispatch/schedule) so two runs never
+# mutate the shared demo repo at once. Deliberately NOT keyed by ref — cross-PR
+# runs must not overlap. cancel-in-progress is off so an in-flight run finishes
+# its throwaway-branch cleanup instead of being killed mid-mutation.
 concurrency:
   group: test-gh-pages-maintenance
   cancel-in-progress: false
