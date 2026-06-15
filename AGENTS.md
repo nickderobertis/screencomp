@@ -141,11 +141,17 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
   artifacts. crates.io publish is a separately gated step.
 - The CLI ships through several surfaces that must stay consistent: release
   binaries, the `scripts/install.sh` installer, crates.io, the GHCR image
-  (`Dockerfile`), and the composite action (`action.yml`). Both `install.sh` and
-  the action download release assets by name, so their constructed archive and
-  `.sha256` names must match the release workflow's `archive` pattern; change the
-  pattern and you change all three. `examples/` shows the intended consumer flow
-  and is excluded from the published crate.
+  (`Dockerfile`), and the composite actions (`action.yml` install,
+  `visual-docs/action.yml` report, `gh-pages-maintenance/action.yml` upkeep). Both
+  `install.sh` and the install action download release assets by name, so their
+  constructed archive and `.sha256` names must match the release workflow's
+  `archive` pattern; change the pattern and you change all three. `examples/` shows
+  the intended consumer flow and is excluded from the published crate.
+- The reusable workflow is thin glue that `uses:` those composable actions at a
+  literal `@vX.Y.Z` pin (a `uses:` ref can't be interpolated). Cutting a release
+  must bump those pins in lockstep with `Cargo.toml`; the
+  `reusable_workflow_pins_its_own_actions_to_this_version` test fails the release
+  PR until they match.
 - The visual-docs surfaces default to the **strict gate** and must stay
   consistent on it: the reusable workflow and the composite action default
   `fail-on-drift: true` + `update-manifest: false`, and `init` scaffolds a matching

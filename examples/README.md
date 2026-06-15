@@ -4,12 +4,23 @@ Copy-paste starting points for adopting `screencomp` in a consuming repository.
 These files are templates for *your* repo — they are excluded from the published
 crate and are not run by this project's CI.
 
-## `visual-docs.yml`
+## `visual-docs.yml` vs `visual-docs-custom.yml`
 
-An end-to-end GitHub Actions workflow that captures screenshots, builds a gallery,
-publishes it to GitHub Pages, and posts a sticky screenshot-diff comment on pull
-requests. Copy it into `.github/workflows/` and adapt the **Capture screenshots**
-step to your stack (Playwright, Cypress, Storybook, …).
+Two copy-paste workflows for `.github/workflows/`; pick by how much of the capture
+you need to control:
+
+- [`visual-docs.yml`](visual-docs.yml) — **raw CLI**: each step calls the
+  `screencomp` binary directly and deploys via the GitHub Actions Pages source. A
+  good read for understanding the whole pipeline with no abstraction.
+- [`visual-docs-custom.yml`](visual-docs-custom.yml) — **thin glue over the
+  composable actions** (`screencomp`, `screencomp/visual-docs`,
+  `screencomp/gh-pages-maintenance`). It is the reusable workflow written out as
+  plain jobs, so you own only the capture steps and can inject OIDC/private-registry
+  auth (it shows AWS CodeArtifact). Prefer this when the reusable workflow's
+  string `capture-command` can't host the steps you need.
+
+If you need neither — just adapt the **Capture screenshots** step — start from
+`visual-docs.yml` (Playwright, Cypress, Storybook, …).
 
 > **See it running:** [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
 > is a live consumer of this standard — real Playwright captures in the pinned
