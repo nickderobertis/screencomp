@@ -38,6 +38,17 @@
 # Inline comment thumbnails are fetched through GitHub's anonymous image proxy, so
 # they only render from a PUBLIC Pages site. A private Pages gallery still works as
 # a link, but its inline previews will not load.
+#
+# Keeping gh-pages bounded: galleries DO commit PNGs to the gh-pages branch (the
+# source repo never does — only the digest manifest), so left alone that branch
+# grows without bound: stale /pr-<n>/ previews are never removed (keep_files), and
+# every changed shot leaves its old blob in history forever. Two opt-in jobs cap
+# this when the CALLER forwards their triggers:
+#   * cleanup-preview — on `pull_request: closed`, deletes that PR's /pr-<n>/.
+#   * prune-history   — on `schedule:`, squashes gh-pages to a single fresh commit
+#                       holding the current site, discarding the accreted history.
+# `screencomp init` scaffolds a caller that forwards both. Add them to a
+# hand-rolled caller to get the same lifecycle.
 name: Visual docs (reusable)
 
 on:
@@ -128,6 +139,9 @@ concurrency:
 jobs:
   # ---- Capture: the ONLY job that runs inside your container ----------------
   capture:
+    # Skip the capture/report pipeline on the maintenance triggers (a closed PR or
+    # the scheduled squash): those run cleanup-preview / prune-history instead.
+    if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
     runs-on: ${{ inputs.runs-on }}
     container: ${{ inputs.container }}
     permissions:
@@ -356,3 +370,79 @@ jobs:
             git commit -m "chore: update screenshot baseline manifest"
             git push
           fi
+
+  # ---- Cleanup: drop a closed PR's preview from gh-pages ---------------------
+  # keep_files:true keeps a main deploy from clobbering live /pr-<n>/ previews,
+  # but nothing else removes them — so without this they pile up forever. Runs
+  # only when the caller forwards `pull_request: closed` (merged or not). No
+  # capture: this just rewrites the generated branch.
+  cleanup-preview:
+    if: ${{ inputs.pages && inputs.publish && github.event_name == 'pull_request' && github.event.action == 'closed' }}
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write # rewrite the gh-pages branch
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Remove the closed PR's preview
+        env:
+          GIT_TOKEN: ${{ secrets.push-token || github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          if ! git clone --quiet --depth 1 --branch gh-pages --single-branch \
+              "https://x-access-token:${GIT_TOKEN}@github.com/${REPO}.git" "$workdir"; then
+            echo "no gh-pages branch yet; nothing to clean"
+            exit 0
+          fi
+          cd "$workdir"
+          if [ ! -d "pr-${PR}" ]; then
+            echo "no preview at pr-${PR}; nothing to clean"
+            exit 0
+          fi
+          git rm -rq "pr-${PR}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -qm "chore(visual-docs): drop preview for closed PR #${PR}"
+          git push -q origin gh-pages
+
+  # ---- Prune: squash gh-pages history so old galleries don't accrete ---------
+  # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
+  # forever. This rewrites gh-pages to a SINGLE fresh commit holding the current
+  # site byte-for-byte, discarding the accreted blob history. Runs only when the
+  # caller forwards a `schedule:` trigger. A destructive rewrite of the GENERATED
+  # branch only — nothing bases work on gh-pages, and the canonical gallery is
+  # regenerated on the next default-branch push regardless. Schedule it at a quiet
+  # hour: the force-push shares a concurrency group with default-branch deploys
+  # (same github.ref) but not with in-flight PR previews, which simply redeploy.
+  prune-history:
+    if: ${{ inputs.pages && inputs.publish && github.event_name == 'schedule' }}
+    runs-on: ${{ inputs.runs-on }}
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Squash gh-pages to a single commit
+        env:
+          GIT_TOKEN: ${{ secrets.push-token || github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          workdir="$(mktemp -d)"
+          if ! git clone --quiet --depth 1 --branch gh-pages --single-branch \
+              "https://x-access-token:${GIT_TOKEN}@github.com/${REPO}.git" "$workdir"; then
+            echo "no gh-pages branch yet; nothing to prune"
+            exit 0
+          fi
+          cd "$workdir"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan squashed
+          git add -A
+          git commit -qm "chore(visual-docs): squash gallery history $(date -u +%Y-%m-%d)"
+          git push -qf origin squashed:gh-pages

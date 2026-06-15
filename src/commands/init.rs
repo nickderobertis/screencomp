@@ -99,7 +99,7 @@ fn write_human(
          3. Seed the baseline once on {platform} and commit it:\n   \
          screencomp manifest --input shots/current --platform {platform} \\\n     \
          --output shots/baseline/{platform}.sha256\n\
-         4. Enable GitHub Pages (Settings -> Pages -> GitHub Actions).\n\
+         4. Enable GitHub Pages (Settings -> Pages -> Deploy from a branch: gh-pages /).\n\
          \n\
          The gate is strict by default: CI fails on unexpected drift, and you\n\
          regenerate the baseline locally (the pre-push guard) and commit it. To\n\
@@ -192,8 +192,15 @@ name: Visual docs
 
 on:
   pull_request:
+    # `closed` lets screencomp delete this PR's gh-pages preview once it closes,
+    # so stale /pr-<n>/ galleries do not accumulate on the branch.
+    types: [opened, synchronize, reopened, closed]
   push:
     branches: [main]
+  schedule:
+    # Monthly: squash the gh-pages gallery history to a single commit so the
+    # committed PNGs do not grow the branch without bound. Adjust or drop freely.
+    - cron: \"27 4 1 * *\"
 
 permissions:
   contents: write       # push the gh-pages gallery
