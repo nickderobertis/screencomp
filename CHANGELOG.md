@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2](https://github.com/nickderobertis/screencomp/compare/v0.2.1...v0.2.2) - 2026-06-15
+
+### Changed
+
+- decompose visual-docs into composable actions over a thin workflow ([#50](https://github.com/nickderobertis/screencomp/pull/50))
+
+### Fixed
+
+- float the reusable workflow's internal action refs on @v0 ([#51](https://github.com/nickderobertis/screencomp/pull/51))
+
 ## [0.2.1](https://github.com/nickderobertis/screencomp/compare/v0.2.0...v0.2.1) - 2026-06-15
 
 ### Added
