@@ -12,7 +12,9 @@
 # "Batteries-included reusable workflow". This file is the escape hatch, not the
 # default.
 #
-# Pin every `nickderobertis/screencomp...@vX.Y.Z` below to the SAME released tag.
+# The `nickderobertis/screencomp...@v0` refs below float on the major tag, which
+# each release advances — so they always resolve to the latest 0.x. Pin to an exact
+# `@vX.Y.Z` instead if you want to freeze a version.
 name: Visual docs
 
 on:
@@ -89,12 +91,12 @@ jobs:
       pull-requests: write # post the diff comment
     steps:
       - uses: actions/checkout@v4
-      - uses: nickderobertis/screencomp@v0.2.0 # install the CLI on the host
+      - uses: nickderobertis/screencomp@v0 # install the CLI on the host
       - uses: actions/download-artifact@v4
         with:
           name: screencomp-shots
           path: shots
-      - uses: nickderobertis/screencomp/visual-docs@v0.2.0
+      - uses: nickderobertis/screencomp/visual-docs@v0
         with:
           platform: linux-x86_64
           verify-second: shots/verify # the gate's second capture
@@ -108,7 +110,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: cleanup
           pr: ${{ github.event.pull_request.number }}
@@ -119,6 +121,6 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: prune

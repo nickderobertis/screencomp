@@ -193,7 +193,8 @@ jobs:
   # `visual-docs` composite action. That action is the ONE implementation of this
   # logic; a custom workflow that needs injectable capture steps composes the SAME
   # action directly (see examples/visual-docs-custom.yml), so the two paths can't
-  # diverge. The action ref is pinned to this release and drift-tested.
+  # diverge. Internal actions float on the major tag `@v0`, which each release
+  # advances to itself (see release.yml), so they always resolve to the latest 0.x.
   report:
     needs: capture
     runs-on: ${{ inputs.runs-on }}
@@ -206,7 +207,7 @@ jobs:
           ref: ${{ github.head_ref }} # PR branch (empty on push -> the pushed ref)
           token: ${{ secrets.push-token || github.token }}
 
-      - uses: nickderobertis/screencomp@v0.2.0 # install the CLI on the host
+      - uses: nickderobertis/screencomp@v0 # install the CLI on the host
         with:
           version: ${{ inputs.screencomp-version }}
 
@@ -215,7 +216,7 @@ jobs:
           name: screencomp-shots
           path: shots
 
-      - uses: nickderobertis/screencomp/visual-docs@v0.2.0
+      - uses: nickderobertis/screencomp/visual-docs@v0
         with:
           platform: ${{ inputs.platform }}
           gallery-title: ${{ inputs.gallery-title }}
@@ -233,14 +234,14 @@ jobs:
   # but nothing else removes them — so without this they pile up forever. Runs
   # only when the caller forwards `pull_request: closed` (merged or not). The git
   # surgery is the `gh-pages-maintenance` action (which wraps the one tested
-  # script), pinned to this release — no capture, just a branch rewrite.
+  # script), floated on `@v0` — no capture, just a branch rewrite.
   cleanup-preview:
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ${{ inputs.runs-on }}
     permissions:
       contents: write # rewrite the gh-pages branch
     steps:
-      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: cleanup
           pr: ${{ github.event.pull_request.number }}
@@ -261,7 +262,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0.2.0
+      - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: prune
           token: ${{ secrets.push-token || github.token }}

@@ -93,7 +93,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: nickderobertis/screencomp@v0.1.9 # pin to a released tag
+      - uses: nickderobertis/screencomp@v0 # pin to a released tag
         with:
           version: latest
 

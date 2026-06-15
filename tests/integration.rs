@@ -1351,55 +1351,45 @@ fn init_caller_matches_the_reusable_workflow_interface() {
 }
 
 #[test]
-fn reusable_workflow_pins_its_own_actions_to_this_version() {
-    // The thin reusable workflow references screencomp's own actions (install,
-    // visual-docs, gh-pages-maintenance) by a literal `@vX.Y.Z` pin — `uses:`
-    // can't interpolate a ref. A stale pin ships logic from a different release
-    // than the workflow that calls it, so require every exact internal pin to
-    // match this crate's version. Cutting a release bumps Cargo.toml; this test is
-    // the guard that the matching pin bump happens in the same release PR.
-    let expected = format!("@v{}", env!("CARGO_PKG_VERSION"));
+fn reusable_workflow_floats_its_own_action_pins() {
+    // The reusable workflow references screencomp's own actions (install,
+    // visual-docs, gh-pages-maintenance) by the floating major tag `@v0`, which
+    // each release advances to itself (release.yml). `uses:` can't interpolate a
+    // ref, so an exact `@vX.Y.Z` pin would silently go stale every release and a
+    // brand-new action can't be referenced before it ships — `@v0` sidesteps both.
+    // Guard against a regression back to exact pins.
     let reusable = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".github/workflows/visual-docs-reusable.yml"),
     )
     .unwrap();
 
-    let mut pins = 0;
+    let mut refs = 0;
     for line in reusable.lines() {
-        // Skip comments (the header's `@vX.Y.Z` placeholder is illustrative).
+        // Skip comments; match only `uses:` of screencomp's own actions.
         if line.trim_start().starts_with('#') {
             continue;
         }
-        let Some(rest) = line.split_once("nickderobertis/screencomp").map(|(_, r)| r) else {
+        let Some((_, after)) = line.split_once("uses: nickderobertis/screencomp") else {
             continue;
         };
-        let Some((_, after_at)) = rest.split_once('@') else {
+        let Some((_, ref_part)) = after.split_once('@') else {
             continue;
         };
-        let pin: String = after_at
+        let pin: String = ref_part
             .chars()
             .take_while(|c| !c.is_whitespace())
             .collect();
-        // Only exact numeric pins (`@v0.2.0`); floating major tags like `@v1`,
-        // used in the consumer-facing examples, are intentional and skipped here.
-        let is_exact = pin
-            .strip_prefix("v")
-            .is_some_and(|v| v.contains('.') && v.chars().all(|c| c.is_ascii_digit() || c == '.'));
-        if !is_exact {
-            continue;
-        }
-        pins += 1;
+        refs += 1;
         assert_eq!(
-            format!("@{pin}"),
-            expected,
-            "stale internal action pin `@{pin}` in visual-docs-reusable.yml; expected \
-             `{expected}` (crate version). Bump the pins when cutting the release."
+            pin, "v0",
+            "internal action ref `@{pin}` should float on `@v0`, not an exact pin \
+             (which goes stale every release): {line}"
         );
     }
-    // install + visual-docs + cleanup + prune = 4 internal pins.
+    // install + visual-docs + cleanup + prune = 4 internal action references.
     assert!(
-        pins >= 4,
-        "expected the install/visual-docs/gh-pages-maintenance pins; found {pins}"
+        refs >= 4,
+        "expected 4 internal screencomp action refs; found {refs}"
     );
 }
