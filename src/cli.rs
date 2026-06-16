@@ -285,9 +285,12 @@ pub struct InitArgs {
     pub dir: Utf8PathBuf,
 
     /// Platform key the scaffolded config and workflow capture under (e.g.
-    /// `linux-x86_64`). Determines the committed manifest path and shot output
-    /// directory. Use `auto` to resolve the host `<os>-<arch>`.
-    #[arg(long, value_name = "KEY", default_value = "linux-x86_64")]
+    /// `linux-x86_64`, `linux-arm64`). Determines the committed manifest path and
+    /// shot output directory. Defaults to `auto`: the scaffold captures in a Linux
+    /// container, so this resolves to `linux-<host-arch>` (e.g. `linux-arm64` on
+    /// Apple Silicon or an ARM box) and the generated workflow picks a matching
+    /// runner. Pass an explicit key to scaffold for a different target.
+    #[arg(long, value_name = "KEY", default_value = "auto")]
     pub platform: String,
 
     /// Overwrite files that already exist instead of leaving them untouched.

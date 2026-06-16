@@ -34,9 +34,15 @@ const GITIGNORE_MARKER: &str = "# screencomp: commit the digest baselines";
 const HOOK_PATH: &str = ".githooks/pre-push";
 
 pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    // Resolve `auto` to the host `<os>-<arch>` so the scaffold matches the
-    // machine it is generated on, consistent with `--platform auto` elsewhere.
-    let platform = platform::resolve(&args.platform);
+    // Resolve `auto` to `linux-<host-arch>` so the scaffold matches the machine
+    // it is generated on. The capture is a Linux container, so the key follows the
+    // host *arch* (native, fast) but always names Linux — an ARM developer gets
+    // `linux-arm64`, not `linux-x86_64` and not the host OS.
+    let platform = if args.platform == platform::AUTO {
+        platform::host_container_key()
+    } else {
+        args.platform.clone()
+    };
     let toml = render_config(&platform);
     let workflow = render_workflow(&platform);
     let hook = render_hook(&platform);
@@ -181,8 +187,22 @@ fn render_gitignore() -> String {
 /// fails on unexpected drift and the developer owns the baseline (regenerate it
 /// with the pre-push guard and commit). Because the manifest is not auto-pushed,
 /// no `push-token` secret is needed.
+/// Pick the GitHub-hosted runner whose arch matches the platform key, so CI
+/// captures on the same arch the committed baseline was seeded on. An ARM key
+/// captured on an amd64 runner (or vice versa) renders different pixels and the
+/// strict gate would go red on a phantom diff. ARM keys get GitHub's native ARM
+/// Linux runner; everything else uses the default amd64 runner.
+fn runner_for(platform: &str) -> &'static str {
+    if platform.contains("arm64") || platform.contains("aarch64") {
+        "ubuntu-24.04-arm"
+    } else {
+        "ubuntu-latest"
+    }
+}
+
 fn render_workflow(platform: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
+    let runner = runner_for(platform);
     format!(
         "\
 # Visual docs via screencomp's reusable workflow. The capture step stays yours;
@@ -212,6 +232,10 @@ jobs:
     uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v{version}
     with:
       platform: {platform}
+      # Runner arch matches the platform key so CI renders the same pixels your
+      # committed baseline was seeded on (an ARM key needs an ARM runner, or the
+      # strict gate fails on a phantom diff). Change both together.
+      runs-on: {runner}
       # Strict gate (the safe default): CI FAILS if the capture drifts from the
       # committed baseline. Regenerate the baseline locally with the pre-push
       # guard (.githooks/pre-push) and commit it. To switch to CI auto-accept
