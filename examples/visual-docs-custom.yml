@@ -47,7 +47,7 @@ jobs:
       contents: read
       id-token: write # OIDC for the AWS auth below; drop if you don't need it
     env:
-      SHOTS_OUT: shots/current/linux-x86_64
+      SHOTS_OUT: shots/current/x86_64
     steps:
       - uses: actions/checkout@v4
 
@@ -71,7 +71,7 @@ jobs:
       # (the byte comparison happens in `report`, where screencomp is installed).
       - name: Capture again for the reproducibility gate
         env:
-          SHOTS_OUT: shots/verify/linux-x86_64
+          SHOTS_OUT: shots/verify/x86_64
         run: npx playwright test
 
       - uses: actions/upload-artifact@v4
@@ -99,7 +99,7 @@ jobs:
           path: shots
       - uses: nickderobertis/screencomp/visual-docs@v0
         with:
-          platform: linux-x86_64
+          arch: x86_64
           verify-second: shots/verify # the gate's second capture
           fail-on-drift: true # strict gate (default); false to auto-accept
           github-token: ${{ github.token }}

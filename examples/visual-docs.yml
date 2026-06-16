@@ -1,11 +1,13 @@
 # Standard visual-docs configuration: image-free baselines via digest manifest,
-# capture in one pinned Linux/amd64 container. This hand-rolled workflow is the
-# strict gate (the recommended model); for the batteries-included version see the
+# capture in one pinned Linux container. This hand-rolled workflow is the strict
+# gate (the recommended model); for the batteries-included version see the
 # reusable workflow in the screencomp README ("Batteries-included reusable
-# workflow"), which this mirrors.
+# workflow"), which this mirrors. This single-arch example captures one arch
+# (x86_64); to support more, add an arch lane (a runner of that arch, a separate
+# shots/current/<arch> and shots/baseline/<arch>.sha256).
 #
-# The repository commits only a tiny per-platform digest *manifest*
-# (`shots/baseline/<platform>.sha256`), never the baseline PNGs — so it never
+# The repository commits only a tiny per-arch digest *manifest*
+# (`shots/baseline/<arch>.sha256`), never the baseline PNGs — so it never
 # accumulates binary history and grows without bound. screencomp compares by
 # content digest, so the manifest is all that `classify`/`comment` need.
 #
@@ -30,20 +32,22 @@
 # bottom; that variant needs `contents: write` and, under branch protection, a
 # trigger-capable token (see examples/README.md, "Branch protection").
 #
-# Why a container, even on macOS: a screenshot's bytes depend on the OS, CPU,
-# fonts, and GPU that rendered it. macOS cannot run Linux containers natively
-# (Docker runs a Linux VM), so `--platform=linux/amd64` reproduces the same
-# linux/amd64 pixels as CI, giving one platform key (`linux-x86_64`) and
-# byte-for-byte reproducibility. `--platform auto` resolves to it because
-# screencomp runs INSIDE the container. See the screencomp README
-# ("Cross-platform comparison") for the determinism details.
+# Why a container: a screenshot's bytes depend on the OS, CPU, fonts, and GPU that
+# rendered it. Pinning capture to one Linux container fixes the OS everywhere — on
+# CI and locally — so the ONLY dimension left is the CPU arch. The container is the
+# arch's runner image (amd64 here); on macOS, which can't run Linux containers
+# natively (Docker runs a Linux VM), `--platform=linux/amd64` reproduces the same
+# x86_64 pixels as CI. `--arch auto` resolves to the container's arch because
+# screencomp runs INSIDE it. Native macOS/Windows captures are NOT supported — they
+# could never be byte-reproducible against CI. See the screencomp README
+# ("Per-arch comparison") for the determinism details.
 #
 # Prerequisites:
-#   * A committed baseline manifest at shots/baseline/linux-x86_64.sha256. Seed
-#     it once (before the first PR, or the classify step has nothing to compare
-#     against): run the capture, then
-#       screencomp manifest --input shots/current --platform auto \
-#         --output shots/baseline/linux-x86_64.sha256
+#   * A committed baseline manifest at shots/baseline/x86_64.sha256. Seed it once
+#     (before the first PR, or the classify step has nothing to compare against):
+#     run the capture, then
+#       screencomp manifest --input shots/current --arch auto \
+#         --output shots/baseline/x86_64.sha256
 #     and commit it.
 #   * GitHub Pages enabled (Settings -> Pages -> GitHub Actions).
 name: Visual docs
@@ -70,8 +74,8 @@ jobs:
       pages: write # deploy the gallery (on main)
       id-token: write # Pages deployment auth
     env:
-      SHOTS_OUT: shots/current/linux-x86_64
-      MANIFEST: shots/baseline/linux-x86_64.sha256
+      SHOTS_OUT: shots/current/x86_64
+      MANIFEST: shots/baseline/x86_64.sha256
       # Chromium flags, set via your Playwright config's launchOptions.args
       # (listed here so the contract is visible). They split into two kinds:
       #
@@ -113,8 +117,8 @@ jobs:
       - name: Verify capture is reproducible
         run: |
           set -euo pipefail
-          SHOTS_OUT=shots/verify/linux-x86_64 npx playwright test
-          screencomp verify --first shots/current --second shots/verify --platform auto
+          SHOTS_OUT=shots/verify/x86_64 npx playwright test
+          screencomp verify --first shots/current --second shots/verify --arch auto
           rm -rf shots/verify
 
       # The strict gate: FAIL the job when the capture drifts from the committed
@@ -126,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           screencomp classify --baseline-manifest "$MANIFEST" \
-            --current shots/current --platform auto --exit-code
+            --current shots/current --arch auto --exit-code
 
       # ---- PR only: before/after comment ------------------------------------
 
@@ -152,7 +156,7 @@ jobs:
             fi
           fi
           screencomp comment --baseline-manifest "$comment_manifest" \
-            --current shots/current --platform auto --output comment.md
+            --current shots/current --arch auto --output comment.md
           gh pr comment "${PR}" --body-file comment.md --edit-last \
             || gh pr comment "${PR}" --body-file comment.md
 
@@ -166,7 +170,7 @@ jobs:
       #     if: ${{ github.event_name == 'pull_request' }}
       #     run: |
       #       set -euo pipefail
-      #       screencomp manifest --input shots/current --platform auto --output "$MANIFEST"
+      #       screencomp manifest --input shots/current --arch auto --output "$MANIFEST"
       #       if [ -n "$(git status --porcelain "$MANIFEST")" ]; then
       #         git config user.name "github-actions[bot]"
       #         git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -179,7 +183,7 @@ jobs:
 
       - name: Build gallery
         if: ${{ github.event_name == 'push' }}
-        run: screencomp gallery --input shots/current --platform auto --output site --title "Visual docs"
+        run: screencomp gallery --input shots/current --arch auto --output site --title "Visual docs"
       - name: Upload Pages artifact
         if: ${{ github.event_name == 'push' }}
         uses: actions/upload-pages-artifact@v3
@@ -197,6 +201,6 @@ jobs:
 #   docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
 #     -v "$PWD:/work" -w /work \
 #     mcr.microsoft.com/playwright:v1.60.0-noble \
-#     bash -lc 'npm ci && SHOTS_OUT=shots/current/linux-x86_64 npx playwright test'
-#   screencomp classify --baseline-manifest shots/baseline/linux-x86_64.sha256 \
-#     --current shots/current --platform linux-x86_64 --exit-code
+#     bash -lc 'npm ci && SHOTS_OUT=shots/current/x86_64 npx playwright test'
+#   screencomp classify --baseline-manifest shots/baseline/x86_64.sha256 \
+#     --current shots/current --arch x86_64 --exit-code
