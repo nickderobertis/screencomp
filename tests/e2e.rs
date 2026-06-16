@@ -29,6 +29,20 @@ fn current() -> PathBuf {
 }
 
 #[test]
+fn demo_managed_config_is_valid_under_current_schema() {
+    // `demo/screencomp.toml` is the source of truth synced to screencomp-demo by
+    // sync-demo.yml. A config-schema change that breaks it must fail HERE, in this
+    // repo's gate, rather than silently ship a broken consumer. `success` proves it
+    // parses under the current schema; the arch proves the CI matrix is populated.
+    let cfg = format!("{}/demo/screencomp.toml", env!("CARGO_MANIFEST_DIR"));
+    bin()
+        .args(["--config", &cfg, "arches", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x86_64"));
+}
+
+#[test]
 fn help_lists_subcommands() {
     bin()
         .arg("--help")

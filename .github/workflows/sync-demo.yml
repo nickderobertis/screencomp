@@ -1,0 +1,90 @@
+# Propagate the managed screencomp-integration files in `demo/` to the
+# screencomp-demo consumer repo, so that repo never drifts from this CLI's
+# interface and a future migration is just an edit to `demo/` here.
+#
+# It opens a PR on screencomp-demo (never a direct push) so the change is
+# reviewable there, and no-ops without the cross-repo token, so forks and
+# unconfigured clones are unaffected. The token (SCREENCOMP_DEMO_PAT) needs
+# `contents: write` + `pull-requests: write` on screencomp-demo (the default
+# GITHUB_TOKEN cannot reach another repo). If it lacks PR scope the sync branch
+# is still pushed for a manual PR.
+name: Sync demo repo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - demo/**
+      - examples/pre-push # reused verbatim as the demo's .githooks/pre-push
+      - .github/workflows/sync-demo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize syncs so two never race to open competing PRs on the demo.
+concurrency:
+  group: sync-demo
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Only the canonical repo holds the token; forks would no-op anyway.
+    if: ${{ github.repository == 'nickderobertis/screencomp' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open a sync PR on screencomp-demo
+        env:
+          GH_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
+          DEMO: nickderobertis/screencomp-demo
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "no SCREENCOMP_DEMO_PAT configured; skipping demo sync"
+            exit 0
+          fi
+
+          srcroot="$PWD"
+          work="$(mktemp -d)"
+          git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${DEMO}.git" "$work"
+          cd "$work"
+
+          # One rolling sync branch off the demo's current main, so a force-push
+          # updates the single open sync PR instead of spawning a new one each run.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c screencomp-sync
+
+          # ---- managed file manifest: <src in screencomp> -> <dest in demo> ----
+          install -D -m644 "$srcroot/demo/screencomp.toml" "screencomp.toml"
+          install -D -m644 "$srcroot/demo/visual-docs.yml"  ".github/workflows/visual-docs.yml"
+          install -D -m755 "$srcroot/examples/pre-push"     ".githooks/pre-push"
+          # ----------------------------------------------------------------------
+
+          # Idempotent: if the demo already matches (a prior sync PR merged), stop.
+          if git diff --quiet; then
+            echo "screencomp-demo already in sync; nothing to do"
+            exit 0
+          fi
+
+          short="${GITHUB_SHA::7}"
+          git add -A
+          git commit -m "chore: sync screencomp integration files from screencomp@${short}"
+          git push -u origin screencomp-sync --force
+
+          body="Automated sync of the managed screencomp-integration files from "
+          body+="[nickderobertis/screencomp@${short}](https://github.com/nickderobertis/screencomp/commit/${GITHUB_SHA}) "
+          body+="(\`demo/\` subdir).
+
+          Managed files: \`screencomp.toml\`, \`.github/workflows/visual-docs.yml\`, \`.githooks/pre-push\`.
+
+          Baselines and the app/capture are owned by the demo and are not touched."
+          # Update the open PR's body, or open one. Best-effort: if the token lacks
+          # PR scope the branch is already pushed for a manual PR.
+          if ! gh pr edit --repo "$DEMO" screencomp-sync --body "$body" 2>/dev/null; then
+            gh pr create --repo "$DEMO" --base main --head screencomp-sync \
+              --title "chore: sync screencomp integration files" --body "$body" \
+              || echo "could not open PR automatically; branch 'screencomp-sync' is pushed for a manual PR"
+          fi
