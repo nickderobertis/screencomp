@@ -56,4 +56,9 @@
   app, capture, and committed `shots/baseline/<arch>.sha256` are owned by the demo
   (baselines are digests of its real pixels) and are never synced. Keep `demo/` in
   lockstep with the CLI's current flags, config schema, and reusable-workflow
-  inputs — a stale managed file ships a broken consumer.
+  inputs — a stale managed file ships a broken consumer. `sync-demo.yml`'s
+  `verify-demo` job then mirrors the demo's real `main`-branch `Visual docs` run
+  (a browser capture against the synced files) back into this repo's Actions, so
+  whether the consumer actually works is visible here and goes red when it breaks;
+  it stays red while a sync PR is unmerged (the demo's `main` is not migrated yet)
+  — re-run the workflow after merging to confirm green.

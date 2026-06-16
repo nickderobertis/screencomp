@@ -88,3 +88,56 @@ jobs:
               --title "chore: sync screencomp integration files" --body "$body" \
               || echo "could not open PR automatically; branch 'screencomp-sync' is pushed for a manual PR"
           fi
+
+  # Full-visibility verification: mirror the demo's real visual-docs pipeline
+  # (its `main`-branch run — a REAL browser capture against the synced config and
+  # the released @v0 reusable workflow) into THIS repo's Actions, so "did the
+  # consumer actually work" is answered here instead of needing eyes on the demo.
+  # This job goes red whenever screencomp-demo's pipeline is red — including, on
+  # purpose, while a sync PR is still open (the demo's `main` is not migrated yet),
+  # so it stays honest. Re-run this workflow (workflow_dispatch) after merging the
+  # sync PR to confirm the demo is green on the new interface.
+  verify-demo:
+    needs: sync
+    if: ${{ always() && github.repository == 'nickderobertis/screencomp' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report screencomp-demo pipeline health
+        env:
+          GH_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
+          DEMO: nickderobertis/screencomp-demo
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "no SCREENCOMP_DEMO_PAT configured; cannot verify the demo (skipping)"
+            exit 0
+          fi
+
+          # Wait out an in-flight run so the verdict reflects the latest capture.
+          deadline=$(( $(date +%s) + 1800 ))   # 30 min ceiling
+          while :; do
+            run="$(gh run list --repo "$DEMO" --workflow 'Visual docs' --branch main \
+                    --limit 1 --json status,conclusion,url,headSha 2>/dev/null || echo '[]')"
+            if [ "$(jq 'length' <<<"$run")" -eq 0 ]; then
+              echo "::warning::no 'Visual docs' run found on ${DEMO}@main yet (the migration PR may be unmerged)"
+              exit 0
+            fi
+            st="$(jq -r '.[0].status' <<<"$run")"
+            url="$(jq -r '.[0].url' <<<"$run")"
+            if [ "$st" = "completed" ]; then
+              concl="$(jq -r '.[0].conclusion' <<<"$run")"
+              echo "screencomp-demo@main 'Visual docs': ${concl} — ${url}"
+              if [ "$concl" = "success" ]; then
+                echo "✅ the demo's real capture→classify→gallery→comment pipeline is green with the managed files"
+                exit 0
+              fi
+              echo "::error::screencomp-demo pipeline is '${concl}' on main — the consumer is broken. See ${url}" >&2
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::warning::demo 'Visual docs' run still '${st}' after the wait — see ${url}"
+              exit 0
+            fi
+            echo "demo run is '${st}'; waiting 30s… (${url})"
+            sleep 30
+          done
