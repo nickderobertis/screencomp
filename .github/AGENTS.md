@@ -45,20 +45,20 @@
 - `screencomp-demo`'s screencomp-integration files are managed HERE, in the
   `demo/` subdir (the source of truth), not hand-maintained in the demo. A CLI
   interface change (a renamed flag/config key, a reusable-workflow input) migrates
-  the demo by editing `demo/`; `sync-demo.yml` then opens a PR on `screencomp-demo`
-  copying the managed manifest (`demo/screencomp.toml` → `screencomp.toml`,
-  `demo/visual-docs.yml` → `.github/workflows/visual-docs.yml`, `examples/pre-push`
-  → `.githooks/pre-push`) so the consumer can't drift from this interface. The demo
-  caller pins the floating `@v0`, so most changes reach it on release; the synced
-  files cover the rest. It opens a PR (never direct-pushes), uses the same
-  `SCREENCOMP_DEMO_PAT` (which here also needs `pull-requests: write`), no-ops
-  without the secret, and shares a static `sync-demo` concurrency group. The demo's
-  app, capture, and committed `shots/baseline/<arch>.sha256` are owned by the demo
+  the demo by editing `demo/`; `sync-demo.yml` then commits the managed manifest
+  (`demo/screencomp.toml` → `screencomp.toml`, `demo/visual-docs.yml` →
+  `.github/workflows/visual-docs.yml`, `examples/pre-push` → `.githooks/pre-push`)
+  directly to `screencomp-demo`'s `main` so the consumer can't drift from this
+  interface. The demo caller pins the floating `@v0`, so most changes reach it on
+  release; the synced files cover the rest. It commits straight to the demo's
+  `main` (no PR — a fully automated loop), uses the same `SCREENCOMP_DEMO_PAT`
+  (`contents: write`; the demo's `main` must allow the bot's push), no-ops without
+  the secret, and shares a static `sync-demo` concurrency group. The demo's app,
+  capture, and committed `shots/baseline/<arch>.sha256` are owned by the demo
   (baselines are digests of its real pixels) and are never synced. Keep `demo/` in
   lockstep with the CLI's current flags, config schema, and reusable-workflow
-  inputs — a stale managed file ships a broken consumer. `sync-demo.yml`'s
-  `verify-demo` job then mirrors the demo's real `main`-branch `Visual docs` run
-  (a browser capture against the synced files) back into this repo's Actions, so
-  whether the consumer actually works is visible here and goes red when it breaks;
-  it stays red while a sync PR is unmerged (the demo's `main` is not migrated yet)
-  — re-run the workflow after merging to confirm green.
+  inputs — a stale managed file ships a broken consumer. The push triggers the
+  demo's `Visual docs` run on the just-synced workflow definition, and
+  `sync-demo.yml`'s `verify-demo` job waits for that exact commit's run and mirrors
+  its pass/fail back into this repo's Actions — so whether the consumer actually
+  works is visible here and goes red when it breaks.

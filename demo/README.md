@@ -4,7 +4,9 @@ This directory is the **source of truth** for the screencomp-integration files i
 the [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
 consumer repo. Editing them here and merging to `main` triggers
 [`.github/workflows/sync-demo.yml`](../.github/workflows/sync-demo.yml), which
-opens a pull request on `screencomp-demo` updating those files in place.
+commits those files **directly to `screencomp-demo`'s `main`** (a fully automated
+loop — no PR to merge), then waits for the demo's resulting `Visual docs` run and
+mirrors its pass/fail back into this repo's Actions.
 
 The point is to kill cross-repo drift: when the CLI's interface changes (a new
 flag, a renamed config key, a reusable-workflow input), the demo migrates by
