@@ -240,27 +240,27 @@ fn gallery_diff_mode_renders_before_after() {
     assert!(dir.path().join("current/desktop/about.png").exists());
 }
 
-/// Host platform key, mirroring `commands::platform::host_key`.
-fn host_key() -> String {
-    let arch = match std::env::consts::ARCH {
+/// Host CPU arch, mirroring `commands::arch::host_arch`.
+fn host_arch() -> String {
+    match std::env::consts::ARCH {
         "aarch64" | "arm64" => "arm64",
         other => other,
-    };
-    format!("{}-{arch}", std::env::consts::OS)
+    }
+    .to_owned()
 }
 
-fn write_shot(root: &std::path::Path, platform: &str, project: &str, name: &str, bytes: &[u8]) {
-    let dir = root.join(platform).join(project);
+fn write_shot(root: &std::path::Path, arch: &str, project: &str, name: &str, bytes: &[u8]) {
+    let dir = root.join(arch).join(project);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
 }
 
 #[test]
-fn classify_platform_auto_compares_only_the_host_subtree() {
+fn classify_arch_auto_compares_only_the_host_subtree() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    let key = host_key();
+    let key = host_arch();
 
     // Host subtree changes; a foreign subtree differs too but must be ignored.
     write_shot(&base, &key, "desktop", "home", b"old");
@@ -269,7 +269,7 @@ fn classify_platform_auto_compares_only_the_host_subtree() {
     write_shot(&cur, "other-arch", "desktop", "home", b"b");
 
     bin()
-        .args(["classify", "--platform", "auto", "--exit-code", "--baseline"])
+        .args(["classify", "--arch", "auto", "--exit-code", "--baseline"])
         .arg(&base)
         .arg("--current")
         .arg(&cur)
@@ -284,16 +284,96 @@ fn classify_platform_auto_compares_only_the_host_subtree() {
 }
 
 #[test]
-fn gallery_diff_scopes_both_trees_by_platform() {
+fn classify_arch_default_from_config_scopes_to_the_host_subtree() {
+    // A committed `[capture].arches` listing the host arch, with no `--arch`,
+    // defaults the comparison to the host subtree.
+    let dir = TempDir::new().unwrap();
+    let key = host_arch();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(&cfg, format!("[capture]\narches = [{key:?}]\n")).unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, &key, "desktop", "home", b"old");
+    write_shot(&cur, &key, "desktop", "home", b"new");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["classify", "--exit-code", "--baseline"])
+        .arg(&base)
+        .arg("--current")
+        .arg(&cur)
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("changed desktop/home"))
+        .stdout(predicate::str::contains(
+            "added 0 changed 1 removed 0 unchanged 0",
+        ));
+}
+
+#[test]
+fn classify_host_arch_not_in_configured_arches_hard_errors_on_stderr() {
+    // A config whose arches cannot contain the host, with no `--arch`, fails with
+    // the explanatory error rather than scoping to a phantom subtree.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(&cfg, "[capture]\narches = [\"sparc64\"]\n").unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "sparc64", "desktop", "home", b"x");
+    write_shot(&cur, "sparc64", "desktop", "home", b"x");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["classify", "--baseline"])
+        .arg(&base)
+        .arg("--current")
+        .arg(&cur)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("is not in the configured arches"));
+}
+
+#[test]
+fn arches_command_prints_configured_arches() {
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(&cfg, "[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
+
+    // Human: one per line.
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .arg("arches")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x86_64"))
+        .stdout(predicate::str::contains("arm64"));
+
+    // JSON: a single-line array, consumed by the CI matrix.
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["arches", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#"["x86_64","arm64"]"#));
+}
+
+#[test]
+fn gallery_diff_scopes_both_trees_by_arch() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
     let out = TempDir::new().unwrap();
-    write_shot(&base, "linux-arm64", "desktop", "home", b"old");
-    write_shot(&cur, "linux-arm64", "desktop", "home", b"new");
+    write_shot(&base, "arm64", "desktop", "home", b"old");
+    write_shot(&cur, "arm64", "desktop", "home", b"new");
 
     bin()
-        .args(["gallery", "--platform", "linux-arm64", "--input"])
+        .args(["gallery", "--arch", "arm64", "--input"])
         .arg(&cur)
         .arg("--baseline")
         .arg(&base)
@@ -302,21 +382,21 @@ fn gallery_diff_scopes_both_trees_by_platform() {
         .assert()
         .success();
 
-    // Copied trees drop the platform layer: the diff page is self-contained.
+    // Copied trees drop the arch layer: the diff page is self-contained.
     assert!(out.path().join("baseline/desktop/home.png").exists());
     assert!(out.path().join("current/desktop/home.png").exists());
 }
 
 #[test]
-fn missing_platform_subtree_hints_the_layout_on_stderr() {
+fn missing_arch_subtree_hints_the_layout_on_stderr() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "linux-arm64", "desktop", "home", b"x");
-    write_shot(&cur, "linux-arm64", "desktop", "home", b"x");
+    write_shot(&base, "arm64", "desktop", "home", b"x");
+    write_shot(&cur, "arm64", "desktop", "home", b"x");
 
     bin()
-        .args(["classify", "--platform", "windows-x86_64", "--baseline"])
+        .args(["classify", "--arch", "x86_64", "--baseline"])
         .arg(&base)
         .arg("--current")
         .arg(&cur)
@@ -324,10 +404,10 @@ fn missing_platform_subtree_hints_the_layout_on_stderr() {
         .failure()
         .code(1)
         .stdout(predicate::str::is_empty())
-        // A layout hint naming the missing key and the platform layer, not a bare
+        // A layout hint naming the missing key and the arch layer, not a bare
         // "not a directory".
-        .stderr(predicate::str::contains("windows-x86_64"))
-        .stderr(predicate::str::contains("--platform"));
+        .stderr(predicate::str::contains("x86_64"))
+        .stderr(predicate::str::contains("--arch"));
 }
 
 #[test]
@@ -667,8 +747,8 @@ fn init_scaffolds_a_working_setup() {
     bin()
         .args(["init", "--dir"])
         .arg(dir.path())
-        .arg("--platform")
-        .arg("linux-x86_64")
+        .arg("--arch")
+        .arg("auto")
         .assert()
         .success()
         .stdout(predicate::str::contains("created"))
@@ -678,15 +758,22 @@ fn init_scaffolds_a_working_setup() {
         .stdout(predicate::str::contains("Deploy from a branch: gh-pages"))
         .stderr(predicate::str::is_empty());
 
-    // The scaffolded config parses: feeding it back to `comment` succeeds.
+    // The scaffolded config parses and its `[capture].arches` drives the default
+    // scoping: feeding it back to `comment` succeeds against an arch-scoped tree.
+    // The scaffold was generated for the host arch, so the trees carry that subtree.
     let cfg = dir.path().join("screencomp.toml");
+    let scoped = TempDir::new().unwrap();
+    let base = scoped.path().join("baseline");
+    let cur = scoped.path().join("current");
+    write_shot(&base, &host_arch(), "desktop", "home", b"old");
+    write_shot(&cur, &host_arch(), "desktop", "home", b"new");
     bin()
         .args(["comment", "--config"])
         .arg(&cfg)
         .arg("--baseline")
-        .arg(baseline())
+        .arg(&base)
         .arg("--current")
-        .arg(current())
+        .arg(&cur)
         .assert()
         .success()
         .stdout(predicate::str::contains("<!-- screencomp -->"));
@@ -709,17 +796,33 @@ fn init_scaffolds_a_working_setup() {
         workflow.contains("gh-pages-maintenance: true"),
         "{workflow}"
     );
-    // CI runs on a runner whose arch matches the platform key (here amd64), so the
-    // capture reproduces the locally-seeded baseline rather than drifting on arch.
-    assert!(workflow.contains("runs-on: ubuntu-latest"), "{workflow}");
+    // The arch list lives in [capture].arches; CI fans out a lane per arch, so the
+    // caller carries no per-arch input.
+    assert!(!workflow.contains("runs-on:"), "{workflow}");
+    assert!(!workflow.contains("platform:"), "{workflow}");
     assert!(dir.path().join(".gitignore").exists());
 
-    // The strict scaffold also drops the local pre-push guard, executable and
-    // baked for the chosen platform, with the robust scope-exit handling.
+    // The strict scaffold also drops the local pre-push guard, executable and with
+    // the robust scope-exit handling. The hook detects the host arch at runtime
+    // (rather than baking it) so the same committed hook is correct everywhere.
     let hook_path = dir.path().join(".githooks/pre-push");
     let hook = std::fs::read_to_string(&hook_path).unwrap();
-    assert!(hook.contains("PLATFORM=\"linux-x86_64\""), "{hook}");
+    assert!(hook.contains("uname -m"), "{hook}");
+    assert!(hook.contains("ARCH=\"arm64\""), "{hook}");
+    assert!(hook.contains("ARCH=\"x86_64\""), "{hook}");
+    assert!(hook.contains("DOCKER_PLATFORM=\"linux/arm64\""), "{hook}");
     assert!(hook.contains("DOCKER_PLATFORM=\"linux/amd64\""), "{hook}");
+    assert!(
+        hook.contains("MANIFEST=\"shots/baseline/${ARCH}.sha256\""),
+        "{hook}"
+    );
+    // The classify call no longer passes --arch (it defaults from the config).
+    assert!(
+        hook.contains(
+            "screencomp classify --baseline-manifest \"$MANIFEST\" --current \"$CURRENT\" --exit-code"
+        ),
+        "{hook}"
+    );
     // Only exit 3 means "relevant"; an errored scope check skips, not captures.
     assert!(hook.contains("scope_status"), "{hook}");
     #[cfg(unix)]

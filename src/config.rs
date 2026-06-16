@@ -377,7 +377,8 @@ mod tests {
 
     #[test]
     fn accepts_capture_arches() {
-        let raw: RawConfig = toml::from_str("[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
+        let raw: RawConfig =
+            toml::from_str("[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
         let cfg = raw.validate().expect("valid");
         assert_eq!(cfg.capture.arches, ["x86_64", "arm64"]);
     }

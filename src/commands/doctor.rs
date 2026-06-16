@@ -28,8 +28,8 @@ pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
     let plat = resolved.as_deref();
     // Whether the arch was auto-detected from the host (explicit `auto`, or the
     // config-default when no `--arch` was passed) versus named explicitly.
-    let auto = resolved.is_some()
-        && (args.arch.is_none() || args.arch.as_deref() == Some(arch::AUTO));
+    let auto =
+        resolved.is_some() && (args.arch.is_none() || args.arch.as_deref() == Some(arch::AUTO));
     let scoped = arch::scope(&args.input, plat);
     // A missing scoped directory is the same hard error every command raises, so
     // a wrong `--arch` fails identically here (with a layout hint).

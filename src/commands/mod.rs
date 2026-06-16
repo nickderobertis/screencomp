@@ -149,7 +149,8 @@ pub(crate) fn baseline_snapshot(
 ///
 /// Reads `$SCREENCOMP_CONFIG` and, when neither `explicit` nor that env var is
 /// set, auto-discovers `screencomp.toml` by walking up from the working
-/// directory. Centralized so `comment` and `scope` resolve config identically.
+/// directory. Called once at the [`run`](crate::run) boundary so every command
+/// shares one resolved [`Config`] via [`Ctx`].
 pub(crate) fn load_config(explicit: Option<&Utf8Path>) -> Result<Config, ConfigError> {
     let env = std::env::var(config::CONFIG_ENV).ok();
     // Auto-discovery only kicks in with no explicit source, so an explicit choice
@@ -201,7 +202,10 @@ mod tests {
     #[test]
     fn resolve_arch_defaults_to_host_when_listed() {
         let host = arch::host_arch();
-        assert_eq!(resolve_arch(None, &[host.clone()]).unwrap(), Some(host));
+        assert_eq!(
+            resolve_arch(None, std::slice::from_ref(&host)).unwrap(),
+            Some(host)
+        );
     }
 
     #[test]
@@ -213,6 +217,9 @@ mod tests {
         };
         // The suggestion keeps the existing entry and appends the host arch.
         assert!(suggested.contains("\"sparc64\""), "{suggested}");
-        assert!(suggested.contains(&format!("\"{}\"", arch::host_arch())), "{suggested}");
+        assert!(
+            suggested.contains(&format!("\"{}\"", arch::host_arch())),
+            "{suggested}"
+        );
     }
 }

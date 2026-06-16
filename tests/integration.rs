@@ -240,37 +240,49 @@ fn comment_embed_limit_zero_falls_back_to_listing() {
     assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
 }
 
-/// Host platform key, mirroring `commands::platform::host_key` (which is
-/// crate-private) so the `--platform auto` journey can be exercised end to end.
-fn host_key() -> String {
-    let arch = match std::env::consts::ARCH {
+/// Host CPU arch, mirroring `commands::arch::host_arch` (which is crate-private)
+/// so the `--arch auto` journey can be exercised end to end.
+fn host_arch() -> String {
+    match std::env::consts::ARCH {
         "aarch64" | "arm64" => "arm64",
         other => other,
-    };
-    format!("{}-{arch}", std::env::consts::OS)
+    }
+    .to_owned()
 }
 
-/// Write `bytes` to `<root>/<platform>/<project>/<name>.png`.
-fn write_shot(root: &Path, platform: &str, project: &str, name: &str, bytes: &[u8]) {
-    let dir = root.join(platform).join(project);
+/// Write `bytes` to `<root>/<arch>/<project>/<name>.png`.
+fn write_shot(root: &Path, arch: &str, project: &str, name: &str, bytes: &[u8]) {
+    let dir = root.join(arch).join(project);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
 }
 
+/// Write a `screencomp.toml` with the given `[capture].arches`, returning its path.
+fn write_arches_config(dir: &Path, arches: &[&str]) -> String {
+    let list = arches
+        .iter()
+        .map(|a| format!("{a:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cfg = dir.join("screencomp.toml");
+    std::fs::write(&cfg, format!("[capture]\narches = [{list}]\n")).unwrap();
+    path_str(&cfg)
+}
+
 #[test]
-fn platform_flag_scopes_comparison_to_one_subtree() {
-    // Two platforms coexist under each root. The `arm` subtree is identical
-    // across baseline and current; the `x86` subtree differs. Scoping to `arm`
-    // must report no changes even though `x86` would — proving cross-platform
-    // bytes never leak into the comparison.
+fn arch_flag_scopes_comparison_to_one_subtree() {
+    // Two arches coexist under each root. The `arm64` subtree is identical across
+    // baseline and current; the `x86_64` subtree differs. Scoping to `arm64` must
+    // report no changes even though `x86_64` would — proving cross-arch bytes
+    // never leak into the comparison.
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
 
-    write_shot(&base, "linux-arm64", "desktop", "home", b"same");
-    write_shot(&cur, "linux-arm64", "desktop", "home", b"same");
-    write_shot(&base, "linux-x86_64", "desktop", "home", b"old");
-    write_shot(&cur, "linux-x86_64", "desktop", "home", b"new");
+    write_shot(&base, "arm64", "desktop", "home", b"same");
+    write_shot(&cur, "arm64", "desktop", "home", b"same");
+    write_shot(&base, "x86_64", "desktop", "home", b"old");
+    write_shot(&cur, "x86_64", "desktop", "home", b"new");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -279,8 +291,8 @@ fn platform_flag_scopes_comparison_to_one_subtree() {
         base.to_str().unwrap(),
         "--current",
         cur.to_str().unwrap(),
-        "--platform",
-        "linux-arm64",
+        "--arch",
+        "arm64",
     ]);
     assert_eq!(code.unwrap(), 0);
     assert!(
@@ -288,7 +300,7 @@ fn platform_flag_scopes_comparison_to_one_subtree() {
         "{out}"
     );
 
-    // The same roots scoped to the other platform do see the change.
+    // The same roots scoped to the other arch do see the change.
     let (code, out) = invoke(&[
         "screencomp",
         "classify",
@@ -296,19 +308,19 @@ fn platform_flag_scopes_comparison_to_one_subtree() {
         base.to_str().unwrap(),
         "--current",
         cur.to_str().unwrap(),
-        "--platform",
-        "linux-x86_64",
+        "--arch",
+        "x86_64",
     ]);
     assert_eq!(code.unwrap(), 0);
     assert!(out.contains("changed desktop/home"), "{out}");
 }
 
 #[test]
-fn platform_auto_resolves_to_the_host_subtree() {
+fn arch_auto_resolves_to_the_host_subtree() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    let key = host_key();
+    let key = host_arch();
 
     write_shot(&base, &key, "desktop", "home", b"old");
     write_shot(&cur, &key, "desktop", "home", b"new");
@@ -320,7 +332,7 @@ fn platform_auto_resolves_to_the_host_subtree() {
         base.to_str().unwrap(),
         "--current",
         cur.to_str().unwrap(),
-        "--platform",
+        "--arch",
         "auto",
     ]);
     assert_eq!(code.unwrap(), 0);
@@ -328,14 +340,122 @@ fn platform_auto_resolves_to_the_host_subtree() {
 }
 
 #[test]
-fn missing_platform_subtree_explains_the_layout() {
-    // The baseline holds a `linux-arm64` subtree but we ask for `windows-x86_64`.
-    // The absent subtree must produce a layout hint, not a bare "not a directory".
+fn arch_default_from_config_scopes_to_the_host_subtree() {
+    // With `[capture].arches` listing the host arch and no `--arch`, commands
+    // default to scoping by the host subtree.
+    let dir = TempDir::new().unwrap();
+    let key = host_arch();
+    let cfg = write_arches_config(dir.path(), &[&key]);
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, &key, "desktop", "home", b"old");
+    write_shot(&cur, &key, "desktop", "home", b"new");
+    // A foreign subtree would differ but must be invisible to the scoped run.
+    write_shot(&base, "other-arch", "desktop", "home", b"a");
+    write_shot(&cur, "other-arch", "desktop", "home", b"b");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(
+        out.contains("added 0 changed 1 removed 0 unchanged 0"),
+        "{out}"
+    );
+}
+
+#[test]
+fn arch_not_in_configured_arches_hard_errors() {
+    // A config whose `[capture].arches` cannot contain the host arch, with no
+    // explicit `--arch`, is a hard error pointing at the fix.
+    let dir = TempDir::new().unwrap();
+    let cfg = write_arches_config(dir.path(), &["sparc64"]);
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "sparc64", "desktop", "home", b"x");
+    write_shot(&cur, "sparc64", "desktop", "home", b"x");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+    ]);
+    let Err(err @ AppError::UnsupportedArch { .. }) = result else {
+        panic!("expected UnsupportedArch, got {result:?}");
+    };
+    assert_eq!(err.exit_code(), 1);
+    assert!(
+        err.to_string().contains("is not in the configured arches"),
+        "{err}"
+    );
+}
+
+#[test]
+fn explicit_arch_overrides_configured_arches() {
+    // An explicit `--arch` wins over `[capture].arches` even when the config
+    // could not satisfy the host default on its own.
+    let dir = TempDir::new().unwrap();
+    let cfg = write_arches_config(dir.path(), &["sparc64"]);
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    write_shot(&base, "x86_64", "desktop", "home", b"old");
+    write_shot(&cur, "x86_64", "desktop", "home", b"new");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+        "--arch",
+        "x86_64",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("changed desktop/home"), "{out}");
+}
+
+#[test]
+fn arches_command_lists_configured_arches() {
+    let dir = TempDir::new().unwrap();
+    let cfg = write_arches_config(dir.path(), &["x86_64", "arm64"]);
+
+    // Human: one arch per line.
+    let (code, out) = invoke(&["screencomp", "--config", &cfg, "arches"]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(out, "x86_64\narm64\n", "{out}");
+
+    // JSON: a single-line array.
+    let (code, out) = invoke(&["screencomp", "--config", &cfg, "arches", "--format", "json"]);
+    assert_eq!(code.unwrap(), 0);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert_eq!(out.trim_end(), r#"["x86_64","arm64"]"#, "{out}");
+}
+
+#[test]
+fn missing_arch_subtree_explains_the_layout() {
+    // The baseline holds an `arm64` subtree but we ask for `x86_64`. The absent
+    // subtree must produce a layout hint, not a bare "not a directory".
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "linux-arm64", "desktop", "home", b"x");
-    write_shot(&cur, "linux-arm64", "desktop", "home", b"x");
+    write_shot(&base, "arm64", "desktop", "home", b"x");
+    write_shot(&cur, "arm64", "desktop", "home", b"x");
 
     let (result, _) = invoke(&[
         "screencomp",
@@ -344,21 +464,21 @@ fn missing_platform_subtree_explains_the_layout() {
         base.to_str().unwrap(),
         "--current",
         cur.to_str().unwrap(),
-        "--platform",
-        "windows-x86_64",
+        "--arch",
+        "x86_64",
     ]);
     let Err(AppError::InvalidLayout { reason, .. }) = result else {
         panic!("expected an InvalidLayout hint, got {result:?}");
     };
-    assert!(reason.contains("windows-x86_64"), "{reason}");
-    // The hint points at the platform layer and what the root actually holds.
-    assert!(reason.contains("--platform"), "{reason}");
-    assert!(reason.contains("linux-arm64"), "{reason}");
+    assert!(reason.contains("x86_64"), "{reason}");
+    // The hint points at the arch layer and what the root actually holds.
+    assert!(reason.contains("--arch"), "{reason}");
+    assert!(reason.contains("arm64"), "{reason}");
 }
 
 #[test]
-fn platform_against_loose_pngs_hints_to_add_a_project_dir() {
-    // Capture written flat (loose .png at the root) while --platform expects a
+fn arch_against_loose_pngs_hints_to_add_a_project_dir() {
+    // Capture written flat (loose .png at the root) while --arch expects a
     // subtree: the hint must call out the loose files and the fix.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
@@ -370,20 +490,20 @@ fn platform_against_loose_pngs_hints_to_add_a_project_dir() {
         "manifest",
         "--input",
         cur.to_str().unwrap(),
-        "--platform",
-        "linux-x86_64",
+        "--arch",
+        "x86_64",
     ]);
     let Err(AppError::InvalidLayout { reason, .. }) = result else {
         panic!("expected an InvalidLayout hint, got {result:?}");
     };
     assert!(reason.contains("loose .png"), "{reason}");
-    assert!(reason.contains("omit --platform"), "{reason}");
+    assert!(reason.contains("omit --arch"), "{reason}");
 }
 
 #[test]
 fn comment_marker_and_title_flags_override_config() {
-    // Distinct markers are how a multi-platform run keeps one sticky comment per
-    // platform without a config file per platform.
+    // Distinct markers are how a multi-arch run keeps one sticky comment per arch
+    // without a config file per arch.
     let (code, out) = invoke(&[
         "screencomp",
         "comment",
@@ -392,13 +512,13 @@ fn comment_marker_and_title_flags_override_config() {
         "--current",
         &current(),
         "--marker",
-        "screencomp-linux-x86_64",
+        "screencomp-x86_64",
         "--title",
-        "Visual changes (linux-x86_64)",
+        "Visual changes (x86_64)",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.starts_with("<!-- screencomp-linux-x86_64 -->"), "{out}");
-    assert!(out.contains("## Visual changes (linux-x86_64)"), "{out}");
+    assert!(out.starts_with("<!-- screencomp-x86_64 -->"), "{out}");
+    assert!(out.contains("## Visual changes (x86_64)"), "{out}");
 }
 
 #[test]
@@ -548,27 +668,27 @@ fn comment_manifest_mode_sources_before_from_baseline_url() {
 }
 
 #[test]
-fn manifest_and_classify_are_platform_scoped() {
+fn manifest_and_classify_are_arch_scoped() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "linux-x86_64", "desktop", "home", b"v1");
-    write_shot(&cur, "linux-x86_64", "desktop", "home", b"v2");
-    let manifest = path_str(&dir.path().join("linux-x86_64.sha256"));
+    write_shot(&base, "x86_64", "desktop", "home", b"v1");
+    write_shot(&cur, "x86_64", "desktop", "home", b"v2");
+    let manifest = path_str(&dir.path().join("x86_64.sha256"));
 
     invoke(&[
         "screencomp",
         "manifest",
         "--input",
         base.to_str().unwrap(),
-        "--platform",
-        "linux-x86_64",
+        "--arch",
+        "x86_64",
         "--output",
         &manifest,
     ])
     .0
     .unwrap();
-    // The manifest drops the platform segment.
+    // The manifest drops the arch segment.
     assert_eq!(
         std::fs::read_to_string(&manifest)
             .unwrap()
@@ -585,8 +705,8 @@ fn manifest_and_classify_are_platform_scoped() {
         &manifest,
         "--current",
         cur.to_str().unwrap(),
-        "--platform",
-        "linux-x86_64",
+        "--arch",
+        "x86_64",
         "--exit-code",
     ]);
     assert_eq!(code.unwrap(), 3);
@@ -725,11 +845,11 @@ fn verify_json_is_single_line_contract() {
 }
 
 #[test]
-fn verify_is_platform_scoped() {
+fn verify_is_arch_scoped() {
     let dir = TempDir::new().unwrap();
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
-    let key = host_key();
+    let key = host_arch();
     write_shot(&a, &key, "desktop", "home", b"same");
     write_shot(&b, &key, "desktop", "home", b"same");
     // A foreign subtree diverges but must be invisible to the scoped run.
@@ -743,7 +863,7 @@ fn verify_is_platform_scoped() {
         a.to_str().unwrap(),
         "--second",
         b.to_str().unwrap(),
-        "--platform",
+        "--arch",
         "auto",
     ]);
     assert_eq!(code.unwrap(), 0);
@@ -763,10 +883,7 @@ fn doctor_reports_layout_and_passes_a_clean_tree() {
 
     let (code, out) = invoke(&["screencomp", "doctor", "--input", input.to_str().unwrap()]);
     assert_eq!(code.unwrap(), 0);
-    assert!(
-        out.contains("platform: none (root is project-level)"),
-        "{out}"
-    );
+    assert!(out.contains("arch: none (root is project-level)"), "{out}");
     assert!(out.contains("desktop (2 shots)"), "{out}");
     assert!(out.contains("mobile (1 shot)"), "{out}");
     assert!(out.contains("shots: 3"), "{out}");
@@ -777,10 +894,10 @@ fn doctor_reports_layout_and_passes_a_clean_tree() {
 }
 
 #[test]
-fn doctor_resolves_auto_platform_key() {
+fn doctor_resolves_auto_arch_key() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
-    let key = host_key();
+    let key = host_arch();
     write_shot(&input, &key, "desktop", "home", b"a");
 
     let (code, out) = invoke(&[
@@ -788,29 +905,51 @@ fn doctor_resolves_auto_platform_key() {
         "doctor",
         "--input",
         input.to_str().unwrap(),
-        "--platform",
+        "--arch",
         "auto",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains(&format!("platform: {key} (auto)")), "{out}");
+    assert!(out.contains(&format!("arch: {key} (auto)")), "{out}");
 }
 
 #[test]
-fn doctor_explicit_platform_key_is_shown_without_auto_suffix() {
+fn doctor_arch_defaulted_from_config_shows_auto_suffix() {
+    // No `--arch` but a configured host arch: doctor scopes to it and marks the
+    // resolved key `(auto)` since it was host-detected, not named explicitly.
+    let dir = TempDir::new().unwrap();
+    let key = host_arch();
+    let cfg = write_arches_config(dir.path(), &[&key]);
+    let input = dir.path().join("current");
+    write_shot(&input, &key, "desktop", "home", b"a");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(&format!("arch: {key} (auto)")), "{out}");
+}
+
+#[test]
+fn doctor_explicit_arch_key_is_shown_without_auto_suffix() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
-    write_shot(&input, "linux-x86_64", "desktop", "home", b"a");
+    write_shot(&input, "x86_64", "desktop", "home", b"a");
 
     let (code, out) = invoke(&[
         "screencomp",
         "doctor",
         "--input",
         input.to_str().unwrap(),
-        "--platform",
-        "linux-x86_64",
+        "--arch",
+        "x86_64",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("platform: linux-x86_64"), "{out}");
+    assert!(out.contains("arch: x86_64"), "{out}");
     assert!(!out.contains("(auto)"), "{out}");
 }
 
@@ -835,7 +974,7 @@ fn doctor_json_contract_reports_problems() {
     assert!(out.contains(r#""ok":false"#), "{out}");
     assert!(out.contains(r#""total_shots":1"#), "{out}");
     assert!(out.contains(r#""loose_pngs":["stray.png"]"#), "{out}");
-    assert!(out.contains(r#""platform":null"#), "{out}");
+    assert!(out.contains(r#""arch":null"#), "{out}");
     assert!(out.contains(r#"{"name":"desktop","shots":1}"#), "{out}");
 }
 
@@ -1095,31 +1234,25 @@ fn init_scaffolds_config_workflow_and_gitignore() {
     let dir = TempDir::new().unwrap();
     let root = path_str(dir.path());
 
-    let (code, out) = invoke(&[
-        "screencomp",
-        "init",
-        "--dir",
-        &root,
-        "--platform",
-        "macos-arm64",
-    ]);
+    let (code, out) = invoke(&["screencomp", "init", "--dir", &root, "--arch", "arm64"]);
     assert_eq!(code.unwrap(), 0);
     assert!(
         out.contains("created") && out.contains("screencomp.toml"),
         "{out}"
     );
 
-    // The config is valid and platform-substituted.
+    // The config is valid and arch-substituted into [capture].arches.
     let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
-    assert!(toml.contains("shots/baseline/macos-arm64.sha256"), "{toml}");
+    assert!(toml.contains("arches = [\"arm64\"]"), "{toml}");
 
-    // The workflow calls the reusable workflow and carries the platform through.
+    // The workflow calls the reusable workflow; the arch list lives in the config,
+    // so the caller carries no `platform:`.
     let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
     assert!(
         wf.contains("nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v"),
         "{wf}"
     );
-    assert!(wf.contains("platform: macos-arm64"), "{wf}");
+    assert!(!wf.contains("platform:"), "{wf}");
 
     // The .gitignore commits baselines but ignores generated images: no ignore
     // entry (a non-comment line) targets shots/baseline/.
@@ -1170,20 +1303,20 @@ fn init_is_idempotent_and_respects_force() {
 }
 
 #[test]
-fn doctor_warns_on_a_cross_platform_baseline_manifest() {
-    // A baseline manifest named for a different platform, against a capture where
+fn doctor_warns_on_a_cross_arch_baseline_manifest() {
+    // A baseline manifest named for a different arch, against a capture where
     // every shot's bytes differ, is the "everything changed" trap doctor exists
-    // to surface as a platform mismatch rather than a real diff.
+    // to surface as an arch mismatch rather than a real diff.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
     write_flat(&cur, "desktop", "home", b"new-bytes");
 
-    // Manifest holds the same shot name but a different digest, named for a
-    // platform that cannot be the host.
-    let other = if host_key().contains("x86_64") {
-        "linux-arm64"
+    // Manifest holds the same shot name but a different digest, named for an arch
+    // that cannot be the host.
+    let other = if host_arch() == "x86_64" {
+        "arm64"
     } else {
-        "linux-x86_64"
+        "x86_64"
     };
     let manifest = dir.path().join(format!("{other}.sha256"));
     std::fs::write(&manifest, format!("{}  desktop/home.png\n", "a".repeat(64))).unwrap();
@@ -1222,8 +1355,8 @@ fn doctor_warns_on_a_cross_platform_baseline_manifest() {
 }
 
 #[test]
-fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
-    // A manifest not named after a platform (baseline.sha256) must not trip the
+fn doctor_non_arch_manifest_name_skips_the_filename_warning() {
+    // A manifest not named after an arch (baseline.sha256) must not trip the
     // filename heuristic, and a matching, identical shot leaves doctor clean.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
@@ -1257,46 +1390,32 @@ fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
 }
 
 #[test]
-fn init_defaults_to_the_host_arch_linux_key_with_a_matching_runner() {
-    // `init` with no `--platform` (and explicit `--platform auto`) scaffolds for
-    // the host's *arch* under a Linux key — the capture is a Linux container, so
-    // an ARM developer must get `linux-arm64`, never the literal `linux-x86_64`
-    // and never the host OS. CI then captures on a runner of the same arch.
-    let arch = match std::env::consts::ARCH {
-        "aarch64" | "arm64" => "arm64",
-        other => other,
-    };
-    let key = format!("linux-{arch}");
-    let runner = if arch == "arm64" {
-        "ubuntu-24.04-arm"
-    } else {
-        "ubuntu-latest"
-    };
+fn init_defaults_to_the_host_arch() {
+    // `init` with no `--arch` (and explicit `--arch auto`) scaffolds for the
+    // host's CPU arch — the capture is a Linux container, so only the arch varies.
+    // An ARM developer must get `arm64`, never the literal "auto".
+    let key = host_arch();
 
-    for platform in [None, Some("auto")] {
+    for arch in [None, Some("auto")] {
         let dir = TempDir::new().unwrap();
         let root = path_str(dir.path());
         let mut argv = vec!["screencomp", "init", "--dir", &root];
-        if let Some(p) = platform {
-            argv.extend(["--platform", p]);
+        if let Some(a) = arch {
+            argv.extend(["--arch", a]);
         }
         let (code, _) = invoke(&argv);
         assert_eq!(code.unwrap(), 0);
 
-        // The scaffold is wired to the resolved key, not the literal "auto".
+        // The scaffold's [capture].arches is the resolved arch, not the literal "auto".
         let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
-        assert!(
-            toml.contains(&format!("shots/baseline/{key}.sha256")),
-            "{toml}"
-        );
+        assert!(toml.contains(&format!("arches = [\"{key}\"]")), "{toml}");
         assert!(!toml.contains("auto"), "{toml}");
 
+        // The caller carries no per-arch input: the arch list lives in the config.
         let wf =
             std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
-        assert!(wf.contains(&format!("platform: {key}")), "{wf}");
-        // CI runner arch must match the key or the strict gate fails on a phantom
-        // diff between the local (native) baseline and an emulated CI capture.
-        assert!(wf.contains(&format!("runs-on: {runner}")), "{wf}");
+        assert!(!wf.contains("platform:"), "{wf}");
+        assert!(!wf.contains("runs-on:"), "{wf}");
     }
 }
 
@@ -1339,7 +1458,6 @@ fn init_caller_matches_the_reusable_workflow_interface() {
     // scaffold opts into `fail-on-drift` and `gh-pages-maintenance` explicitly, so
     // both must stay real inputs.
     for input in [
-        "platform",
         "capture-command",
         "fail-on-drift",
         "gh-pages-maintenance",
