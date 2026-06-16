@@ -2,12 +2,13 @@
 # screencomp-demo consumer repo, so that repo never drifts from this CLI's
 # interface and a future migration is just an edit to `demo/` here.
 #
-# It opens a PR on screencomp-demo (never a direct push) so the change is
-# reviewable there, and no-ops without the cross-repo token, so forks and
-# unconfigured clones are unaffected. The token (SCREENCOMP_DEMO_PAT) needs
-# `contents: write` + `pull-requests: write` on screencomp-demo (the default
-# GITHUB_TOKEN cannot reach another repo). If it lacks PR scope the sync branch
-# is still pushed for a manual PR.
+# It commits the managed files DIRECTLY to screencomp-demo's `main` (for a fully
+# automated, end-to-end loop — no human PR merge), then waits for the resulting
+# `Visual docs` run on the demo and mirrors its pass/fail back here. No-ops without
+# the cross-repo token, so forks and unconfigured clones are unaffected. The token
+# (SCREENCOMP_DEMO_PAT) needs `contents: write` on screencomp-demo (the default
+# GITHUB_TOKEN cannot reach another repo); the demo's `main` must allow this push
+# (no protection that blocks the bot, or the bot is exempt).
 name: Sync demo repo
 
 on:
@@ -22,7 +23,7 @@ on:
 permissions:
   contents: read
 
-# Serialize syncs so two never race to open competing PRs on the demo.
+# Serialize syncs so two never race to push the demo's main.
 concurrency:
   group: sync-demo
   cancel-in-progress: false
@@ -32,10 +33,15 @@ jobs:
     # Only the canonical repo holds the token; forks would no-op anyway.
     if: ${{ github.repository == 'nickderobertis/screencomp' }}
     runs-on: ubuntu-latest
+    outputs:
+      # The commit pushed to the demo's main (empty when nothing changed), so
+      # verify-demo waits for THAT run rather than reading a stale prior one.
+      sha: ${{ steps.sync.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Open a sync PR on screencomp-demo
+      - name: Commit managed files to screencomp-demo main
+        id: sync
         env:
           GH_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
           DEMO: nickderobertis/screencomp-demo
@@ -51,61 +57,47 @@ jobs:
           git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${DEMO}.git" "$work"
           cd "$work"
 
-          # One rolling sync branch off the demo's current main, so a force-push
-          # updates the single open sync PR instead of spawning a new one each run.
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git switch -c screencomp-sync
-
           # ---- managed file manifest: <src in screencomp> -> <dest in demo> ----
           install -D -m644 "$srcroot/demo/screencomp.toml" "screencomp.toml"
           install -D -m644 "$srcroot/demo/visual-docs.yml"  ".github/workflows/visual-docs.yml"
           install -D -m755 "$srcroot/examples/pre-push"     ".githooks/pre-push"
           # ----------------------------------------------------------------------
 
-          # Idempotent: if the demo already matches (a prior sync PR merged), stop.
+          # Idempotent: if the demo already matches, there is nothing to push.
           if git diff --quiet; then
-            echo "screencomp-demo already in sync; nothing to do"
+            echo "screencomp-demo already in sync; nothing to commit"
             exit 0
           fi
 
           short="${GITHUB_SHA::7}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "chore: sync screencomp integration files from screencomp@${short}"
-          git push -u origin screencomp-sync --force
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          echo "committed $(git rev-parse --short HEAD) to ${DEMO}@main"
 
-          body="Automated sync of the managed screencomp-integration files from "
-          body+="[nickderobertis/screencomp@${short}](https://github.com/nickderobertis/screencomp/commit/${GITHUB_SHA}) "
-          body+="(\`demo/\` subdir).
+          # Tidy the obsolete branch from the earlier PR-based sync (deleting it
+          # also closes any leftover sync PR). Best-effort; gone after the first run.
+          git push origin --delete screencomp-sync 2>/dev/null || true
 
-          Managed files: \`screencomp.toml\`, \`.github/workflows/visual-docs.yml\`, \`.githooks/pre-push\`.
-
-          Baselines and the app/capture are owned by the demo and are not touched."
-          # Update the open PR's body, or open one. Best-effort: if the token lacks
-          # PR scope the branch is already pushed for a manual PR.
-          if ! gh pr edit --repo "$DEMO" screencomp-sync --body "$body" 2>/dev/null; then
-            gh pr create --repo "$DEMO" --base main --head screencomp-sync \
-              --title "chore: sync screencomp integration files" --body "$body" \
-              || echo "could not open PR automatically; branch 'screencomp-sync' is pushed for a manual PR"
-          fi
-
-  # Full-visibility verification: mirror the demo's real visual-docs pipeline
-  # (its `main`-branch run — a REAL browser capture against the synced config and
-  # the released @v0 reusable workflow) into THIS repo's Actions, so "did the
-  # consumer actually work" is answered here instead of needing eyes on the demo.
-  # This job goes red whenever screencomp-demo's pipeline is red — including, on
-  # purpose, while a sync PR is still open (the demo's `main` is not migrated yet),
-  # so it stays honest. Re-run this workflow (workflow_dispatch) after merging the
-  # sync PR to confirm the demo is green on the new interface.
+  # Full-visibility verification: mirror the demo's real `Visual docs` pipeline (a
+  # REAL browser capture against the synced config + the released @v0 reusable
+  # workflow) into THIS repo's Actions, so "did the consumer actually work" is
+  # answered here instead of needing eyes on the demo. Pushing to the demo's main
+  # (above) triggers that run on the SYNCED workflow definition; this job waits for
+  # the run of the exact commit we pushed and goes RED when it is red.
   verify-demo:
     needs: sync
     if: ${{ always() && github.repository == 'nickderobertis/screencomp' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Report screencomp-demo pipeline health
+      - name: Mirror screencomp-demo pipeline health
         env:
           GH_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
           DEMO: nickderobertis/screencomp-demo
+          SYNCED_SHA: ${{ needs.sync.outputs.sha }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -113,19 +105,32 @@ jobs:
             exit 0
           fi
 
-          # Wait out an in-flight run so the verdict reflects the latest capture.
           deadline=$(( $(date +%s) + 1800 ))   # 30 min ceiling
           while :; do
-            run="$(gh run list --repo "$DEMO" --workflow 'Visual docs' --branch main \
-                    --limit 1 --json status,conclusion,url,headSha 2>/dev/null || echo '[]')"
-            if [ "$(jq 'length' <<<"$run")" -eq 0 ]; then
-              echo "::warning::no 'Visual docs' run found on ${DEMO}@main yet (the migration PR may be unmerged)"
-              exit 0
+            runs="$(gh run list --repo "$DEMO" --workflow 'Visual docs' --branch main \
+                     --limit 20 --json headSha,status,conclusion,url 2>/dev/null || echo '[]')"
+            if [ -n "${SYNCED_SHA:-}" ]; then
+              # Wait specifically for the run of the commit we just pushed.
+              row="$(jq -c --arg s "$SYNCED_SHA" 'map(select(.headSha == $s)) | .[0] // empty' <<<"$runs")"
+            else
+              # No change to sync this run: report the latest main health instead.
+              row="$(jq -c '.[0] // empty' <<<"$runs")"
             fi
-            st="$(jq -r '.[0].status' <<<"$run")"
-            url="$(jq -r '.[0].url' <<<"$run")"
+
+            if [ -z "$row" ]; then
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::warning::no 'Visual docs' run found for ${SYNCED_SHA:-latest} on ${DEMO}@main within the wait"
+                exit 0
+              fi
+              echo "waiting for the demo run to register…"
+              sleep 30
+              continue
+            fi
+
+            st="$(jq -r '.status' <<<"$row")"
+            url="$(jq -r '.url' <<<"$row")"
             if [ "$st" = "completed" ]; then
-              concl="$(jq -r '.[0].conclusion' <<<"$run")"
+              concl="$(jq -r '.conclusion' <<<"$row")"
               echo "screencomp-demo@main 'Visual docs': ${concl} — ${url}"
               if [ "$concl" = "success" ]; then
                 echo "✅ the demo's real capture→classify→gallery→comment pipeline is green with the managed files"
