@@ -31,14 +31,18 @@ permissions:
 
 jobs:
   # The all-in-one reusable workflow: capture in the Playwright container, report
-  # on the host.
+  # on the host. The reusable workflow takes no arch input — it reads the matrix
+  # from `[capture].arches` in screencomp.toml (via `screencomp arches`). It does
+  # its OWN checkout of this caller ref, so the config must be COMMITTED at the
+  # repo root; a step here cannot pre-create it for the reusable workflow's
+  # `arches` job. This repo therefore needs a root `screencomp.toml` with
+  # `[capture].arches = ["x86_64"]` for this job to resolve a matrix.
   smoke:
     permissions:
       contents: write # the reusable workflow declares it; harmless with publish:false
       pull-requests: write
     uses: ./.github/workflows/visual-docs-reusable.yml
     with:
-      platform: linux-x86_64
       container: mcr.microsoft.com/playwright:v1.60.0-noble
       # A deterministic, browser-free capture: fixed bytes so the reproducibility
       # gate (capture twice, require byte-identical) passes.
@@ -54,23 +58,23 @@ jobs:
       update-manifest: true
 
   # The composite action composed into a consumer's own host job, in both the
-  # platform-subtree and project-level (platform: "") layouts.
+  # arch-subtree and project-level (arch: "") layouts.
   action-smoke:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     strategy:
       matrix:
-        platform: ["linux-x86_64", ""]
+        arch: ["x86_64", ""]
     steps:
       - uses: actions/checkout@v4
       # Fake capture (twice, byte-identical) into the right layout for the mode.
       - name: Fake capture
         env:
-          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if [ -n "$PLATFORM" ]; then sub="$PLATFORM/demo"; else sub="demo"; fi
+          if [ -n "$ARCH" ]; then sub="$ARCH/demo"; else sub="demo"; fi
           for root in shots/current shots/verify; do
             mkdir -p "$root/$sub"
             printf 'fake-home-shot' > "$root/$sub/home.png"
@@ -82,20 +86,20 @@ jobs:
       # (has_baseline == true) are actually exercised, not just the seed path.
       - name: Seed baseline
         env:
-          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if [ -n "$PLATFORM" ]; then
-            plat="--platform $PLATFORM"; manifest="shots/baseline/$PLATFORM.sha256"
+          if [ -n "$ARCH" ]; then
+            arch_arg="--arch $ARCH"; manifest="shots/baseline/$ARCH.sha256"
           else
-            plat=""; manifest="shots/baseline.sha256"
+            arch_arg=""; manifest="shots/baseline.sha256"
           fi
           mkdir -p "$(dirname "$manifest")"
           # shellcheck disable=SC2086
-          screencomp manifest --input shots/current $plat --output "$manifest"
+          screencomp manifest --input shots/current $arch_arg --output "$manifest"
       - uses: ./visual-docs
         with:
-          platform: ${{ matrix.platform }}
+          arch: ${{ matrix.arch }}
           verify-second: shots/verify
           pages: false
           publish: false

@@ -8,8 +8,9 @@
 # screenshot-relevant files changed (see [guard].paths in screencomp.toml) and
 # makes any baseline change loud and reviewable before you push. Capture and git
 # stay in your hands — the capture step below is yours to adapt, exactly like
-# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds a
-# version of this hook with your platform baked in (.githooks/pre-push).
+# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds this
+# same hook at .githooks/pre-push; it detects the host arch at runtime, so the one
+# committed hook is correct on every developer's machine.
 #
 # What it does on a push:
 #   1. Compute the push range from git's stdin (new branches fall back to the
@@ -136,18 +137,19 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
-# Capture into $CURRENT/$PLATFORM/<project>/<name>.png using the SAME pinned
-# container and flags as examples/visual-docs.yml, so local bytes match CI.
+# Capture into $CURRENT/$ARCH/<project>/<name>.png using the SAME pinned container
+# and flags as examples/visual-docs.yml, so local bytes match CI.
 docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
   -v "$PWD:/work" -w /work \
   mcr.microsoft.com/playwright:v1.60.0-noble \
-  bash -lc "npm ci && SHOTS_OUT=$CURRENT/$PLATFORM npx playwright test"
+  bash -lc "npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test"
 # ------------------------------------------------------------------------------
 
 # --- 4. Classify the capture against the committed baseline manifest ---------
+# No --arch needed: screencomp defaults to the host arch from [capture].arches.
 set +e
 report="$(screencomp classify --baseline-manifest "$MANIFEST" --current "$CURRENT" \
-  --platform "$PLATFORM" --exit-code)"
+  --exit-code)"
 status=$?
 set -e
 
@@ -165,10 +167,10 @@ differ="$(printf '%s\n' "$report" | grep -cE '^(added|changed|removed) ' || true
 
 # Overwrite the committed manifest so its diff is the review record. We do NOT
 # auto-commit it — blocking and instructing is the point.
-screencomp manifest --input "$CURRENT" --platform "$PLATFORM" --output "$MANIFEST"
+screencomp manifest --input "$CURRENT" --output "$MANIFEST"
 
 # Build a local before/after gallery to eyeball the change.
-screencomp gallery --input "$CURRENT" --platform "$PLATFORM" \
+screencomp gallery --input "$CURRENT" \
   --output "$GALLERY" --title "Pre-push screenshot review" >/dev/null
 
 {
