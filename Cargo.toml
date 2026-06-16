@@ -18,6 +18,7 @@ exclude = [
     ".claude/",
     "benches/",
     "examples/",
+    "demo/",
     "action.yml",
     "Dockerfile",
     ".dockerignore",

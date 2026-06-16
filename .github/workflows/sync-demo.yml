@@ -57,10 +57,18 @@ jobs:
           git clone --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${DEMO}.git" "$work"
           cd "$work"
 
-          # ---- managed file manifest: <src in screencomp> -> <dest in demo> ----
-          install -D -m644 "$srcroot/demo/screencomp.toml" "screencomp.toml"
-          install -D -m644 "$srcroot/demo/visual-docs.yml"  ".github/workflows/visual-docs.yml"
-          install -D -m755 "$srcroot/examples/pre-push"     ".githooks/pre-push"
+          # ---- mirror the managed demo source onto the demo ---------------------
+          # `demo/` IS the demo's source tree (app pages, Playwright config + spec,
+          # screencomp.toml, the caller workflow under demo/.github/). Mirror it
+          # wholesale so the demo can't drift and can be fixed entirely from here.
+          # Preserve what the demo owns or that lives outside the mirror: its .git,
+          # its committed baselines (shots/), the hook (installed below), and this
+          # internal README.
+          rsync -a --delete \
+            --exclude='.git/' --exclude='shots/' --exclude='.githooks/' --exclude='README.md' \
+            "$srcroot/demo/" ./
+          # The pre-push hook is shared with the documented consumer template.
+          install -D -m755 "$srcroot/examples/pre-push" ".githooks/pre-push"
           # ----------------------------------------------------------------------
 
           # Idempotent: if the demo already matches, there is nothing to push.

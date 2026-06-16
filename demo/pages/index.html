@@ -1,0 +1,45 @@
+<!doctype html>
+<!-- Static demo page (home). Managed from nickderobertis/screencomp:demo/. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Acme — Home</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: sans-serif; color: #11203a; background: #f6f8fc; }
+      header { background: #1f3b73; color: #fff; padding: 28px 40px; }
+      header h1 { font-size: 28px; letter-spacing: 0.5px; }
+      nav { margin-top: 8px; font-size: 14px; color: #c7d6f5; }
+      main { padding: 40px; }
+      .hero { background: #fff; border: 1px solid #dde5f2; border-radius: 12px; padding: 32px; }
+      .hero h2 { font-size: 22px; margin-bottom: 12px; }
+      .hero p { font-size: 15px; line-height: 1.6; color: #45577a; max-width: 640px; }
+      .cards { display: flex; gap: 16px; margin-top: 28px; }
+      .card { flex: 1; background: #fff; border: 1px solid #dde5f2; border-radius: 10px; padding: 20px; }
+      .card .pill { display: inline-block; background: #e4ecfb; color: #1f3b73; font-size: 12px; padding: 3px 10px; border-radius: 999px; }
+      .card h3 { font-size: 16px; margin: 12px 0 6px; }
+      .card p { font-size: 13px; color: #5a6b8c; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Acme Analytics</h1>
+      <nav>Home · Pricing · About</nav>
+    </header>
+    <main>
+      <section class="hero">
+        <h2>See what your screenshots are doing.</h2>
+        <p>
+          Acme turns raw captures into byte-reproducible visual documentation. This
+          page exists only to give the screencomp demo something deterministic to
+          photograph on every run.
+        </p>
+      </section>
+      <section class="cards">
+        <div class="card"><span class="pill">Fast</span><h3>Deterministic</h3><p>Same build, same pixels, every run.</p></div>
+        <div class="card"><span class="pill">Lean</span><h3>Image-free baselines</h3><p>Commit digests, not megabytes of PNGs.</p></div>
+        <div class="card"><span class="pill">Gated</span><h3>Strict drift checks</h3><p>CI fails the moment a shot changes unexpectedly.</p></div>
+      </section>
+    </main>
+  </body>
+</html>

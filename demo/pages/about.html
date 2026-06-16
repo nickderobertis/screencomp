@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Static demo page (about). Managed from nickderobertis/screencomp:demo/. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Acme — About</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { font-family: sans-serif; color: #11203a; background: #f6f8fc; }
+      header { background: #0e7c66; color: #fff; padding: 28px 40px; }
+      header h1 { font-size: 28px; letter-spacing: 0.5px; }
+      nav { margin-top: 8px; font-size: 14px; color: #bfeee2; }
+      main { padding: 40px; max-width: 720px; }
+      h2 { font-size: 22px; margin-bottom: 12px; }
+      p { font-size: 15px; line-height: 1.7; color: #45577a; margin-bottom: 14px; }
+      .team { display: flex; gap: 16px; margin-top: 24px; }
+      .member { background: #fff; border: 1px solid #d7e8e2; border-radius: 10px; padding: 18px; flex: 1; }
+      .member .avatar { width: 40px; height: 40px; border-radius: 50%; background: #0e7c66; }
+      .member h3 { font-size: 15px; margin: 10px 0 4px; }
+      .member p { font-size: 13px; color: #5a6b8c; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>About Acme</h1>
+      <nav>Home · Pricing · About</nav>
+    </header>
+    <main>
+      <h2>We make visual docs boring — on purpose.</h2>
+      <p>
+        Boring means predictable: the same capture produces the same bytes, so a
+        diff is always a real change, never render noise. This page is a second
+        deterministic surface so the demo has an added/changed shot to classify.
+      </p>
+      <div class="team">
+        <div class="member"><div class="avatar"></div><h3>Ada</h3><p>Reproducibility</p></div>
+        <div class="member"><div class="avatar"></div><h3>Linus</h3><p>Tooling</p></div>
+        <div class="member"><div class="avatar"></div><h3>Grace</h3><p>Pipelines</p></div>
+      </div>
+    </main>
+  </body>
+</html>
