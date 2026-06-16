@@ -14,6 +14,29 @@ image-free digest baseline), `verify` (the reproducibility gate — two captures
 one build must be byte-identical), and `doctor` (preflight the platform key and
 layout). Screenshots are compared by byte digest; nothing decodes images.
 
+## Two standing goals on every task
+
+The user drives product features and their request is the priority — but carry
+two goals into *every* task. When either is the lowest-error path to what the
+user asked, fold it into the same task without asking first; surface the rest as
+follow-ups.
+
+1. **Engineer the context for next time.** Make the next agent (and you) see
+   more for less: realistic e2e tests that exercise what a user actually runs —
+   especially when they report a bug existing tests missed, and remembering the
+   suite never drives a real browser, so capture/output regressions only surface
+   against the [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
+   consumer — scripts and `just` recipes that automate repetitive steps and
+   shrink their output to signal, and terse `AGENTS.md` notes capturing what the
+   code doesn't make obvious.
+2. **Engineer the codebase and environment.** Be the engineer the user isn't:
+   prioritize the technical initiatives that keep the codebase clean,
+   maintainable, and repeatable, and keep setup automated and consistent
+   (`just bootstrap` from a clean clone). The strict `just check` gate plus
+   local/CI parity (same gate, same pinned `rust-toolchain.toml`) make results
+   repeatable. A clean base and a reproducible environment are usually how the
+   user's feature ships with a low error rate.
+
 ## Stack and composition
 
 This repo is composed from the create-repo skill's reference pieces:
