@@ -364,6 +364,33 @@ fn arches_command_prints_configured_arches() {
 }
 
 #[test]
+fn arches_is_empty_array_without_configured_arches() {
+    // The reusable workflow's matrix guard branches on the literal "[]"; an
+    // unconfigured project must print exactly that (and nothing in human mode)
+    // rather than erroring, so the workflow can emit a clear "configure arches"
+    // message instead of a cryptic parse failure.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(&cfg, "[comment]\nmarker = \"x\"\n").unwrap();
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["arches", "--format", "json"])
+        .assert()
+        .success()
+        .stdout("[]\n");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .arg("arches")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
 fn gallery_diff_scopes_both_trees_by_arch() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");

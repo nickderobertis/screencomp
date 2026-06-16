@@ -75,6 +75,16 @@ on:
         description: screencomp release to install on the host, or "latest".
         type: string
         default: latest
+      arches:
+        description: >-
+          ADVANCED / testing override for the capture arch matrix, as a JSON array
+          string (e.g. '["x86_64"]'). Leave empty (the default) for the normal
+          single-source flow, where the matrix is read from [capture].arches in the
+          committed screencomp.toml. Set it only when there is no committed config to
+          read — e.g. screencomp's own reusable-workflow self-test, which has no
+          repo-level screencomp.toml.
+        type: string
+        default: ''
       gallery-title:
         description: Title for the generated gallery.
         type: string
@@ -158,10 +168,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---- Arches: read the committed [capture].arches into a matrix ------------
-  # The single source of truth for which arches to capture is screencomp.toml.
-  # Install the CLI and let it parse the list, so the matrix can't drift from the
-  # config the local commands use.
+  # ---- Arches: resolve the capture arch matrix ------------------------------
+  # The single source of truth for which arches to capture is [capture].arches in
+  # screencomp.toml. Install the CLI and let it parse the list, so the matrix
+  # can't drift from the config the local commands use. The `arches` input is an
+  # escape hatch for callers with no committed config (e.g. the self-test); when
+  # empty (the norm) the config is read.
   arches:
     if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
@@ -172,14 +184,20 @@ jobs:
       - uses: nickderobertis/screencomp@v0 # install the CLI on the host
         with:
           version: ${{ inputs.screencomp-version }}
-      - name: Read [capture].arches
+      - name: Resolve [capture].arches
         id: read
         shell: bash
+        env:
+          ARCHES_OVERRIDE: ${{ inputs.arches }}
         run: |
           set -euo pipefail
-          matrix="$(screencomp arches --format json)"
+          if [ -n "$ARCHES_OVERRIDE" ]; then
+            matrix="$ARCHES_OVERRIDE"   # explicit override (no committed config to read)
+          else
+            matrix="$(screencomp arches --format json)"
+          fi
           if [ -z "$matrix" ] || [ "$matrix" = "[]" ]; then
-            echo "::error::no [capture].arches configured in screencomp.toml; add e.g. arches = [\"x86_64\"]" >&2
+            echo "::error::no [capture].arches configured in screencomp.toml; add e.g. arches = [\"x86_64\"], or pass the workflow's 'arches' input" >&2
             exit 1
           fi
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"

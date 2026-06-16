@@ -397,10 +397,15 @@ fn arch_not_in_configured_arches_hard_errors() {
         panic!("expected UnsupportedArch, got {result:?}");
     };
     assert_eq!(err.exit_code(), 1);
+    let msg = err.to_string();
+    // The message must explain the problem, give the exact fix line (the existing
+    // arch plus the host, ready to paste), and the CI-cost implication.
+    assert!(msg.contains("is not in the configured arches"), "{msg}");
     assert!(
-        err.to_string().contains("is not in the configured arches"),
-        "{err}"
+        msg.contains(&format!("arches = [\"sparc64\", \"{}\"]", host_arch())),
+        "fix line should append the host arch: {msg}"
     );
+    assert!(msg.contains("adds a CI job"), "{msg}");
 }
 
 #[test]

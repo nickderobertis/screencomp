@@ -31,18 +31,20 @@ permissions:
 
 jobs:
   # The all-in-one reusable workflow: capture in the Playwright container, report
-  # on the host. The reusable workflow takes no arch input — it reads the matrix
-  # from `[capture].arches` in screencomp.toml (via `screencomp arches`). It does
-  # its OWN checkout of this caller ref, so the config must be COMMITTED at the
-  # repo root; a step here cannot pre-create it for the reusable workflow's
-  # `arches` job. This repo therefore needs a root `screencomp.toml` with
-  # `[capture].arches = ["x86_64"]` for this job to resolve a matrix.
+  # on the host. A real consumer's arch matrix is read from `[capture].arches` in
+  # their committed screencomp.toml. THIS repo has no root screencomp.toml (one
+  # would be auto-discovered by the unit-test suite and break its hermetic
+  # fixtures), and a reusable-workflow `uses:` caller cannot inject a step to
+  # pre-create one — so the self-test uses the workflow's `arches` override input
+  # to supply the matrix directly. That escape hatch exists precisely for callers
+  # with no committed config; consumers leave it empty.
   smoke:
     permissions:
       contents: write # the reusable workflow declares it; harmless with publish:false
       pull-requests: write
     uses: ./.github/workflows/visual-docs-reusable.yml
     with:
+      arches: '["x86_64"]'
       container: mcr.microsoft.com/playwright:v1.60.0-noble
       # A deterministic, browser-free capture: fixed bytes so the reproducibility
       # gate (capture twice, require byte-identical) passes.

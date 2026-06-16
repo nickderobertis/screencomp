@@ -274,16 +274,34 @@ runs:
         fi
         screencomp comment "${args[@]}"
 
+    # Upsert by MARKER, not --edit-last. `screencomp comment` embeds a stable
+    # `<!-- screencomp[-<arch>] -->` HTML marker exactly so the right comment can be
+    # found and edited. This is what lets each arch keep its OWN sticky comment:
+    # --edit-last would make every arch lane clobber the single most-recent comment.
     - name: Post PR comment
       if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.publish == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
         PR: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        gh pr comment "$PR" --body-file comment.md --edit-last \
-          || gh pr comment "$PR" --body-file comment.md
+        # The first HTML comment in the body is the upsert marker (per-arch).
+        marker="$(grep -m1 -o '<!--[^>]*-->' comment.md)"
+        if [ -z "$marker" ]; then
+          echo "::error::no upsert marker found in comment.md" >&2
+          exit 1
+        fi
+        # Find an existing comment carrying this marker (most recent wins).
+        id="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
+          --jq "map(select(.body | contains(\"${marker}\"))) | last | .id // empty")"
+        if [ -n "$id" ]; then
+          gh api --method PATCH "repos/${REPO}/issues/comments/${id}" \
+            -F body=@comment.md >/dev/null
+        else
+          gh pr comment "$PR" --body-file comment.md
+        fi
 
     - name: Update the baseline manifest
       if: ${{ inputs.update-manifest == 'true' }}
