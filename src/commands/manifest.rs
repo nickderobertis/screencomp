@@ -2,14 +2,15 @@
 
 use std::io::Write;
 
-use super::{Ctx, discover_scoped, write_err};
+use super::{Ctx, discover_scoped, resolve_arch, write_err};
 use crate::cli::ManifestArgs;
 use crate::domain::manifest::render_manifest;
 use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &ManifestArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    let snapshot = discover_scoped(&args.input, args.platform.as_deref())?;
+    let arch = resolve_arch(args.arch.as_deref(), &ctx.config.capture.arches)?;
+    let snapshot = discover_scoped(&args.input, arch.as_deref())?;
     let manifest = render_manifest(&snapshot);
 
     match &args.output {

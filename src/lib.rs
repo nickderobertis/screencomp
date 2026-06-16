@@ -9,7 +9,8 @@
 //! - **manifest** write a tree's digests as a committable, image-free baseline,
 //! - **verify** assert two captures of one build are byte-identical (the
 //!   reproducibility gate),
-//! - **doctor** preflight a capture's platform key and `<project>/<name>.png` layout,
+//! - **doctor** preflight a capture's arch subtree and `<project>/<name>.png` layout,
+//! - **arches** print the project's configured `[capture].arches` (drives the CI matrix),
 //! - **scope** match a changed-path list against the `[guard].paths` globs, so
 //!   the optional local pre-push guard re-captures only when it should,
 //! - **init** scaffold a visual-docs setup (config, CI workflow, `.gitignore`).
@@ -49,7 +50,13 @@ use cli::Command;
 /// Returns [`AppError`] when inputs cannot be read, violate the directory
 /// convention, or when configuration is invalid.
 pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
-    let ctx = commands::Ctx { quiet: cli.quiet };
+    // Load configuration once at the boundary so every command resolves arches,
+    // comment, and guard settings from the same source.
+    let config = commands::load_config(cli.config.as_deref())?;
+    let ctx = commands::Ctx {
+        quiet: cli.quiet,
+        config,
+    };
     match cli.command {
         Command::Classify(args) => commands::classify::run(&args, &ctx, out),
         Command::Gallery(args) => commands::gallery::run(&args, &ctx, out),
@@ -57,6 +64,7 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         Command::Manifest(args) => commands::manifest::run(&args, &ctx, out),
         Command::Verify(args) => commands::verify::run(&args, &ctx, out),
         Command::Doctor(args) => commands::doctor::run(&args, &ctx, out),
+        Command::Arches(args) => commands::arches::run(&args, &ctx, out),
         Command::Scope(args) => commands::scope::run(&args, &ctx, out),
         Command::Init(args) => commands::init::run(&args, &ctx, out),
     }

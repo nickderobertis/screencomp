@@ -27,16 +27,22 @@ each `<project>` is a Playwright project/variant. From two such trees,
   (the [reproducibility gate](#reproducibility-gate-verify)); exits non-zero the
   moment they diverge.
 - **`doctor`** — a [preflight](#preflight-doctor) that prints the resolved
-  platform key and sanity-checks the `<project>/<name>.png` layout before you
+  arch subtree and sanity-checks the `<project>/<name>.png` layout before you
   classify.
+- **`arches`** — prints the project's configured `[capture].arches` (one per
+  line, or a JSON array); the CI matrix reads it to fan out one capture lane per
+  arch.
 
 It never decodes images — it content-hashes bytes — so output is deterministic
 and the tool has no image-codec dependencies.
 
-Because that content hash also changes with the renderer's OS and CPU
-architecture, each command takes an optional `--platform` to compare within a
-single `<root>/<platform>/<project>/<name>.png` subtree (see
-[Cross-platform comparison](#cross-platform-comparison)).
+Captures always run in a Linux container, so the OS never varies between a
+developer and CI — the only thing that changes the content hash is the CPU
+architecture. Each command takes an optional `--arch` to compare within a single
+`<root>/<arch>/<project>/<name>.png` subtree (see
+[Per-arch comparison](#per-arch-comparison)). The supported arches are declared
+once in `screencomp.toml` (`[capture].arches`), so local commands default to your
+host arch and CI fans one lane out per arch.
 
 ## Install
 
@@ -141,7 +147,6 @@ jobs:
   visual-docs:
     uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
     with:
-      platform: linux-x86_64
       capture-command: |        # MUST write $SHOTS_OUT/<project>/<name>.png
         npm ci
         npx playwright install --with-deps chromium
@@ -149,6 +154,11 @@ jobs:
     secrets:
       push-token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN }}   # optional; see below
 ```
+
+The workflow takes no arch input: it reads `[capture].arches` from the committed
+`screencomp.toml` (via `screencomp arches --format json`) and fans out one capture
+lane per arch, each on a matching runner (`arm64` → `ubuntu-24.04-arm`). Add an
+arch to that list to gain a lane.
 
 It runs the reproducibility gate, classifies against the committed digest
 manifest (failing the job on drift under the default strict gate), builds the
@@ -234,7 +244,7 @@ jobs:
       - uses: nickderobertis/screencomp@v0               # install the CLI
       - uses: nickderobertis/screencomp/visual-docs@v0   # the report half, one step
         with:
-          platform: linux-x86_64   # or "" for a project-level layout (no platform subtree)
+          arch: x86_64             # or "" for a project-level layout (no arch subtree)
           fail-on-drift: true      # strict gate (default): fail on unexpected drift
           pages: true
           github-token: ${{ github.token }}
@@ -245,7 +255,7 @@ and the CLI installed; it runs the gate, classify, gallery, Pages deploy, and PR
 comment. It needs host tools (`gh`, `git`) **and a real git checkout**, so run it
 in a host job that consumes the capture as an artifact — never inside your capture
 container, whose checkout often lacks `.git` (which breaks the manifest push and
-the comment's base-ref diff). Key inputs: `platform` (empty = project-level),
+the comment's base-ref diff). Key inputs: `arch` (empty = project-level),
 `fail-on-drift` (default `true`, the strict gate; `false` to auto-accept),
 `update-manifest` (default `false`; `true` to push the regenerated baseline),
 `comment-base-ref` (the "Before" ref; defaults to the PR base branch), `pages`,
@@ -275,18 +285,23 @@ screencomp classify --baseline path/to/baseline --current path/to/current
 New to screencomp? Scaffold the day-one boilerplate, then fill in your capture:
 
 ```sh
-screencomp init --platform linux-x86_64
+screencomp init            # seeds [capture].arches with your host arch
+screencomp init --arch x86_64   # or pick the arch explicitly
 ```
 
-This scaffolds the [strict gate](#pick-your-gate) turnkey — the safe path is the
-one-command one:
+`--arch` defaults to `auto` (your host arch, e.g. `arm64` on Apple Silicon), so the
+scaffold matches the machine it is generated on. This scaffolds the
+[strict gate](#pick-your-gate) turnkey — the safe path is the one-command one:
 
-- `screencomp.toml` — config, including the `[guard]` globs the pre-push hook uses.
+- `screencomp.toml` — config, including `[capture].arches` (the single source of
+  truth for which arches you maintain) and the `[guard]` globs the pre-push hook uses.
 - `.github/workflows/visual-docs.yml` — a caller for the
   [reusable workflow](#batteries-included-reusable-workflow) with `fail-on-drift:
-  true`, so CI fails on unexpected drift.
-- `.githooks/pre-push` — the local guard, executable and with your platform baked
-  in; enable it once per clone with `git config core.hooksPath .githooks`.
+  true`, so CI fails on unexpected drift. It passes no arch — CI reads
+  `[capture].arches`.
+- `.githooks/pre-push` — the local guard, executable; it detects your host arch at
+  runtime, so the one committed hook is correct on every developer's machine. Enable
+  it once per clone with `git config core.hooksPath .githooks`.
 - the `.gitignore` lines that commit the tiny digest baselines while ignoring
   generated PNGs and galleries.
 
@@ -378,73 +393,84 @@ the per-shot digests are. `screencomp manifest` writes them as a tiny
 repository never accumulates binary history:
 
 ```sh
-# Record the current capture as the baseline (one line per shot).
-screencomp manifest --input shots/current --platform auto \
-    --output shots/baseline/linux-x86_64.sha256
+# Record the current capture as the baseline (one line per shot). With
+# [capture].arches set, --arch defaults to the host arch and can be omitted.
+screencomp manifest --input shots/current --arch auto \
+    --output shots/baseline/x86_64.sha256
 
 # Later, classify a new capture against that manifest — no baseline images.
-screencomp classify --baseline-manifest shots/baseline/linux-x86_64.sha256 \
-    --current shots/current --platform auto
+screencomp classify --baseline-manifest shots/baseline/x86_64.sha256 \
+    --current shots/current --arch auto
 ```
 
 `--baseline-manifest` is accepted by `classify` and `comment` as a drop-in
 alternative to `--baseline <DIR>` (exactly one is required). The manifest is
-already platform-specific, so `--platform` then scopes only `--current`. Its
+already arch-specific, so `--arch` then scopes only `--current`. Its
 diff in a pull request (old hash → new hash per shot) is an exact, reviewable
 record of what changed; render the actual pixels with `gallery` (which still
 needs an image tree). See [`examples/visual-docs.yml`](examples/visual-docs.yml).
 
-### Cross-platform comparison
+### Per-arch comparison
 
-Identical UI rendered on a different OS or CPU architecture produces
-byte-different PNGs, so comparing across platforms reports spurious changes.
-Give each capture environment its own subtree and pass `--platform` to compare
+Captures always run in a Linux container, so the OS that renders a screenshot
+never varies between a developer and CI — but the same UI rendered on a different
+**CPU architecture** still produces byte-different PNGs. So the one dimension you
+split on is the arch: give each arch its own subtree and pass `--arch` to compare
 only within it:
 
 ```text
-shots/baseline/linux-x86_64/desktop/home.png
-shots/baseline/macos-arm64/desktop/home.png
-shots/current/linux-x86_64/desktop/home.png
-shots/current/macos-arm64/desktop/home.png
+shots/baseline/x86_64/desktop/home.png
+shots/baseline/arm64/desktop/home.png
+shots/current/x86_64/desktop/home.png
+shots/current/arm64/desktop/home.png
 ```
 
 ```sh
-# Explicit key (e.g. one matrix leg per platform in CI):
+# Explicit arch (e.g. one matrix leg per arch in CI):
 screencomp classify --baseline shots/baseline --current shots/current \
-    --platform linux-x86_64
+    --arch x86_64
 
-# `auto` detects the host's own <os>-<arch>, ideal for a local pre-push check:
+# `auto` detects the host's own CPU arch, ideal for a local pre-push check:
 screencomp classify --baseline shots/baseline --current shots/current \
-    --platform auto
+    --arch auto
 ```
 
-`--platform` accepts any subtree name; `auto` resolves to `<os>-<arch>` for the
-running binary (`aarch64` is spelled `arm64`). All three commands accept it. For
-`comment`, give each platform a distinct `--marker` (and optionally `--title`)
-so every platform keeps its own sticky comment:
+`--arch` accepts any subtree name; `auto` resolves to the running binary's CPU
+arch (`aarch64` is spelled `arm64`). Every command that walks a tree accepts it.
+When `[capture].arches` is configured and `--arch` is omitted, commands default to
+the host arch (and hard-error if the host arch is not in that list); with no config
+and no `--arch`, the root is treated as project-level (no arch layer). For
+`comment`, give each arch a distinct `--marker` (and optionally `--title`) so every
+arch keeps its own sticky comment:
 
 ```sh
 screencomp comment --baseline shots/baseline --current shots/current \
-    --platform linux-x86_64 \
-    --marker screencomp-linux-x86_64 --title "Visual changes (linux-x86_64)"
+    --arch x86_64 \
+    --marker screencomp-x86_64 --title "Visual changes (x86_64)"
 ```
 
-Omit `--platform` entirely to treat the root as project-level (no platform
-layer) — the original behavior.
+The supported arches live in one place — `[capture].arches` in `screencomp.toml`
+(see [Configuration](#configuration)). CI reads that list via `screencomp arches
+--format json` to build its capture matrix, and local commands default to your host
+arch from it, so the arch set has a single source of truth:
 
-Because the comparison is a byte digest, determinism is a *capture-time*
-concern: a screenshot's bytes depend on the renderer's OS, CPU, fonts, and GPU.
-The recommended standard is to capture **and** compare inside a single pinned
-`linux/amd64` container everywhere — including on macOS, where Docker runs a
-Linux VM, so `--platform=linux/amd64` reproduces the same `linux-x86_64` pixels
-as CI. That gives one platform key and byte-for-byte reproducibility (the key
-flag is `--disable-skia-runtime-opts`, which forces a CPU-independent render
-path). Run screencomp inside the container so `--platform auto` resolves to
-`linux-x86_64`. See [`examples/visual-docs.yml`](examples/visual-docs.yml) for
-the full standard configuration, the deterministic-rendering flags, and a
-reproducibility gate. Capturing on multiple native platforms instead (e.g. a
-real `macos-arm64` lane) is supported by the same `--platform` mechanism, at the
-cost of giving up byte-exactness across them.
+```sh
+screencomp arches                 # one arch per line
+screencomp arches --format json   # e.g. ["x86_64","arm64"] — the CI matrix
+```
+
+Because the comparison is a byte digest, determinism is a *capture-time* concern:
+a screenshot's bytes depend on the renderer's CPU, fonts, and GPU. The OS is held
+fixed by always capturing inside a pinned Linux container — including on macOS,
+where Docker runs a Linux VM, so `--platform=linux/arm64` (or `linux/amd64`)
+reproduces the same per-arch pixels as CI. That, plus the decisive
+`--disable-skia-runtime-opts` flag (a CPU-independent render path), gives
+byte-for-byte reproducibility per arch. Run screencomp inside the container so
+`--arch auto` resolves to the container's arch. Native macOS/Windows captures are
+deliberately **not** supported — they could never be byte-reproducible between a
+developer's machine and CI. See [`examples/visual-docs.yml`](examples/visual-docs.yml)
+for the full standard configuration, the deterministic-rendering flags, and a
+reproducibility gate.
 
 For a complete, continuously tested consumer of this standard, see
 [**screencomp-demo**](https://github.com/nickderobertis/screencomp-demo): it
@@ -468,7 +494,7 @@ two trees to be byte-identical:
 
 ```sh
 # Capture once to shots/run-a, again to shots/run-b (same build, same flags).
-screencomp verify --first shots/run-a --second shots/run-b --platform auto
+screencomp verify --first shots/run-a --second shots/run-b --arch auto
 ```
 
 `verify` exits `0` when every shot matches and `3` the moment any diverges,
@@ -486,13 +512,13 @@ for the fix.
 ### Preflight (`doctor`)
 
 Before the first classify, confirm captures actually landed where every command
-looks for them. `doctor` resolves the platform key and scans the
+looks for them. `doctor` resolves the arch subtree and scans the
 `<root>/<project>/<name>.png` layout:
 
 ```sh
-$ screencomp doctor --input shots/current --platform auto
-platform: linux-x86_64 (auto)
-inspected: shots/current/linux-x86_64
+$ screencomp doctor --input shots/current --arch auto
+arch: x86_64 (auto)
+inspected: shots/current/x86_64
 projects: 2
   desktop (3 shots)
   mobile (1 shot)
@@ -502,16 +528,16 @@ ok: layout matches <project>/<name>.png
 
 It flags the two mistakes that otherwise surface only as a confusing *empty
 diff*: a capture written to the wrong path (`.png` files stranded at the root
-instead of under a `<project>/` directory), and an empty capture — often a
-`--platform` key that does not match the subtree on disk. Pass `--exit-code` to
+instead of under a `<project>/` directory), and an empty capture — often an
+`--arch` that does not match the subtree on disk. Pass `--exit-code` to
 turn either problem into a non-zero (`3`) status for a CI preflight gate, or
 `--format json` for a machine-readable report.
 
 Pass `--baseline-manifest <file>` to also sanity-check a committed manifest
 against the capture. `doctor` then warns on the *other* confusing failure — when
 **every** shot looks changed — which is almost always a baseline captured on a
-different OS/arch than the host, not a real diff. It catches it two ways: a
-`<platform>.sha256` filename naming a platform other than the capture's, and
+different arch than the host, not a real diff. It catches it two ways: an
+`<arch>.sha256` filename naming an arch other than the capture's, and
 shared shots with zero unchanged. Both are advisory and never fail the gate.
 
 ## Capturing an interactive app
@@ -652,7 +678,9 @@ Human output goes to stdout; errors go to stderr; the two never mix.
 
 ## Configuration
 
-The `comment` and `scope` commands read optional configuration. Resolution
+Commands read optional configuration — `[capture].arches` (the arch list, also
+the default arch for every command), `[comment]`, and `[guard].paths`. `--config`
+is a global flag, so it works on any subcommand. Resolution
 order: `--config <file>` → `$SCREENCOMP_CONFIG` → a `screencomp.toml`
 auto-discovered by walking up from the working directory → built-in defaults (so
 no file is required). A path given *explicitly* (`--config`/env) that is missing
@@ -663,6 +691,13 @@ so the pre-push guard's `scope` fires even if the hook forgets `--config`.
 
 ```toml
 # screencomp.toml
+[capture]
+# CPU architectures you maintain screenshots for — the single source of truth.
+# Captures run in a Linux container, so only the arch varies. Each entry gets its
+# own committed baseline (shots/baseline/<arch>.sha256) and a CI capture lane;
+# local commands default to your host arch and require it to be listed here.
+arches = ["arm64"]          # or ["x86_64", "arm64"]
+
 [comment]
 title = "Visual changes"   # comment heading
 marker = "screencomp"       # [A-Za-z0-9_-]; embedded as <!-- marker --> for upserts
@@ -671,11 +706,12 @@ embed_limit = 10            # embed images inline when ≤ N shots differ (0 dis
 
 [guard]                                          # optional local pre-push guard
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**"] # globs that trigger a re-capture
-platform = "linux-x86_64"                          # platform key to capture/classify under
-manifest = "shots/baseline/linux-x86_64.sha256"    # committed digest baseline
+manifest = "shots/baseline/arm64.sha256"           # committed digest baseline
 gallery  = "shots/review"                          # local review-gallery output dir
 ```
 
+`[capture].arches` drives both the CI matrix (`screencomp arches --format json`)
+and the per-arch default; the baseline manifest filename is `shots/baseline/<arch>.sha256`.
 All `[guard]` fields are optional; with no `paths` the guard never fires. Only
 `scope` consumes `paths` — the rest document where the hook template finds the
 baseline and writes its review gallery.

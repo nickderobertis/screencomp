@@ -12,9 +12,10 @@ lighter CI-auto-accept model) you can change UI, pass your whole local gate, and
 push without ever learning the visual baseline moved. The hook closes that gap on
 your machine, before CI ever runs.
 
-`screencomp init` scaffolds this hook with your platform baked in at
-`.githooks/pre-push`; the steps below are for wiring the copy-paste template by
-hand or with a hook manager.
+`screencomp init` scaffolds this hook at `.githooks/pre-push`; it detects the host
+arch at runtime, so the one committed hook is correct on every developer's machine.
+The steps below are for wiring the copy-paste template by hand or with a hook
+manager.
 
 ## How it decides whether to run
 
@@ -22,12 +23,14 @@ The hook fires only when a pushed change matches the `[guard].paths` globs in
 `screencomp.toml`:
 
 ```toml
+[capture]
+arches = ["x86_64"]   # arch(es) you maintain; the hook detects the host arch itself
+
 [guard]
 # Globs (matched against `git diff --name-only`, repo-root-relative) that should
 # trigger a re-capture. Empty/omitted means the guard never fires.
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**", "public/**"]
-platform = "linux-x86_64"                       # platform key to capture/classify under
-manifest = "shots/baseline/linux-x86_64.sha256" # committed digest baseline
+manifest = "shots/baseline/x86_64.sha256"        # committed digest baseline
 gallery  = "shots/review"                        # local review-gallery output dir
 ```
 

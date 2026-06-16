@@ -8,8 +8,9 @@
 # screenshot-relevant files changed (see [guard].paths in screencomp.toml) and
 # makes any baseline change loud and reviewable before you push. Capture and git
 # stay in your hands — the capture step below is yours to adapt, exactly like
-# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds a
-# version of this hook with your platform baked in (.githooks/pre-push).
+# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds this
+# same hook at .githooks/pre-push; it detects the host arch at runtime, so the one
+# committed hook is correct on every developer's machine.
 #
 # What it does on a push:
 #   1. Compute the push range from git's stdin (new branches fall back to the
@@ -34,15 +35,20 @@
 
 set -euo pipefail
 
-# ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
-PLATFORM="linux-x86_64"                        # [guard].platform
-# Capture container arch for $PLATFORM: linux/arm64 for an arm64/aarch64 key,
-# linux/amd64 otherwise. (`screencomp init` bakes the right value in for you.)
-case "$PLATFORM" in
-  *arm64* | *aarch64*) DOCKER_PLATFORM="linux/arm64" ;;
-  *) DOCKER_PLATFORM="linux/amd64" ;;
+# Captures always run in a Linux container, so the OS never varies; the only
+# dimension that affects pixels is the CPU arch. Detect THIS machine's arch at
+# runtime so the same committed hook works for every developer (ARM and amd64 devs
+# each capture and classify under their own arch). It must be one of
+# [capture].arches in screencomp.toml; if not, classify below fails with an
+# explanatory error telling you to add it.
+case "$(uname -m)" in
+  arm64 | aarch64) ARCH="arm64";  DOCKER_PLATFORM="linux/arm64" ;;
+  x86_64 | amd64)  ARCH="x86_64"; DOCKER_PLATFORM="linux/amd64" ;;
+  *) echo "pre-push: unsupported arch $(uname -m); bypass with git push --no-verify" >&2; exit 1 ;;
 esac
-MANIFEST="shots/baseline/${PLATFORM}.sha256"  # [guard].manifest (committed)
+
+# ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
+MANIFEST="shots/baseline/${ARCH}.sha256"      # committed baseline for this arch
 GALLERY="shots/review"                        # [guard].gallery  (review output)
 CURRENT="shots/current"                       # capture root, mirrors visual-docs.yml
 CONFIG="${SCREENCOMP_CONFIG:-screencomp.toml}" # supplies [guard].paths to `scope`
@@ -131,18 +137,19 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
-# Capture into $CURRENT/$PLATFORM/<project>/<name>.png using the SAME pinned
-# container and flags as examples/visual-docs.yml, so local bytes match CI.
+# Capture into $CURRENT/$ARCH/<project>/<name>.png using the SAME pinned container
+# and flags as examples/visual-docs.yml, so local bytes match CI.
 docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
   -v "$PWD:/work" -w /work \
   mcr.microsoft.com/playwright:v1.60.0-noble \
-  bash -lc "npm ci && SHOTS_OUT=$CURRENT/$PLATFORM npx playwright test"
+  bash -lc "npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test"
 # ------------------------------------------------------------------------------
 
 # --- 4. Classify the capture against the committed baseline manifest ---------
+# No --arch needed: screencomp defaults to the host arch from [capture].arches.
 set +e
 report="$(screencomp classify --baseline-manifest "$MANIFEST" --current "$CURRENT" \
-  --platform "$PLATFORM" --exit-code)"
+  --exit-code)"
 status=$?
 set -e
 
@@ -160,10 +167,10 @@ differ="$(printf '%s\n' "$report" | grep -cE '^(added|changed|removed) ' || true
 
 # Overwrite the committed manifest so its diff is the review record. We do NOT
 # auto-commit it — blocking and instructing is the point.
-screencomp manifest --input "$CURRENT" --platform "$PLATFORM" --output "$MANIFEST"
+screencomp manifest --input "$CURRENT" --output "$MANIFEST"
 
 # Build a local before/after gallery to eyeball the change.
-screencomp gallery --input "$CURRENT" --platform "$PLATFORM" \
+screencomp gallery --input "$CURRENT" \
   --output "$GALLERY" --title "Pre-push screenshot review" >/dev/null
 
 {

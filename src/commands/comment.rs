@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use super::{Ctx, baseline_snapshot, discover_scoped, load_config, write_err};
+use super::{Ctx, baseline_snapshot, discover_scoped, resolve_arch, write_err};
 use crate::cli::CommentArgs;
 use crate::domain::classify::classify;
 use crate::domain::comment::{ImageBases, render_markdown};
@@ -10,10 +10,11 @@ use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    // Config (including any auto-discovered screencomp.toml) is resolved at the boundary.
-    let cfg = load_config(args.config.as_deref())?;
+    // Config is loaded once at the run boundary and shared via Ctx.
+    let cfg = &ctx.config;
 
-    let plat = args.platform.as_deref();
+    let arch = resolve_arch(args.arch.as_deref(), &cfg.capture.arches)?;
+    let plat = arch.as_deref();
     let manifest_mode = args.baseline_manifest.is_some();
     let baseline = baseline_snapshot(
         args.baseline.as_deref(),

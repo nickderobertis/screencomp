@@ -135,11 +135,12 @@ fn all_trees() -> Vec<Trees> {
 fn classify_cli(t: &Trees, format: OutputFormat) -> Cli {
     Cli {
         quiet: false,
+        config: None,
         command: Command::Classify(ClassifyArgs {
             baseline: Some(t.baseline.clone()),
             baseline_manifest: None,
             current: t.current.clone(),
-            platform: None,
+            arch: None,
             format,
             exit_code: false,
         }),
@@ -149,10 +150,11 @@ fn classify_cli(t: &Trees, format: OutputFormat) -> Cli {
 fn gallery_cli(t: &Trees) -> Cli {
     Cli {
         quiet: true,
+        config: None,
         command: Command::Gallery(GalleryArgs {
             input: t.current.clone(),
             baseline: Some(t.baseline.clone()),
-            platform: None,
+            arch: None,
             output: t.gallery_out.clone(),
             title: "Screenshot gallery".to_owned(),
         }),
@@ -162,12 +164,12 @@ fn gallery_cli(t: &Trees) -> Cli {
 fn comment_cli(t: &Trees) -> Cli {
     Cli {
         quiet: true,
+        config: None,
         command: Command::Comment(CommentArgs {
             baseline: Some(t.baseline.clone()),
             baseline_manifest: None,
             current: t.current.clone(),
-            platform: None,
-            config: None,
+            arch: None,
             title: None,
             marker: None,
             gallery_url: None,

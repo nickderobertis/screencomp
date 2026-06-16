@@ -1,10 +1,10 @@
 //! `screencomp doctor` — preflight a capture before classifying.
 //!
-//! The two surprises a first-time integrator hits are an unexpected platform key
-//! (so `--platform auto` scopes to an empty subtree) and a capture written to the
-//! wrong path (so the tree is silently ignored) — both of which surface only as a
+//! The two surprises a first-time integrator hits are an unexpected arch (so
+//! `--arch auto` scopes to an empty subtree) and a capture written to the wrong
+//! path (so the tree is silently ignored) — both of which surface only as a
 //! confusing *empty diff* downstream. This command makes them explicit up front:
-//! it prints the resolved platform key and the exact path it inspected, lists the
+//! it prints the resolved arch and the exact path it inspected, lists the
 //! projects and shot counts it found, and flags layout problems (no shots, or
 //! `.png` files stranded at the root). With `--exit-code` it doubles as a CI gate.
 
@@ -13,7 +13,7 @@ use std::io::Write;
 use camino::Utf8Path;
 use serde::Serialize;
 
-use super::{Ctx, discover_scoped, platform, scan_scoped, write_err};
+use super::{Ctx, arch, discover_scoped, resolve_arch, scan_scoped, write_err};
 use crate::cli::{DoctorArgs, OutputFormat};
 use crate::domain::classify::classify;
 use crate::domain::layout::LayoutScan;
@@ -21,35 +21,33 @@ use crate::errors::AppError;
 use crate::io::fs;
 
 pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    let plat = args.platform.as_deref();
-    // Resolve the platform key once so the report shows what `auto` became and
+    // Resolve the arch once (an explicit `--arch`, else the host default when
+    // `[capture].arches` is configured) so the report shows what was scoped and
     // which subtree was actually scanned.
-    let resolved = plat.map(platform::resolve);
-    let scoped = platform::scope(&args.input, plat);
+    let resolved = resolve_arch(args.arch.as_deref(), &ctx.config.capture.arches)?;
+    let plat = resolved.as_deref();
+    // Whether the arch was auto-detected from the host (explicit `auto`, or the
+    // config-default when no `--arch` was passed) versus named explicitly.
+    let auto =
+        resolved.is_some() && (args.arch.is_none() || args.arch.as_deref() == Some(arch::AUTO));
+    let scoped = arch::scope(&args.input, plat);
     // A missing scoped directory is the same hard error every command raises, so
-    // a typo in `--platform` fails identically here (with a layout hint).
+    // a wrong `--arch` fails identically here (with a layout hint).
     let scan = scan_scoped(&args.input, plat)?;
 
     // Optional sanity check against a committed manifest: catch the "everything
-    // changed" platform mismatch before it reaches classify.
+    // changed" arch mismatch before it reaches classify.
     let warnings = match args.baseline_manifest.as_deref() {
-        Some(manifest) => baseline_warnings(manifest, &args.input, plat, resolved.as_deref())?,
+        Some(manifest) => baseline_warnings(manifest, &args.input, plat)?,
         None => Vec::new(),
     };
 
     match args.format {
         OutputFormat::Json => {
-            write_json(
-                &args.input,
-                resolved.as_deref(),
-                &scoped,
-                &scan,
-                &warnings,
-                out,
-            )?;
+            write_json(&args.input, plat, &scoped, &scan, &warnings, out)?;
         }
         OutputFormat::Human if !ctx.quiet => {
-            write_human(plat, resolved.as_deref(), &scoped, &scan, &warnings, out)?;
+            write_human(plat, auto, &scoped, &scan, &warnings, out)?;
         }
         OutputFormat::Human => {}
     }
@@ -63,45 +61,45 @@ pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
 /// Compare the scoped capture against a committed digest `manifest` and return
 /// advisory warnings for the two ways a baseline silently lies.
 ///
-/// A screenshot's bytes depend on the OS, CPU, and fonts that rendered it, so a
-/// baseline captured elsewhere makes *every* shot look changed — the single most
-/// confusing first-run failure. This flags it two ways: when the manifest's
-/// `<platform>.sha256` filename names a platform other than the capture's, and
-/// when the comparison finds shared shots but zero unchanged. Both are advisory
-/// (they never fail the gate), since a legitimately total rewrite looks the same.
+/// A screenshot's bytes depend on the CPU arch and fonts that rendered it, so a
+/// baseline captured on another arch makes *every* shot look changed — the
+/// single most confusing first-run failure. This flags it two ways: when the
+/// manifest's `<arch>.sha256` filename names an arch other than the capture's,
+/// and when the comparison finds shared shots but zero unchanged. Both are
+/// advisory (they never fail the gate), since a legitimately total rewrite looks
+/// the same.
 fn baseline_warnings(
-    manifest: &camino::Utf8Path,
-    input: &camino::Utf8Path,
+    manifest: &Utf8Path,
+    input: &Utf8Path,
     plat: Option<&str>,
-    resolved: Option<&str>,
 ) -> Result<Vec<String>, AppError> {
     let baseline = fs::read_manifest(manifest)?;
     let current = discover_scoped(input, plat)?;
-    let host = platform::host_key();
-    // The platform the capture is meant to represent: the resolved key when
-    // scoped, else the host running this binary.
-    let reference = resolved.unwrap_or(&host);
+    let host = arch::host_arch();
+    // The arch the capture is meant to represent: the resolved arch when scoped,
+    // else the host running this binary.
+    let reference = plat.unwrap_or(&host);
 
     let mut warnings = Vec::new();
 
-    // The manifest filename encodes its platform by convention (linux-x86_64.sha256).
+    // The manifest filename encodes its arch by convention (x86_64.sha256).
     if let Some(stem) = manifest.file_stem()
-        && looks_like_platform_key(stem)
-        && stem != reference
+        && looks_like_arch_key(stem)
+        && arch::canonical(stem) != reference
     {
         warnings.push(format!(
-            "baseline manifest '{stem}' names a different platform than the capture ({reference}); \
-             digests differ per OS/arch/fonts, so compare like-for-like"
+            "baseline manifest '{stem}' names a different arch than the capture ({reference}); \
+             digests differ per arch/fonts, so compare like-for-like"
         ));
     }
 
     // Shared shot names but nothing identical: the byte-for-byte mismatch a
-    // wrong-platform baseline produces.
+    // wrong-arch baseline produces.
     let c = classify(&baseline, &current).counts;
     if c.unchanged == 0 && c.changed > 0 {
         warnings.push(format!(
-            "every shared shot differs from the baseline ({} changed, 0 unchanged) — usually a \
-             platform/environment mismatch, not a real change; confirm the baseline was captured \
+            "every shared shot differs from the baseline ({} changed, 0 unchanged) — usually an \
+             arch/environment mismatch, not a real change; confirm the baseline was captured \
              on {host}",
             c.changed
         ));
@@ -110,21 +108,16 @@ fn baseline_warnings(
     Ok(warnings)
 }
 
-/// Whether `stem` looks like an `<os>-<arch>` platform key, so a manifest named
-/// after something else (e.g. `baseline.sha256`) is not mistaken for one.
-fn looks_like_platform_key(stem: &str) -> bool {
-    matches!(
-        stem.split_once('-'),
-        Some((os, arch))
-            if !arch.is_empty()
-                && matches!(os, "linux" | "macos" | "windows" | "freebsd")
-    )
+/// Whether `stem` looks like a CPU-arch key, so a manifest named after something
+/// else (e.g. `baseline.sha256`) is not mistaken for one.
+fn looks_like_arch_key(stem: &str) -> bool {
+    matches!(stem, "x86_64" | "arm64" | "aarch64")
 }
 
 /// Stable single-line JSON contract for automation.
 fn write_json(
     input: &Utf8Path,
-    resolved: Option<&str>,
+    arch: Option<&str>,
     scoped: &Utf8Path,
     scan: &LayoutScan,
     warnings: &[String],
@@ -138,7 +131,7 @@ fn write_json(
     #[derive(Serialize)]
     struct Report<'a> {
         input: &'a str,
-        platform: Option<&'a str>,
+        arch: Option<&'a str>,
         inspected: &'a str,
         projects: Vec<Project<'a>>,
         loose_pngs: &'a [String],
@@ -149,7 +142,7 @@ fn write_json(
 
     let report = Report {
         input: input.as_str(),
-        platform: resolved,
+        arch,
         inspected: scoped.as_str(),
         projects: scan
             .projects
@@ -169,22 +162,22 @@ fn write_json(
     writeln!(out, "{json}").map_err(write_err)
 }
 
-/// Human-readable preflight report: resolved platform, scanned path, projects,
-/// and any layout problems, ending in a single verdict line.
+/// Human-readable preflight report: resolved arch, scanned path, projects, and
+/// any layout problems, ending in a single verdict line.
 fn write_human(
-    plat: Option<&str>,
-    resolved: Option<&str>,
+    arch: Option<&str>,
+    auto: bool,
     scoped: &Utf8Path,
     scan: &LayoutScan,
     warnings: &[String],
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
-    match resolved {
-        // `auto` resolved to a concrete key worth showing explicitly.
-        Some(key) if plat == Some(platform::AUTO) => writeln!(out, "platform: {key} (auto)"),
-        Some(key) => writeln!(out, "platform: {key}"),
-        // No platform layer: the root is treated as project-level.
-        None => writeln!(out, "platform: none (root is project-level)"),
+    match arch {
+        // Arch auto-detected from the host (explicit `auto` or the config default).
+        Some(key) if auto => writeln!(out, "arch: {key} (auto)"),
+        Some(key) => writeln!(out, "arch: {key}"),
+        // No arch layer: the root is treated as project-level.
+        None => writeln!(out, "arch: none (root is project-level)"),
     }
     .map_err(write_err)?;
     writeln!(out, "inspected: {scoped}").map_err(write_err)?;

@@ -9,10 +9,20 @@ comments, commit messages, or one-off notes.
 
 `screencomp` — a CLI for the visual-docs framework with deterministic,
 network-free operations over screenshot trees laid out as
-`<root>/<project>/<name>.png`: `classify`, `gallery`, `comment`, `manifest` (an
-image-free digest baseline), `verify` (the reproducibility gate — two captures of
-one build must be byte-identical), and `doctor` (preflight the platform key and
-layout). Screenshots are compared by byte digest; nothing decodes images.
+`<root>/<arch>/<project>/<name>.png`: `classify`, `gallery`, `comment`, `manifest`
+(an image-free digest baseline), `verify` (the reproducibility gate — two captures
+of one build must be byte-identical), `doctor` (preflight the arch subtree and
+layout), and `arches` (print the configured `[capture].arches` for the CI matrix).
+Screenshots are compared by byte digest; nothing decodes images.
+
+Captures always run in a Linux container, so the OS never varies between a
+developer and CI — the only dimension that affects pixels is the CPU arch. The
+supported arches are declared once in `screencomp.toml` under `[capture].arches`
+(e.g. `["arm64"]` or `["x86_64", "arm64"]`); local commands default to the host
+arch and CI fans out one capture lane per arch. Native macOS/Windows captures are
+not supported (they could never be byte-reproducible between local and CI). Arch
+subtree keys are bare arches: `x86_64`, `arm64`; the per-arch baseline is
+`shots/baseline/<arch>.sha256`.
 
 ## Two standing goals on every task
 
@@ -135,7 +145,7 @@ documented reason here.
 - The suite never runs a real browser, so it cannot catch capture-pipeline or
   output-contract regressions that only surface with real screenshots. Validate
   any change to `classify`/`gallery`/`comment`/`manifest` output or the
-  `--platform` layout end-to-end against the
+  `--arch` layout end-to-end against the
   [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo) consumer
   before release: run its pinned-container capture locally and let its CI exercise
   a visual and a non-visual change. Keep that repo's workflow/example in lockstep

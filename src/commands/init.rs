@@ -13,13 +13,17 @@
 //! commit it). The path of least resistance is therefore the safe one — flipping
 //! to CI auto-accept is a documented opt-in in the generated workflow, not the
 //! default.
+//!
+//! Captures always run in a Linux container, so the only dimension that varies is
+//! the CPU arch: `screencomp.toml` declares `[capture].arches`, every command
+//! defaults to the host arch, and CI fans out one lane per configured arch.
 
 use std::io::Write;
 
 use camino::Utf8PathBuf;
 use serde::Serialize;
 
-use super::{Ctx, platform, write_err};
+use super::{Ctx, arch, write_err};
 use crate::cli::{InitArgs, OutputFormat};
 use crate::errors::AppError;
 use crate::io::fs::{self, Scaffold};
@@ -34,18 +38,17 @@ const GITIGNORE_MARKER: &str = "# screencomp: commit the digest baselines";
 const HOOK_PATH: &str = ".githooks/pre-push";
 
 pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    // Resolve `auto` to `linux-<host-arch>` so the scaffold matches the machine
-    // it is generated on. The capture is a Linux container, so the key follows the
-    // host *arch* (native, fast) but always names Linux — an ARM developer gets
-    // `linux-arm64`, not `linux-x86_64` and not the host OS.
-    let platform = if args.platform == platform::AUTO {
-        platform::host_container_key()
+    // Resolve `auto` to the host arch so the scaffold's `[capture].arches` matches
+    // the machine it is generated on (e.g. `arm64` on Apple Silicon). The capture
+    // is a Linux container, so only the arch varies.
+    let arch = if args.arch == arch::AUTO {
+        arch::host_arch()
     } else {
-        args.platform.clone()
+        args.arch.clone()
     };
-    let toml = render_config(&platform);
-    let workflow = render_workflow(&platform);
-    let hook = render_hook(&platform);
+    let toml = render_config(&arch);
+    let workflow = render_workflow();
+    let hook = render_hook();
     let gitignore = render_gitignore();
 
     // The config and workflow are plain scaffolds; the hook is executable;
@@ -75,7 +78,7 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
 
     match args.format {
         OutputFormat::Json => write_json(&outcomes, out)?,
-        OutputFormat::Human if !ctx.quiet => write_human(&platform, &outcomes, out)?,
+        OutputFormat::Human if !ctx.quiet => write_human(&arch, &outcomes, out)?,
         OutputFormat::Human => {}
     }
     Ok(0)
@@ -83,7 +86,7 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
 
 /// Human-readable report: one line per file, then next steps.
 fn write_human(
-    platform: &str,
+    arch: &str,
     outcomes: &[(Utf8PathBuf, Scaffold)],
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
@@ -99,13 +102,17 @@ fn write_human(
         out,
         "\nNext steps:\n\
          1. Wire your real capture into .github/workflows/visual-docs.yml and\n   \
-         .githooks/pre-push so each writes shots/current/{platform}/<project>/<name>.png.\n\
+         .githooks/pre-push so each writes shots/current/{arch}/<project>/<name>.png.\n\
          2. Enable the local pre-push guard (the strict gate's local half):\n   \
          git config core.hooksPath .githooks\n\
-         3. Seed the baseline once on {platform} and commit it:\n   \
-         screencomp manifest --input shots/current --platform {platform} \\\n     \
-         --output shots/baseline/{platform}.sha256\n\
+         3. Seed the baseline once on {arch} and commit it:\n   \
+         screencomp manifest --input shots/current \\\n     \
+         --output shots/baseline/{arch}.sha256\n\
          4. Enable GitHub Pages (Settings -> Pages -> Deploy from a branch: gh-pages /).\n\
+         \n\
+         To support another CPU arch, add it to [capture].arches in\n\
+         screencomp.toml (e.g. arches = [\"{arch}\", \"x86_64\"]); CI gains a lane\n\
+         per arch and you seed its baseline the same way.\n\
          \n\
          The gate is strict by default: CI fails on unexpected drift, and you\n\
          regenerate the baseline locally (the pre-push guard) and commit it. To\n\
@@ -144,10 +151,18 @@ fn write_json(outcomes: &[(Utf8PathBuf, Scaffold)], out: &mut dyn Write) -> Resu
 }
 
 /// The scaffolded `screencomp.toml`.
-fn render_config(platform: &str) -> String {
+fn render_config(arch: &str) -> String {
     format!(
         "\
 # screencomp configuration. See https://github.com/nickderobertis/screencomp.
+
+[capture]
+# CPU architectures you maintain screenshots for. Captures run in a Linux
+# container, so only the arch varies. Each entry has its own committed baseline
+# (shots/baseline/<arch>.sha256) and gets a CI capture lane; local commands
+# default to your host arch and require it to be listed here. Add an arch (e.g.
+# \"x86_64\") to support it — note every entry adds a CI job to each run.
+arches = [\"{arch}\"]
 
 [comment]
 title = \"Visual changes\"
@@ -158,8 +173,6 @@ embed_limit = 10             # embed images inline when <= N shots differ (0 dis
 # Local pre-push guard (.githooks/pre-push): re-capture only when these globs
 # change. Adjust to the files that actually affect your screenshots.
 paths = [\"src/**\", \"**/*.{{css,scss,html}}\"]
-platform = \"{platform}\"
-manifest = \"shots/baseline/{platform}.sha256\"
 gallery = \"shots/review\"
 "
     )
@@ -182,32 +195,26 @@ fn render_gitignore() -> String {
 /// pinned to the version of the binary that wrote it, so the downstream half
 /// (gate, gallery, Pages, comment) stays in lockstep with this CLI.
 ///
+/// It carries no arch: the reusable workflow reads `[capture].arches` from the
+/// committed `screencomp.toml` and fans out one capture lane per arch on a
+/// matching runner, so the arch list has a single source of truth.
+///
 /// It opts into the strict gate explicitly (`fail-on-drift: true`) so the model
 /// is visible in the consumer's own file rather than hidden in a default: CI
 /// fails on unexpected drift and the developer owns the baseline (regenerate it
 /// with the pre-push guard and commit). Because the manifest is not auto-pushed,
 /// no `push-token` secret is needed.
-/// Pick the GitHub-hosted runner whose arch matches the platform key, so CI
-/// captures on the same arch the committed baseline was seeded on. An ARM key
-/// captured on an amd64 runner (or vice versa) renders different pixels and the
-/// strict gate would go red on a phantom diff. ARM keys get GitHub's native ARM
-/// Linux runner; everything else uses the default amd64 runner.
-fn runner_for(platform: &str) -> &'static str {
-    if platform.contains("arm64") || platform.contains("aarch64") {
-        "ubuntu-24.04-arm"
-    } else {
-        "ubuntu-latest"
-    }
-}
-
-fn render_workflow(platform: &str) -> String {
+fn render_workflow() -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let runner = runner_for(platform);
     format!(
         "\
 # Visual docs via screencomp's reusable workflow. The capture step stays yours;
 # screencomp owns the classify gate, gallery, GitHub Pages deploy, and the sticky
 # before/after PR comment. See the screencomp README (\"GitHub Action\").
+#
+# Which CPU arch(es) CI captures is read from [capture].arches in screencomp.toml
+# — one capture lane per arch, each on a matching runner. Add an arch there to
+# gain a lane.
 name: Visual docs
 
 on:
@@ -231,11 +238,6 @@ jobs:
   visual-docs:
     uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v{version}
     with:
-      platform: {platform}
-      # Runner arch matches the platform key so CI renders the same pixels your
-      # committed baseline was seeded on (an ARM key needs an ARM runner, or the
-      # strict gate fails on a phantom diff). Change both together.
-      runs-on: {runner}
       # Strict gate (the safe default): CI FAILS if the capture drifts from the
       # committed baseline. Regenerate the baseline locally with the pre-push
       # guard (.githooks/pre-push) and commit it. To switch to CI auto-accept
@@ -253,7 +255,7 @@ jobs:
       # to collapse to a single commit.
       gh-pages-history-versions: 20
       # Replace with your real capture. It MUST write $SHOTS_OUT/<project>/<name>.png
-      # ($SHOTS_OUT is exported as shots/current/{platform}).
+      # ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
       capture-command: |
         npm ci
         npx playwright install --with-deps chromium
@@ -262,30 +264,18 @@ jobs:
     )
 }
 
-/// Map a `<os>-<arch>` platform key to the `docker run --platform` value the hook
-/// captures under. Anything aarch64/arm64 is `linux/arm64`; everything else
-/// defaults to `linux/amd64` (the standard pinned-container target).
-fn docker_platform(platform: &str) -> &'static str {
-    if platform.contains("arm64") || platform.contains("aarch64") {
-        "linux/arm64"
-    } else {
-        "linux/amd64"
-    }
-}
-
 /// The scaffolded pre-push guard. It is the local half of the strict gate:
 /// re-capture only when `[guard].paths` change, and block the push on drift so
 /// the developer regenerates and commits the baseline before CI ever sees it.
 ///
-/// The platform and its `docker --platform` are baked in for the chosen key, and
-/// the `scope` relevance check distinguishes "a path matched" (exit 3) from "the
-/// check errored" (any other non-zero) — an error skips rather than forcing a
-/// slow capture, since CI is the backstop. The capture block is clearly marked
-/// for the consumer to adapt to their stack.
-fn render_hook(platform: &str) -> String {
-    let docker_platform = docker_platform(platform);
-    format!(
-        "\
+/// It detects the host arch at runtime (rather than baking it) so the same
+/// committed hook is correct on every developer's machine: ARM and amd64 devs
+/// each capture and classify under their own arch. The `scope` relevance check
+/// distinguishes "a path matched" (exit 3) from "the check errored" (any other
+/// non-zero) — an error skips rather than forcing a slow capture, since CI is the
+/// backstop. The capture block is clearly marked for the consumer to adapt.
+fn render_hook() -> String {
+    "\
 #!/usr/bin/env bash
 # screencomp local pre-push guard (scaffolded by `screencomp init`).
 #
@@ -299,17 +289,23 @@ fn render_hook(platform: &str) -> String {
 # Bypass intentionally:   git push --no-verify
 set -euo pipefail
 
-# ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
-PLATFORM=\"{platform}\"                          # [guard].platform
-DOCKER_PLATFORM=\"{docker_platform}\"               # capture container arch for $PLATFORM
-MANIFEST=\"shots/baseline/${{PLATFORM}}.sha256\"  # [guard].manifest (committed)
-GALLERY=\"shots/review\"                         # [guard].gallery  (review output)
-CURRENT=\"shots/current\"                        # capture root, mirrors visual-docs.yml
-CONFIG=\"${{SCREENCOMP_CONFIG:-screencomp.toml}}\" # supplies [guard].paths to `scope`
-# ------------------------------------------------------------------------------
+# Detect this machine's arch so the same committed hook works for every developer.
+# It must be one of [capture].arches in screencomp.toml; if not, classify below
+# fails with an explanatory error telling you to add it.
+case \"$(uname -m)\" in
+  arm64 | aarch64) ARCH=\"arm64\";  DOCKER_PLATFORM=\"linux/arm64\" ;;
+  x86_64 | amd64)  ARCH=\"x86_64\"; DOCKER_PLATFORM=\"linux/amd64\" ;;
+  *) echo \"pre-push: unsupported arch $(uname -m); bypass with git push --no-verify\" >&2; exit 1 ;;
+esac
+
+# ---- adapt these to your repo -----------------------------------------------
+MANIFEST=\"shots/baseline/${ARCH}.sha256\"  # committed baseline for this arch
+GALLERY=\"shots/review\"                     # [guard].gallery (review output)
+CURRENT=\"shots/current\"                    # capture root, mirrors visual-docs.yml
+# -----------------------------------------------------------------------------
 
 # No-op under CI: the visual-docs workflow is the source of truth there.
-[ -n \"${{CI:-}}\" ] && exit 0
+[ -n \"${CI:-}\" ] && exit 0
 
 # If the CLI is not installed, do not block the push — just say so.
 if ! command -v screencomp >/dev/null 2>&1; then
@@ -319,25 +315,25 @@ fi
 
 # --- 1. Compute the push range(s) from git's stdin ---------------------------
 ranges=()
-if [ -n \"${{SCREENCOMP_GUARD_RANGE:-}}\" ]; then
+if [ -n \"${SCREENCOMP_GUARD_RANGE:-}\" ]; then
   ranges+=(\"$SCREENCOMP_GUARD_RANGE\")   # test/override: diff this range directly
 else
   zero='^0+$'
   while read -r _local_ref local_sha _remote_ref remote_sha; do
-    [ -z \"${{local_sha:-}}\" ] && continue
+    [ -z \"${local_sha:-}\" ] && continue
     if [[ \"$local_sha\" =~ $zero ]]; then
       continue                            # branch deletion: nothing to capture
     elif [[ \"$remote_sha\" =~ $zero ]]; then
       base=\"$(git merge-base origin/HEAD \"$local_sha\" 2>/dev/null || true)\"
-      [ -n \"$base\" ] && ranges+=(\"${{base}}..${{local_sha}}\") || ranges+=(\"$local_sha\")
+      [ -n \"$base\" ] && ranges+=(\"${base}..${local_sha}\") || ranges+=(\"$local_sha\")
     else
-      ranges+=(\"${{remote_sha}}..${{local_sha}}\")
+      ranges+=(\"${remote_sha}..${local_sha}\")
     fi
   done
 fi
-[ \"${{#ranges[@]}}\" -eq 0 ] && exit 0
+[ \"${#ranges[@]}\" -eq 0 ] && exit 0
 
-changed=\"$(for r in \"${{ranges[@]}}\"; do git diff --name-only \"$r\"; done | sort -u)\"
+changed=\"$(for r in \"${ranges[@]}\"; do git diff --name-only \"$r\"; done | sort -u)\"
 
 # --- 2. Cheap path: is anything screenshot-relevant? -------------------------
 # `scope` exits 3 when a changed path matches [guard].paths, 0 when none do, and
@@ -345,7 +341,7 @@ changed=\"$(for r in \"${{ranges[@]}}\"; do git diff --name-only \"$r\"; done | 
 # Treat ONLY exit 3 as relevant; on an error, warn and skip rather than force a
 # slow capture — CI is the backstop, so a false \"relevant\" here is the wrong bet.
 set +e
-printf '%s\\n' \"$changed\" | screencomp scope --config \"$CONFIG\" --changed-from - --exit-code --quiet
+printf '%s\\n' \"$changed\" | screencomp scope --changed-from - --exit-code --quiet
 scope_status=$?
 set -e
 case \"$scope_status\" in
@@ -370,13 +366,13 @@ fi
 docker run --rm --platform=\"$DOCKER_PLATFORM\" --ipc=host --shm-size=2g \\
   -v \"$PWD:/work\" -w /work \\
   mcr.microsoft.com/playwright:v1.60.0-noble \\
-  bash -lc \"npm ci && SHOTS_OUT=$CURRENT/$PLATFORM npx playwright test\"
+  bash -lc \"npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test\"
 # ------------------------------------------------------------------------------
 
 # --- 4. Classify the capture against the committed baseline manifest ---------
+# No --arch needed: screencomp defaults to the host arch from [capture].arches.
 set +e
-screencomp classify --baseline-manifest \"$MANIFEST\" --current \"$CURRENT\" \\
-  --platform \"$PLATFORM\" --exit-code
+screencomp classify --baseline-manifest \"$MANIFEST\" --current \"$CURRENT\" --exit-code
 status=$?
 set -e
 
@@ -389,19 +385,19 @@ elif [ \"$status\" -ne 3 ]; then
 fi
 
 # --- On drift (classify exit 3): regenerate, build a gallery, BLOCK. ---------
-screencomp manifest --input \"$CURRENT\" --platform \"$PLATFORM\" --output \"$MANIFEST\"
-screencomp gallery --input \"$CURRENT\" --platform \"$PLATFORM\" \\
+screencomp manifest --input \"$CURRENT\" --output \"$MANIFEST\"
+screencomp gallery --input \"$CURRENT\" \\
   --output \"$GALLERY\" --title \"Pre-push screenshot review\" >/dev/null
 
-{{
+{
   echo
   echo \"  SCREENSHOTS CHANGED — push blocked for review\"
   echo \"  Review the rendered gallery: $GALLERY/index.html\"
   echo \"  If intended: git add $MANIFEST && git commit and push again.\"
   echo \"  If not: investigate the diff. Bypass with: git push --no-verify\"
   echo
-}} >&2
+} >&2
 exit 1
 "
-    )
+    .to_owned()
 }

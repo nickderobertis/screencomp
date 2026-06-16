@@ -21,10 +21,25 @@ pub(crate) const CONFIG_FILE: &str = "screencomp.toml";
 /// Validated configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Config {
+    /// Capture-wide settings (the supported CPU architectures).
+    pub(crate) capture: CaptureConfig,
     /// Settings for the rendered pull-request comment.
     pub(crate) comment: CommentConfig,
     /// Settings for the optional local pre-push guard.
     pub(crate) guard: GuardConfig,
+}
+
+/// Capture-wide settings.
+///
+/// The single source of truth for which CPU architectures the project maintains
+/// screenshots for. Local commands default to the host arch and require it to be
+/// listed here (each arch has its own committed baseline); CI fans out one
+/// capture lane per entry. Empty (the default) means no arch layer at all — the
+/// root is treated as project-level, for ad-hoc use without a config file.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct CaptureConfig {
+    /// CPU architectures with committed baselines and CI lanes, e.g. `["arm64"]`.
+    pub(crate) arches: Vec<String>,
 }
 
 /// Comment-rendering settings.
@@ -54,8 +69,6 @@ pub(crate) struct GuardConfig {
     /// Globs whose match against a pushed change set triggers a re-capture.
     /// Empty (the default) means the guard never fires.
     pub(crate) paths: Vec<String>,
-    /// Platform key to capture and classify under (e.g. `linux-x86_64`, `auto`).
-    pub(crate) platform: Option<String>,
     /// Committed digest manifest used as the baseline.
     pub(crate) manifest: Option<Utf8PathBuf>,
     /// Output directory for the local review gallery built on drift.
@@ -65,6 +78,7 @@ pub(crate) struct GuardConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            capture: CaptureConfig::default(),
             comment: CommentConfig {
                 title: "Visual changes".to_owned(),
                 marker: "screencomp".to_owned(),
@@ -171,9 +185,17 @@ fn load_file(path: &Utf8Path) -> Result<Config, ConfigError> {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     #[serde(default)]
+    capture: RawCaptureConfig,
+    #[serde(default)]
     comment: RawCommentConfig,
     #[serde(default)]
     guard: RawGuardConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCaptureConfig {
+    arches: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -189,7 +211,6 @@ struct RawCommentConfig {
 #[serde(deny_unknown_fields)]
 struct RawGuardConfig {
     paths: Option<Vec<String>>,
-    platform: Option<String>,
     manifest: Option<Utf8PathBuf>,
     gallery: Option<Utf8PathBuf>,
 }
@@ -197,6 +218,7 @@ struct RawGuardConfig {
 impl RawConfig {
     fn validate(self) -> Result<Config, ConfigError> {
         let defaults = Config::default();
+        let capture = self.capture.validate()?;
         let comment = self.comment;
 
         let title = comment.title.unwrap_or(defaults.comment.title);
@@ -220,6 +242,7 @@ impl RawConfig {
         let guard = self.guard.validate()?;
 
         Ok(Config {
+            capture,
             comment: CommentConfig {
                 title,
                 marker,
@@ -233,6 +256,18 @@ impl RawConfig {
     }
 }
 
+impl RawCaptureConfig {
+    fn validate(self) -> Result<CaptureConfig, ConfigError> {
+        let arches = self.arches.unwrap_or_default();
+        if let Some(bad) = arches.iter().find(|a| a.trim().is_empty()) {
+            return Err(ConfigError::Invalid {
+                reason: format!("capture.arches contains an empty entry: {bad:?}"),
+            });
+        }
+        Ok(CaptureConfig { arches })
+    }
+}
+
 impl RawGuardConfig {
     fn validate(self) -> Result<GuardConfig, ConfigError> {
         let paths = self.paths.unwrap_or_default();
@@ -241,17 +276,9 @@ impl RawGuardConfig {
                 reason: format!("guard.paths contains an empty glob: {bad:?}"),
             });
         }
-        if let Some(platform) = &self.platform
-            && platform.trim().is_empty()
-        {
-            return Err(ConfigError::Invalid {
-                reason: "guard.platform must not be empty".to_owned(),
-            });
-        }
 
         Ok(GuardConfig {
             paths,
-            platform: self.platform,
             manifest: self.manifest,
             gallery: self.gallery,
         })
@@ -343,10 +370,35 @@ mod tests {
     }
 
     #[test]
+    fn capture_arches_default_to_empty() {
+        let cfg = load(None, None, None).expect("defaults load");
+        assert!(cfg.capture.arches.is_empty());
+    }
+
+    #[test]
+    fn accepts_capture_arches() {
+        let raw: RawConfig =
+            toml::from_str("[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
+        let cfg = raw.validate().expect("valid");
+        assert_eq!(cfg.capture.arches, ["x86_64", "arm64"]);
+    }
+
+    #[test]
+    fn rejects_empty_capture_arch() {
+        let raw: RawConfig = toml::from_str("[capture]\narches = [\"arm64\", \"  \"]\n").unwrap();
+        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_unknown_capture_field() {
+        let err = toml::from_str::<RawConfig>("[capture]\nnope = true\n").unwrap_err();
+        assert!(err.to_string().contains("nope") || err.to_string().contains("unknown"));
+    }
+
+    #[test]
     fn guard_defaults_to_empty() {
         let cfg = load(None, None, None).expect("defaults load");
         assert!(cfg.guard.paths.is_empty());
-        assert_eq!(cfg.guard.platform, None);
         assert_eq!(cfg.guard.manifest, None);
         assert_eq!(cfg.guard.gallery, None);
     }
@@ -354,15 +406,14 @@ mod tests {
     #[test]
     fn accepts_valid_guard() {
         let raw: RawConfig = toml::from_str(
-            "[guard]\npaths = [\"src/**/*.rs\", \"playwright/**\"]\nplatform = \"linux-x86_64\"\nmanifest = \"shots/baseline/linux-x86_64.sha256\"\ngallery = \"shots/review\"\n",
+            "[guard]\npaths = [\"src/**/*.rs\", \"playwright/**\"]\nmanifest = \"shots/baseline/x86_64.sha256\"\ngallery = \"shots/review\"\n",
         )
         .unwrap();
         let cfg = raw.validate().expect("valid");
         assert_eq!(cfg.guard.paths, ["src/**/*.rs", "playwright/**"]);
-        assert_eq!(cfg.guard.platform.as_deref(), Some("linux-x86_64"));
         assert_eq!(
             cfg.guard.manifest.as_deref().map(Utf8Path::as_str),
-            Some("shots/baseline/linux-x86_64.sha256")
+            Some("shots/baseline/x86_64.sha256")
         );
         assert_eq!(
             cfg.guard.gallery.as_deref().map(Utf8Path::as_str),
@@ -373,12 +424,6 @@ mod tests {
     #[test]
     fn rejects_empty_guard_glob() {
         let raw: RawConfig = toml::from_str("[guard]\npaths = [\"src/**\", \"  \"]\n").unwrap();
-        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
-    }
-
-    #[test]
-    fn rejects_blank_guard_platform() {
-        let raw: RawConfig = toml::from_str("[guard]\nplatform = \"\"\n").unwrap();
         assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
     }
 

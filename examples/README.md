@@ -29,36 +29,39 @@ If you need neither — just adapt the **Capture screenshots** step — start fr
 
 ### Image-free baselines (digest manifest)
 
-The workflow commits only a tiny per-platform **digest manifest**
-(`shots/baseline/<platform>.sha256`), never the baseline PNGs. Because
+The workflow commits only a tiny per-arch **digest manifest**
+(`shots/baseline/<arch>.sha256`), never the baseline PNGs. Because
 `screencomp` compares by content digest, the manifest is all that `classify` and
 `comment` need, so the repository never accumulates binary history and grows
 without bound. The manifest's diff in a PR (old hash → new hash per shot) is the
 precise record of what changed; the gallery published to Pages shows the current
-pixels. Seed it once with `screencomp manifest --input shots/current --platform
-auto --output shots/baseline/<platform>.sha256` and commit it.
+pixels. Seed it once with `screencomp manifest --input shots/current --arch
+auto --output shots/baseline/<arch>.sha256` and commit it.
 
 ### Standard configuration: capture in one pinned container
 
-A screenshot's bytes depend on the OS, CPU, fonts, and GPU that rendered it. The
-standard configuration fixes all of them by capturing **and** comparing inside a
-single pinned `linux/amd64` container — on CI and locally — so captures are
-byte-reproducible everywhere and there is one platform key, `linux-x86_64`.
+A screenshot's bytes depend on the OS, CPU, fonts, and GPU that rendered it.
+Pinning capture to a single Linux container — on CI and locally — fixes the OS
+everywhere, so the ONLY dimension left is the CPU **arch**. That is the single
+source of truth declared once in `screencomp.toml` (`[capture].arches`), with one
+subtree and one baseline per arch (`shots/baseline/<arch>.sha256`).
 
 macOS cannot run Linux containers natively (Docker runs a Linux VM), so a
-container on a Mac renders Linux pixels; `--platform=linux/amd64` makes them the
-same `linux/amd64` pixels as CI (emulated via Rosetta/QEMU). This trades
-real-macOS rendering fidelity for exact reproducibility. The decisive flag is
+container on a Mac renders Linux pixels; `--platform=linux/amd64` (or
+`linux/arm64`) makes them the same per-arch pixels as CI (emulated via
+Rosetta/QEMU). This trades real-macOS rendering fidelity for exact
+reproducibility. Native macOS/Windows captures are NOT supported — they could
+never be byte-reproducible against CI. The decisive flag is
 `--disable-skia-runtime-opts`, which forces a CPU-independent render path so
-emulated and native amd64 match. See the comments in `visual-docs.yml` for the
-full flag list and the one-time command that validates emulated capture against
-CI on Apple Silicon.
+emulated and native captures of the same arch match. See the comments in
+`visual-docs.yml` for the full flag list and the one-time command that validates
+emulated capture against CI on Apple Silicon.
 
 ### Reproducibility gate (required)
 
 Image-free baselines are only safe if capture is deterministic, so the workflow
 captures the same build **twice** and requires byte-identical output with
-`screencomp verify --first … --second … --platform auto` (exit `3` on any
+`screencomp verify --first … --second … --arch auto` (exit `3` on any
 divergence). Treat this as a required step, not an optional one: it is what turns
 a flaky, JS-animated, or async-rendered widget from a silent baseline poisoner
 into a hard, fixable failure. The README's
@@ -116,9 +119,10 @@ commit and push.
 
 Prerequisites:
 
-- A committed baseline manifest at `shots/baseline/linux-x86_64.sha256` (text).
+- A committed baseline manifest at `shots/baseline/x86_64.sha256` (text), one per
+  arch in `[capture].arches`.
 - The capture step writes the current run to
-  `shots/current/linux-x86_64/<project>/<name>.png` inside the pinned container.
+  `shots/current/<arch>/<project>/<name>.png` inside the pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
 
 ## Local pre-push guard (the strict gate's local half)
@@ -129,7 +133,8 @@ baseline before pushing, so CI stays green on intended changes and goes red only
 on ones you missed. Without it (or under CI auto-accept) you can change UI, pass
 your whole local gate, and push without ever learning the visual baseline moved.
 The hook closes that gap on your machine, before CI runs. `screencomp init`
-scaffolds it for you at `.githooks/pre-push` with your platform baked in.
+scaffolds it for you at `.githooks/pre-push`; it detects the host arch at runtime,
+so the one committed hook is correct on every developer's machine.
 
 It fires **only when a pushed change matches the `[guard].paths` globs** in
 `screencomp.toml`, so most pushes pay nothing. When a relevant file changes it is
@@ -145,10 +150,12 @@ paths against `[guard].paths` (robust string matching, no git/network/working-tr
 access) rather than fragile shell globbing. Configure it alongside `[comment]`:
 
 ```toml
+[capture]
+arches = ["x86_64"]   # the arch(es) you maintain; also the per-command default
+
 [guard]
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**", "public/**"]
-platform = "linux-x86_64"
-manifest = "shots/baseline/linux-x86_64.sha256"
+manifest = "shots/baseline/x86_64.sha256"
 gallery  = "shots/review"
 ```
 

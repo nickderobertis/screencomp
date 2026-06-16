@@ -37,12 +37,12 @@ branding:
   color: purple
 
 inputs:
-  platform:
-    description: 'Platform key (e.g. linux-x86_64). Empty means a project-level layout with no platform subtree.'
+  arch:
+    description: 'CPU arch (e.g. x86_64, arm64). Empty means a project-level layout with no arch subtree.'
     required: false
-    default: linux-x86_64
+    default: ''
   current:
-    description: 'Directory holding the current capture (<dir>/[<platform>/]<project>/<name>.png).'
+    description: 'Directory holding the current capture (<dir>/[<arch>/]<project>/<name>.png).'
     required: false
     default: shots/current
   verify-second:
@@ -50,7 +50,7 @@ inputs:
     required: false
     default: ''
   manifest:
-    description: 'Committed baseline manifest. Defaults to shots/baseline/<platform>.sha256 (or shots/baseline.sha256 when platform is empty).'
+    description: 'Committed baseline manifest. Defaults to shots/baseline/<arch>.sha256 (or shots/baseline.sha256 when arch is empty).'
     required: false
     default: ''
   gallery-title:
@@ -109,14 +109,24 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        platform='${{ inputs.platform }}'
-        if [ -n "$platform" ]; then
-          echo "platform_arg=--platform $platform" >>"$GITHUB_OUTPUT"
-          default_manifest="shots/baseline/${platform}.sha256"
+        arch='${{ inputs.arch }}'
+        # Each arch lives in its own subtree, baseline, gallery subpath, and
+        # sticky comment, so multiple arch lanes never clobber one another.
+        if [ -n "$arch" ]; then
+          echo "arch_arg=--arch $arch" >>"$GITHUB_OUTPUT"
+          echo "marker_arg=--marker screencomp-${arch}" >>"$GITHUB_OUTPUT"
+          default_manifest="shots/baseline/${arch}.sha256"
+          subpath="/${arch}"          # leading slash: appended to a URL/dir
+          dest="${arch}"              # Pages destination subdir
         else
-          echo "platform_arg=" >>"$GITHUB_OUTPUT"
+          echo "arch_arg=" >>"$GITHUB_OUTPUT"
+          echo "marker_arg=" >>"$GITHUB_OUTPUT"
           default_manifest="shots/baseline.sha256"
+          subpath=""
+          dest=""
         fi
+        echo "dest=$dest" >>"$GITHUB_OUTPUT"
+        echo "subpath=$subpath" >>"$GITHUB_OUTPUT"
         manifest='${{ inputs.manifest }}'
         [ -n "$manifest" ] || manifest="$default_manifest"
         echo "manifest=$manifest" >>"$GITHUB_OUTPUT"
@@ -128,13 +138,15 @@ runs:
         fi
 
         # Comment image URLs: derive from the Pages deployment unless overridden.
+        # Each arch deploys to its own subpath so its preview/canonical URL is
+        # arch-specific.
         gallery_url='${{ inputs.gallery-url }}'
         baseline_url='${{ inputs.baseline-url }}'
         main_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
-        preview_url="${main_url}/pr-${{ github.event.pull_request.number }}"
+        preview_url="${main_url}/pr-${{ github.event.pull_request.number }}${subpath}"
         if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
           [ -n "$gallery_url" ] || gallery_url="$preview_url"
-          [ -n "$baseline_url" ] || baseline_url="$main_url"
+          [ -n "$baseline_url" ] || baseline_url="${main_url}${subpath}"
         fi
         echo "gallery_url=$gallery_url" >>"$GITHUB_OUTPUT"
         echo "baseline_url=$baseline_url" >>"$GITHUB_OUTPUT"
@@ -155,7 +167,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        screencomp verify --first '${{ inputs.current }}' --second '${{ inputs.verify-second }}' ${{ steps.cfg.outputs.platform_arg }}
+        screencomp verify --first '${{ inputs.current }}' --second '${{ inputs.verify-second }}' ${{ steps.cfg.outputs.arch_arg }}
 
     - name: Classify against the baseline manifest
       if: ${{ steps.cfg.outputs.has_baseline == 'true' }}
@@ -163,7 +175,7 @@ runs:
       run: |
         set -uo pipefail
         screencomp classify --baseline-manifest '${{ steps.cfg.outputs.manifest }}' \
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} --exit-code
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} --exit-code
         status=$?
         if [ "$status" -eq 3 ]; then
           if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
@@ -180,7 +192,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        screencomp gallery --input '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} \
+        screencomp gallery --input '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} \
           --output site --title '${{ inputs.gallery-title }}'
 
     - name: Deploy canonical gallery
@@ -189,6 +201,9 @@ runs:
       with:
         github_token: ${{ inputs.github-token }}
         publish_dir: site
+        # Each arch deploys to its own subdir (empty -> root for a project-level
+        # layout) so lanes coexist on the canonical gallery.
+        destination_dir: ${{ steps.cfg.outputs.dest }}
         keep_files: true
 
     - name: Deploy PR preview gallery
@@ -197,7 +212,7 @@ runs:
       with:
         github_token: ${{ inputs.github-token }}
         publish_dir: site
-        destination_dir: pr-${{ github.event.pull_request.number }}
+        destination_dir: pr-${{ github.event.pull_request.number }}${{ steps.cfg.outputs.subpath }}
         keep_files: true
 
     - name: Wait for the PR preview to go live
@@ -247,8 +262,8 @@ runs:
       run: |
         set -euo pipefail
         args=(--baseline-manifest '${{ steps.cbase.outputs.manifest }}'
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }}
-          --output comment.md)
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }}
+          ${{ steps.cfg.outputs.marker_arg }} --output comment.md)
         # Explicit `if`, not `cond && cmd`: the latter trips `set -e` when the
         # condition is false.
         if [ -n '${{ steps.cfg.outputs.gallery_url }}' ]; then
@@ -259,23 +274,41 @@ runs:
         fi
         screencomp comment "${args[@]}"
 
+    # Upsert by MARKER, not --edit-last. `screencomp comment` embeds a stable
+    # `<!-- screencomp[-<arch>] -->` HTML marker exactly so the right comment can be
+    # found and edited. This is what lets each arch keep its OWN sticky comment:
+    # --edit-last would make every arch lane clobber the single most-recent comment.
     - name: Post PR comment
       if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.publish == 'true' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
         PR: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        gh pr comment "$PR" --body-file comment.md --edit-last \
-          || gh pr comment "$PR" --body-file comment.md
+        # The first HTML comment in the body is the upsert marker (per-arch).
+        marker="$(grep -m1 -o '<!--[^>]*-->' comment.md)"
+        if [ -z "$marker" ]; then
+          echo "::error::no upsert marker found in comment.md" >&2
+          exit 1
+        fi
+        # Find an existing comment carrying this marker (most recent wins).
+        id="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
+          --jq "map(select(.body | contains(\"${marker}\"))) | last | .id // empty")"
+        if [ -n "$id" ]; then
+          gh api --method PATCH "repos/${REPO}/issues/comments/${id}" \
+            -F body=@comment.md >/dev/null
+        else
+          gh pr comment "$PR" --body-file comment.md
+        fi
 
     - name: Update the baseline manifest
       if: ${{ inputs.update-manifest == 'true' }}
       shell: bash
       run: |
         set -euo pipefail
-        screencomp manifest --input '${{ inputs.current }}' ${{ steps.cfg.outputs.platform_arg }} \
+        screencomp manifest --input '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} \
           --output '${{ steps.cfg.outputs.manifest }}'
 
     - name: Push the baseline manifest
