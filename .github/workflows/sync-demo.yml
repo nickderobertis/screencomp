@@ -108,7 +108,7 @@ jobs:
           deadline=$(( $(date +%s) + 1800 ))   # 30 min ceiling
           while :; do
             runs="$(gh run list --repo "$DEMO" --workflow 'Visual docs' --branch main \
-                     --limit 20 --json headSha,status,conclusion,url 2>/dev/null || echo '[]')"
+                     --limit 20 --json databaseId,headSha,status,conclusion,url 2>/dev/null || echo '[]')"
             if [ -n "${SYNCED_SHA:-}" ]; then
               # Wait specifically for the run of the commit we just pushed.
               row="$(jq -c --arg s "$SYNCED_SHA" 'map(select(.headSha == $s)) | .[0] // empty' <<<"$runs")"
@@ -136,6 +136,13 @@ jobs:
                 echo "✅ the demo's real capture→classify→gallery→comment pipeline is green with the managed files"
                 exit 0
               fi
+              # Surface WHY here (not just THAT it failed), so the consumer can be
+              # diagnosed from screencomp's Actions without opening the demo repo.
+              id="$(jq -r '.databaseId' <<<"$row")"
+              echo "::group::screencomp-demo failing logs (run ${id})"
+              gh run view "$id" --repo "$DEMO" --log-failed 2>&1 | tail -n 200 \
+                || echo "(could not fetch demo logs; see ${url})"
+              echo "::endgroup::"
               echo "::error::screencomp-demo pipeline is '${concl}' on main — the consumer is broken. See ${url}" >&2
               exit 1
             fi
