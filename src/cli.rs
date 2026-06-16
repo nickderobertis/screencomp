@@ -15,6 +15,13 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub quiet: bool,
 
+    /// Optional `screencomp.toml`. Falls back to `$SCREENCOMP_CONFIG`, then a
+    /// `screencomp.toml` auto-discovered by walking up from the working
+    /// directory, then built-in defaults. Supplies `[capture].arches`,
+    /// `[comment]`, and `[guard].paths` to every command.
+    #[arg(long, value_name = "FILE", global = true)]
+    pub config: Option<Utf8PathBuf>,
+
     /// Operation to perform.
     #[command(subcommand)]
     pub command: Command,
@@ -40,9 +47,13 @@ pub enum Command {
     /// reproducibility gate); exit `3` if they diverge.
     Verify(VerifyArgs),
 
-    /// Preflight a capture: print the resolved platform key and sanity-check the
+    /// Preflight a capture: print the resolved arch subtree and sanity-check the
     /// `<root>/<project>/<name>.png` layout before classifying.
     Doctor(DoctorArgs),
+
+    /// Print the project's configured `[capture].arches` (one per line, or JSON).
+    /// The CI matrix reads this to fan out one capture lane per arch.
+    Arches(ArchesArgs),
 
     /// Match a changed-path list against the `[guard].paths` globs to decide
     /// whether a screenshot-relevant file changed. Pure string matching: it
@@ -76,8 +87,8 @@ pub struct ClassifyArgs {
     pub baseline: Option<Utf8PathBuf>,
 
     /// Baseline digest manifest (as written by `screencomp manifest`) to compare
-    /// against instead of a `--baseline` image tree. Already platform-specific,
-    /// so `--platform` then scopes only `--current`.
+    /// against instead of a `--baseline` image tree. Already arch-specific, so
+    /// `--arch` then scopes only `--current`.
     #[arg(long, value_name = "FILE")]
     pub baseline_manifest: Option<Utf8PathBuf>,
 
@@ -85,13 +96,13 @@ pub struct ClassifyArgs {
     #[arg(long, value_name = "DIR")]
     pub current: Utf8PathBuf,
 
-    /// Restrict the comparison to one platform subtree
-    /// (`<root>/<platform>/<project>/<name>.png`), since identical UI rendered on
-    /// a different OS or CPU architecture differs byte-for-byte. Use `auto` to
-    /// detect the host `<os>-<arch>` (e.g. `linux-x86_64`, `macos-arm64`). Omit
-    /// to treat the root as project-level, with no platform layer.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
+    /// Restrict the comparison to one CPU-arch subtree
+    /// (`<root>/<arch>/<project>/<name>.png`), since identical UI rendered on a
+    /// different architecture differs byte-for-byte. `auto` detects the host arch
+    /// (e.g. `x86_64`, `arm64`). When omitted, defaults to the host arch if
+    /// `[capture].arches` is configured, else treats the root as project-level.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
@@ -115,11 +126,12 @@ pub struct GalleryArgs {
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<Utf8PathBuf>,
 
-    /// Restrict to one platform subtree (`<root>/<platform>/...`) of `--input`
-    /// and, in diff mode, `--baseline`. Use `auto` to detect the host
-    /// `<os>-<arch>`. Omit to treat the roots as project-level.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
+    /// Restrict to one CPU-arch subtree (`<root>/<arch>/...`) of `--input` and,
+    /// in diff mode, `--baseline`. `auto` detects the host arch. When omitted,
+    /// defaults to the host arch if `[capture].arches` is configured, else treats
+    /// the roots as project-level.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Output directory; `index.html` is written inside it.
     #[arg(long, value_name = "DIR")]
@@ -147,27 +159,20 @@ pub struct CommentArgs {
     #[arg(long, value_name = "DIR")]
     pub current: Utf8PathBuf,
 
-    /// Restrict the comparison to one platform subtree
-    /// (`<root>/<platform>/<project>/<name>.png`). Use `auto` to detect the host
-    /// `<os>-<arch>` (e.g. `linux-x86_64`, `macos-arm64`). Omit to treat the
-    /// roots as project-level. Pair a per-platform `--marker` to keep one sticky
-    /// comment each.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
-
-    /// Optional `screencomp.toml`. Falls back to `$SCREENCOMP_CONFIG`, then a
-    /// `screencomp.toml` auto-discovered by walking up from the working
-    /// directory, then built-in defaults.
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<Utf8PathBuf>,
+    /// Restrict the comparison to one CPU-arch subtree
+    /// (`<root>/<arch>/<project>/<name>.png`). `auto` detects the host arch
+    /// (e.g. `x86_64`, `arm64`). When omitted, defaults to the host arch if
+    /// `[capture].arches` is configured, else treats the roots as project-level.
+    /// Pair a per-arch `--marker` to keep one sticky comment each.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Heading shown at the top of the comment. Overrides `comment.title`.
     #[arg(long, value_name = "TEXT")]
     pub title: Option<String>,
 
     /// Stable HTML marker used to upsert the comment. Overrides `comment.marker`;
-    /// give each platform a distinct value to keep one sticky comment per
-    /// platform.
+    /// give each arch a distinct value to keep one sticky comment per arch.
     #[arg(long, value_name = "ID")]
     pub marker: Option<String>,
 
@@ -211,11 +216,12 @@ pub struct ManifestArgs {
     #[arg(long, value_name = "DIR")]
     pub input: Utf8PathBuf,
 
-    /// Restrict to one platform subtree (`<root>/<platform>/...`) of `--input`.
-    /// Use `auto` to detect the host `<os>-<arch>`. Omit to treat the root as
-    /// project-level. The written manifest never includes the platform segment.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
+    /// Restrict to one CPU-arch subtree (`<root>/<arch>/...`) of `--input`.
+    /// `auto` detects the host arch. When omitted, defaults to the host arch if
+    /// `[capture].arches` is configured, else treats the root as project-level.
+    /// The written manifest never includes the arch segment.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Write the manifest to this file instead of stdout.
     #[arg(long, value_name = "FILE")]
@@ -233,12 +239,12 @@ pub struct VerifyArgs {
     #[arg(long, value_name = "DIR")]
     pub second: Utf8PathBuf,
 
-    /// Restrict the comparison to one platform subtree
-    /// (`<root>/<platform>/<project>/<name>.png`) of both captures. Use `auto`
-    /// to detect the host `<os>-<arch>`. Omit to treat the roots as
-    /// project-level.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
+    /// Restrict the comparison to one CPU-arch subtree
+    /// (`<root>/<arch>/<project>/<name>.png`) of both captures. `auto` detects
+    /// the host arch. When omitted, defaults to the host arch if
+    /// `[capture].arches` is configured, else treats the roots as project-level.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
@@ -252,17 +258,17 @@ pub struct DoctorArgs {
     #[arg(long, value_name = "DIR")]
     pub input: Utf8PathBuf,
 
-    /// Resolve and inspect a single platform subtree
-    /// (`<root>/<platform>/<project>/<name>.png`). Use `auto` to detect the host
-    /// `<os>-<arch>` (the resolved key is printed). Omit to treat the root as
-    /// project-level.
-    #[arg(long, value_name = "KEY")]
-    pub platform: Option<String>,
+    /// Resolve and inspect a single CPU-arch subtree
+    /// (`<root>/<arch>/<project>/<name>.png`). `auto` detects the host arch (the
+    /// resolved arch is printed). When omitted, defaults to the host arch if
+    /// `[capture].arches` is configured, else treats the root as project-level.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
 
     /// Optional committed digest manifest to sanity-check against the capture.
     /// `doctor` warns when every shot differs (the classic symptom of a baseline
-    /// captured on a different OS/arch than this host) or when the manifest's
-    /// `<platform>.sha256` filename names a platform other than the capture's.
+    /// captured on a different arch than this host) or when the manifest's
+    /// `<arch>.sha256` filename names an arch other than the capture's.
     #[arg(long, value_name = "FILE")]
     pub baseline_manifest: Option<Utf8PathBuf>,
 
@@ -276,6 +282,15 @@ pub struct DoctorArgs {
     pub exit_code: bool,
 }
 
+/// Arguments for [`Command::Arches`].
+#[derive(Debug, clap::Args)]
+pub struct ArchesArgs {
+    /// Output format. `json` prints a single-line array (e.g. `["x86_64","arm64"]`)
+    /// for the CI matrix; `human` prints one arch per line.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
+    pub format: OutputFormat,
+}
+
 /// Arguments for [`Command::Init`].
 #[derive(Debug, clap::Args)]
 pub struct InitArgs {
@@ -284,14 +299,13 @@ pub struct InitArgs {
     #[arg(long, value_name = "DIR", default_value = ".")]
     pub dir: Utf8PathBuf,
 
-    /// Platform key the scaffolded config and workflow capture under (e.g.
-    /// `linux-x86_64`, `linux-arm64`). Determines the committed manifest path and
-    /// shot output directory. Defaults to `auto`: the scaffold captures in a Linux
-    /// container, so this resolves to `linux-<host-arch>` (e.g. `linux-arm64` on
-    /// Apple Silicon or an ARM box) and the generated workflow picks a matching
-    /// runner. Pass an explicit key to scaffold for a different target.
-    #[arg(long, value_name = "KEY", default_value = "auto")]
-    pub platform: String,
+    /// CPU arch to seed the scaffolded `[capture].arches` with (e.g. `x86_64`,
+    /// `arm64`). Captures always run in a Linux container, so only the arch
+    /// varies. Defaults to `auto`: the host arch (e.g. `arm64` on Apple Silicon or
+    /// an ARM box), so the scaffold matches the machine it is generated on. Add
+    /// more arches to `screencomp.toml` later to gain CI lanes.
+    #[arg(long, value_name = "ARCH", default_value = "auto")]
+    pub arch: String,
 
     /// Overwrite files that already exist instead of leaving them untouched.
     /// Without this, `init` writes only the files that are missing and reports
@@ -312,13 +326,6 @@ pub struct ScopeArgs {
     /// --name-only` in on stdin; blank lines are ignored.
     #[arg(long, value_name = "FILE", default_value = "-")]
     pub changed_from: Utf8PathBuf,
-
-    /// Optional `screencomp.toml` providing `[guard].paths`. Falls back to
-    /// `$SCREENCOMP_CONFIG`, then a `screencomp.toml` auto-discovered by walking
-    /// up from the working directory, then built-in defaults (no globs, so
-    /// nothing matches).
-    #[arg(long, value_name = "FILE")]
-    pub config: Option<Utf8PathBuf>,
 
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]

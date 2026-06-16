@@ -41,6 +41,25 @@ pub enum AppError {
     /// Configuration could not be loaded or failed validation.
     #[error(transparent)]
     Config(#[from] ConfigError),
+
+    /// The host CPU architecture is not in the project's configured
+    /// `[capture].arches`, so it has no committed baseline or CI lane.
+    #[error(
+        "host architecture `{host}` is not in the configured arches [{configured}].\n\
+         screencomp scopes captures per arch, and only a configured arch has a \
+         committed baseline and a CI lane.\n\
+         To capture on this machine, add it to [capture].arches in screencomp.toml, e.g.:\n    \
+         arches = [{suggested}]\n\
+         Note: every arch in that list adds a CI job to each screenshot run."
+    )]
+    UnsupportedArch {
+        /// This host's canonical arch (e.g. `arm64`).
+        host: String,
+        /// The configured arches, comma-joined for display.
+        configured: String,
+        /// The configured list plus this host, quoted, ready to paste.
+        suggested: String,
+    },
 }
 
 impl AppError {

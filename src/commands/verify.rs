@@ -15,13 +15,14 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use super::{Ctx, discover_scoped, write_err};
+use super::{Ctx, discover_scoped, resolve_arch, write_err};
 use crate::cli::{OutputFormat, VerifyArgs};
 use crate::domain::classify::{Classification, Status, classify};
 use crate::errors::AppError;
 
 pub(crate) fn run(args: &VerifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
-    let plat = args.platform.as_deref();
+    let arch = resolve_arch(args.arch.as_deref(), &ctx.config.capture.arches)?;
+    let plat = arch.as_deref();
     let first = discover_scoped(&args.first, plat)?;
     let second = discover_scoped(&args.second, plat)?;
     // `first` plays the baseline role: a shot only in `first` is `Removed`
