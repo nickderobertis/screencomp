@@ -31,6 +31,18 @@ pub(crate) fn host_key() -> String {
     )
 }
 
+/// Canonical platform key for a *Linux-container* capture on this host's arch,
+/// e.g. `linux-x86_64` or `linux-arm64`.
+///
+/// Unlike [`host_key`], the OS is fixed to `linux`: the `init` scaffold renders
+/// inside a Linux container regardless of the developer's host OS, so labeling a
+/// capture by the host OS (`macos-arm64` on a Mac) would misname Linux pixels.
+/// Only the arch — which the container inherits from the host for native speed —
+/// varies. This is what `init --platform auto` resolves to.
+pub(crate) fn host_container_key() -> String {
+    format!("linux-{}", canonical_arch(std::env::consts::ARCH))
+}
+
 /// Scope `root` to the requested platform subtree.
 ///
 /// `None` leaves `root` untouched (no platform layer); `Some("auto")` resolves
@@ -102,6 +114,17 @@ mod tests {
         assert_eq!(canonical_os("linux"), "linux");
         assert_eq!(canonical_os("windows"), "windows");
         assert_eq!(canonical_os("freebsd"), "freebsd");
+    }
+
+    #[test]
+    fn container_key_is_linux_with_the_host_arch() {
+        let key = host_container_key();
+        // Always Linux (the scaffold captures in a container), arch from the host.
+        assert_eq!(
+            key,
+            format!("linux-{}", canonical_arch(std::env::consts::ARCH))
+        );
+        assert!(key.starts_with("linux-"), "{key}");
     }
 
     #[test]

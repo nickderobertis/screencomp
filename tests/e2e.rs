@@ -709,6 +709,9 @@ fn init_scaffolds_a_working_setup() {
         workflow.contains("gh-pages-maintenance: true"),
         "{workflow}"
     );
+    // CI runs on a runner whose arch matches the platform key (here amd64), so the
+    // capture reproduces the locally-seeded baseline rather than drifting on arch.
+    assert!(workflow.contains("runs-on: ubuntu-latest"), "{workflow}");
     assert!(dir.path().join(".gitignore").exists());
 
     // The strict scaffold also drops the local pre-push guard, executable and

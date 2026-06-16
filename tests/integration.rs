@@ -1257,22 +1257,47 @@ fn doctor_non_platform_manifest_name_skips_the_filename_warning() {
 }
 
 #[test]
-fn init_platform_auto_resolves_to_the_host_key() {
-    let dir = TempDir::new().unwrap();
-    let root = path_str(dir.path());
-    let (code, _) = invoke(&["screencomp", "init", "--dir", &root, "--platform", "auto"]);
-    assert_eq!(code.unwrap(), 0);
+fn init_defaults_to_the_host_arch_linux_key_with_a_matching_runner() {
+    // `init` with no `--platform` (and explicit `--platform auto`) scaffolds for
+    // the host's *arch* under a Linux key — the capture is a Linux container, so
+    // an ARM developer must get `linux-arm64`, never the literal `linux-x86_64`
+    // and never the host OS. CI then captures on a runner of the same arch.
+    let arch = match std::env::consts::ARCH {
+        "aarch64" | "arm64" => "arm64",
+        other => other,
+    };
+    let key = format!("linux-{arch}");
+    let runner = if arch == "arm64" {
+        "ubuntu-24.04-arm"
+    } else {
+        "ubuntu-latest"
+    };
 
-    // The scaffold is wired to the host's own key, not the literal "auto".
-    let key = host_key();
-    let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
-    assert!(
-        toml.contains(&format!("shots/baseline/{key}.sha256")),
-        "{toml}"
-    );
-    assert!(!toml.contains("auto"), "{toml}");
-    let wf = std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
-    assert!(wf.contains(&format!("platform: {key}")), "{wf}");
+    for platform in [None, Some("auto")] {
+        let dir = TempDir::new().unwrap();
+        let root = path_str(dir.path());
+        let mut argv = vec!["screencomp", "init", "--dir", &root];
+        if let Some(p) = platform {
+            argv.extend(["--platform", p]);
+        }
+        let (code, _) = invoke(&argv);
+        assert_eq!(code.unwrap(), 0);
+
+        // The scaffold is wired to the resolved key, not the literal "auto".
+        let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+        assert!(
+            toml.contains(&format!("shots/baseline/{key}.sha256")),
+            "{toml}"
+        );
+        assert!(!toml.contains("auto"), "{toml}");
+
+        let wf =
+            std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap();
+        assert!(wf.contains(&format!("platform: {key}")), "{wf}");
+        // CI runner arch must match the key or the strict gate fails on a phantom
+        // diff between the local (native) baseline and an emulated CI capture.
+        assert!(wf.contains(&format!("runs-on: {runner}")), "{wf}");
+    }
 }
 
 #[test]
