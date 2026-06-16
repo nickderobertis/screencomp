@@ -42,23 +42,22 @@
   single static concurrency group (`test-gh-pages-maintenance`, not keyed by ref,
   `cancel-in-progress: false`) serializes every run so two never mutate the shared
   demo repo at once and an in-flight run always finishes its branch cleanup.
-- `screencomp-demo`'s screencomp-integration files are managed HERE, in the
-  `demo/` subdir (the source of truth), not hand-maintained in the demo. A CLI
-  interface change (a renamed flag/config key, a reusable-workflow input) migrates
-  the demo by editing `demo/`; `sync-demo.yml` then commits the managed manifest
-  (`demo/screencomp.toml` → `screencomp.toml`, `demo/visual-docs.yml` →
-  `.github/workflows/visual-docs.yml`, `examples/pre-push` → `.githooks/pre-push`)
-  directly to `screencomp-demo`'s `main` so the consumer can't drift from this
-  interface. The demo caller pins the floating `@v0`, so most changes reach it on
-  release; the synced files cover the rest. It commits straight to the demo's
-  `main` (no PR — a fully automated loop), uses the same `SCREENCOMP_DEMO_PAT`
-  (`contents: write`; the demo's `main` must allow the bot's push), no-ops without
-  the secret, and shares a static `sync-demo` concurrency group. The demo's app,
-  capture, and committed `shots/baseline/<arch>.sha256` are owned by the demo
-  (baselines are digests of its real pixels) and are never synced. Keep `demo/` in
-  lockstep with the CLI's current flags, config schema, and reusable-workflow
-  inputs — a stale managed file ships a broken consumer. The push triggers the
-  demo's `Visual docs` run on the just-synced workflow definition, and
-  `sync-demo.yml`'s `verify-demo` job waits for that exact commit's run and mirrors
-  its pass/fail back into this repo's Actions — so whether the consumer actually
-  works is visible here and goes red when it breaks.
+- `screencomp-demo`'s entire source is managed HERE, in the `demo/` subdir (the
+  source of truth): its static pages, the Playwright config + spec that capture
+  them, `screencomp.toml`, and the caller workflow under `demo/.github/`. A CLI
+  interface change OR a demo-capture break is fixed by editing `demo/`;
+  `sync-demo.yml` then `rsync --delete` mirrors `demo/` directly onto
+  `screencomp-demo`'s `main` (no PR — a fully automated loop), preserving the
+  demo's `.git`, its committed `shots/baseline/<arch>.sha256` (digests of its real
+  pixels, regenerated there), and `.githooks/` (the hook is installed from the
+  shared `examples/pre-push`); this internal `demo/README.md` is not pushed. It
+  uses the `SCREENCOMP_DEMO_PAT` (`contents: write`; the demo's `main` must allow
+  the bot's push), no-ops without the secret, and shares a static `sync-demo`
+  concurrency group. Keep `demo/` deterministic and in lockstep with the CLI — a
+  stale or non-deterministic managed file ships a broken consumer (an e2e guard,
+  `demo_managed_config_is_valid_under_current_schema`, checks `demo/screencomp.toml`
+  parses under the live schema). The push triggers the demo's `Visual docs` run on
+  the just-synced workflow definition, and the `verify-demo` job waits for that
+  exact commit's run, mirrors its pass/fail back into this repo's Actions, and on
+  failure dumps the demo's failing logs here — so whether the consumer actually
+  works is fully visible from screencomp's CI.

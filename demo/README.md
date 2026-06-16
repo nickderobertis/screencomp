@@ -1,37 +1,48 @@
-# `demo/` — managed integration files for `screencomp-demo`
+# `demo/` — the managed source of `screencomp-demo`
 
-This directory is the **source of truth** for the screencomp-integration files in
-the [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
-consumer repo. Editing them here and merging to `main` triggers
+This directory **is** the source tree of the
+[`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo) consumer
+repo: its static pages, the Playwright config + spec that capture them, the
+`screencomp.toml`, and the caller workflow under `demo/.github/`. Editing it here
+and merging to `main` triggers
 [`.github/workflows/sync-demo.yml`](../.github/workflows/sync-demo.yml), which
-commits those files **directly to `screencomp-demo`'s `main`** (a fully automated
-loop — no PR to merge), then waits for the demo's resulting `Visual docs` run and
-mirrors its pass/fail back into this repo's Actions.
+mirrors it **directly onto `screencomp-demo`'s `main`** (a fully automated loop —
+no PR to merge), then waits for the demo's resulting `Visual docs` run and mirrors
+its pass/fail back into this repo's Actions (`verify-demo`), dumping the failing
+logs here when it is red.
 
-The point is to kill cross-repo drift: when the CLI's interface changes (a new
-flag, a renamed config key, a reusable-workflow input), the demo migrates by
-editing this subdir — not by a separate hand-migration of another repo that is
-easy to forget. The demo caller pins the floating `@v0` tag, so most changes
-reach it the moment a release advances `@v0`, and the ones that don't (the files
-below) are carried by the sync.
+The point is to kill cross-repo drift and give one place to fix the consumer: when
+the CLI's interface changes (a flag, a config key, a reusable-workflow input) — or
+the demo's capture itself breaks — you fix it by editing this subdir, never by a
+separate hand-migration of another repo.
 
-## Managed file manifest
+## What is mirrored
 
-The sync copies these into `screencomp-demo` (src here → dest there):
+The whole tree is `rsync`'d onto the demo (`demo/X` → demo's `X`), so the demo's
+source equals this directory. Notable pieces:
 
-| Source (this repo)     | Destination (`screencomp-demo`)        |
-| ---------------------- | -------------------------------------- |
-| `demo/screencomp.toml` | `screencomp.toml`                      |
-| `demo/visual-docs.yml` | `.github/workflows/visual-docs.yml`    |
-| `examples/pre-push`    | `.githooks/pre-push`                   |
+| Path                                  | Role                                                |
+| ------------------------------------- | --------------------------------------------------- |
+| `demo/screencomp.toml`                | `[capture].arches` + comment/guard config           |
+| `demo/.github/workflows/visual-docs.yml` | caller of the reusable workflow (`@v0`)          |
+| `demo/package.json` / `package-lock.json` | pinned `@playwright/test` (matches the CI image) |
+| `demo/playwright.config.ts`           | deterministic capture settings                      |
+| `demo/tests/screenshots.spec.ts`      | writes `$SHOTS_OUT/<project>/<name>.png`            |
+| `demo/pages/*.html`                   | the static pages being photographed                 |
+| `demo/.gitignore`                     | commit the digest baseline, ignore generated PNGs   |
 
-The hook is reused verbatim from `examples/pre-push` (the canonical runtime-arch
-hook) so there is one source for it.
+The pre-push hook is installed from `examples/pre-push` (one source, shared with
+the documented consumer template).
 
-## What is NOT managed here
+## What the sync preserves (never overwrites)
 
-- The demo's **application** and its **capture** (e.g. its Playwright config/tests
-  that write `$SHOTS_OUT/<project>/<name>.png`) live in `screencomp-demo`.
-- The committed **baselines** (`shots/baseline/<arch>.sha256`) are digests of the
-  demo's actual rendered pixels, so they are owned and regenerated there, never
-  synced from here.
+- The demo's **`.git`**, its committed **baselines** (`shots/baseline/<arch>.sha256`
+  — digests of its real pixels, regenerated there), and its `.githooks/` (the hook
+  is (re)installed from `examples/pre-push`). This `README.md` is not pushed.
+
+## Editing here
+
+Keep the capture deterministic (static content, the launch flags in
+`playwright.config.ts`) so two captures of one build stay byte-identical — that is
+what `screencomp verify` enforces. `npm run -s` nothing is needed locally; the
+demo's CI (surfaced via `verify-demo`) is the validation.

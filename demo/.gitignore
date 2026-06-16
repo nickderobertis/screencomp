@@ -1,0 +1,10 @@
+# Managed from nickderobertis/screencomp:demo/ — do not edit in the demo repo.
+# Commit the per-arch digest baseline (shots/baseline/*.sha256), never the PNGs
+# or generated galleries.
+node_modules/
+shots/current/
+shots/verify/
+shots/review/
+/site/
+/test-results/
+/playwright-report/

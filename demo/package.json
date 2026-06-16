@@ -1,0 +1,12 @@
+{
+  "name": "screencomp-demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Self-contained visual-docs demo for screencomp. Managed from nickderobertis/screencomp:demo/ — do not edit here.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0"
+  }
+}
