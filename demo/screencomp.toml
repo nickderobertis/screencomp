@@ -1,0 +1,22 @@
+# MANAGED FILE — source of truth is nickderobertis/screencomp:demo/screencomp.toml.
+# Edit it there; CI (sync-demo.yml) opens a PR on screencomp-demo. Do not edit here.
+#
+# screencomp configuration. See https://github.com/nickderobertis/screencomp.
+
+[capture]
+# CPU architectures the demo maintains screenshots for. Captures run in a Linux
+# container, so only the arch varies. CI fans out one capture lane per entry and
+# reads this list via `screencomp arches`. The demo's CI runs on amd64 runners,
+# so it captures x86_64; add an arch (with a matching-arch runner) to support more.
+arches = ["x86_64"]
+
+[comment]
+title = "Visual changes"
+marker = "screencomp"        # [A-Za-z0-9_-]; one sticky comment per marker
+embed_limit = 10             # embed images inline when <= N shots differ (0 disables)
+
+[guard]
+# Local pre-push guard (.githooks/pre-push): re-capture only when these globs
+# change. Adjust to the files that actually affect the demo's screenshots.
+paths = ["src/**", "**/*.{css,scss,html}"]
+gallery = "shots/review"

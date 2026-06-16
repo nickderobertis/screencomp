@@ -1,0 +1,40 @@
+# MANAGED FILE — source of truth is nickderobertis/screencomp:demo/visual-docs.yml.
+# Edit it there; CI (sync-demo.yml) opens a PR on screencomp-demo. Do not edit here.
+#
+# The demo exercises the batteries-included reusable workflow: it owns only the
+# capture; screencomp owns the classify gate, gallery, GitHub Pages deploy, and
+# the sticky before/after PR comment. Which CPU arch(es) CI captures is read from
+# [capture].arches in screencomp.toml — one lane per arch, each on a matching
+# runner. Pinned to the floating @v0 tag so released interface changes flow in.
+name: Visual docs
+
+on:
+  pull_request:
+    # `closed` lets screencomp delete this PR's gh-pages preview once it closes.
+    types: [opened, synchronize, reopened, closed]
+  push:
+    branches: [main]
+  schedule:
+    # Monthly: prune the gh-pages gallery history so committed PNGs do not grow
+    # the branch without bound (keeps the 20 most recent versions by default).
+    - cron: "27 4 1 * *"
+
+permissions:
+  contents: write       # push the gh-pages gallery
+  pull-requests: write  # post the diff comment
+
+jobs:
+  visual-docs:
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v0
+    with:
+      # Strict gate: CI fails if the capture drifts from the committed baseline.
+      # Regenerate the baseline locally with the pre-push guard and commit it.
+      fail-on-drift: true
+      gh-pages-maintenance: true
+      gh-pages-history-versions: 20
+      # The demo's capture. It MUST write $SHOTS_OUT/<project>/<name>.png
+      # ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
+      capture-command: |
+        npm ci
+        npx playwright install --with-deps chromium
+        npx playwright test

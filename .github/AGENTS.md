@@ -42,3 +42,18 @@
   single static concurrency group (`test-gh-pages-maintenance`, not keyed by ref,
   `cancel-in-progress: false`) serializes every run so two never mutate the shared
   demo repo at once and an in-flight run always finishes its branch cleanup.
+- `screencomp-demo`'s screencomp-integration files are managed HERE, in the
+  `demo/` subdir (the source of truth), not hand-maintained in the demo. A CLI
+  interface change (a renamed flag/config key, a reusable-workflow input) migrates
+  the demo by editing `demo/`; `sync-demo.yml` then opens a PR on `screencomp-demo`
+  copying the managed manifest (`demo/screencomp.toml` → `screencomp.toml`,
+  `demo/visual-docs.yml` → `.github/workflows/visual-docs.yml`, `examples/pre-push`
+  → `.githooks/pre-push`) so the consumer can't drift from this interface. The demo
+  caller pins the floating `@v0`, so most changes reach it on release; the synced
+  files cover the rest. It opens a PR (never direct-pushes), uses the same
+  `SCREENCOMP_DEMO_PAT` (which here also needs `pull-requests: write`), no-ops
+  without the secret, and shares a static `sync-demo` concurrency group. The demo's
+  app, capture, and committed `shots/baseline/<arch>.sha256` are owned by the demo
+  (baselines are digests of its real pixels) and are never synced. Keep `demo/` in
+  lockstep with the CLI's current flags, config schema, and reusable-workflow
+  inputs — a stale managed file ships a broken consumer.
