@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/nickderobertis/screencomp/compare/v0.2.4...v0.3.0) - 2026-06-16
+
+### Added
+
+- [**breaking**] replace screenshot platform key with CPU arch + config-driven [capture].arches ([#58](https://github.com/nickderobertis/screencomp/pull/58))
+
 ## [0.2.4](https://github.com/nickderobertis/screencomp/compare/v0.2.3...v0.2.4) - 2026-06-16
 
 ### Fixed
