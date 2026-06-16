@@ -83,7 +83,11 @@ jobs:
           done
       - uses: ./ # install the screencomp CLI on the host
         with:
-          version: latest
+          # Build the binary from THIS checkout (the PR), not the released asset:
+          # a breaking CLI change (e.g. --platform -> --arch) is only exercised by
+          # the PR's own binary. `download` mode would fetch the last release and
+          # fail on the new flags.
+          method: source
       # Seed a baseline from the capture so the classify + comment-render paths
       # (has_baseline == true) are actually exercised, not just the seed path.
       - name: Seed baseline
