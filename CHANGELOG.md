@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/nickderobertis/screencomp/compare/v0.3.1...v0.4.0) - 2026-06-19
+
+### Added
+
+- [**breaking**] user-defined gallery toggles backed by a captures.json index ([#68](https://github.com/nickderobertis/screencomp/pull/68))
+
 ### Added
 
 - [**breaking**] user-defined gallery toggles backed by a `captures.json` index.
