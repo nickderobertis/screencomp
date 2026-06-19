@@ -3,7 +3,7 @@
 //! These cover critical user journeys from the user's perspective — exit codes,
 //! stdout/stderr separation, and file effects — not just "the binary starts".
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use predicates::prelude::*;
@@ -26,6 +26,51 @@ fn baseline() -> PathBuf {
 
 fn current() -> PathBuf {
     fixtures().join("current")
+}
+
+/// A 64-hex digest from a single repeated byte, e.g. `digest("aa")`.
+fn digest(seed: &str) -> String {
+    seed.repeat(64 / seed.len())
+}
+
+/// One shot to write into a capture index: `(name, toggles, hash,
+/// image_filename, image_bytes)`.
+type ShotSpec<'a> = (
+    &'a str,
+    &'a [(&'a str, &'a str)],
+    &'a str,
+    &'a str,
+    &'a [u8],
+);
+
+/// Write a `captures.json` index (and its referenced images) into `dir`.
+fn write_capture(dir: &Path, shots: &[ShotSpec<'_>]) {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut entries = Vec::new();
+    for (name, toggles, hash, image, bytes) in shots {
+        std::fs::write(dir.join(image), bytes).unwrap();
+        let tg: Vec<String> = toggles
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":\"{v}\""))
+            .collect();
+        entries.push(format!(
+            "{{\"name\":\"{name}\",\"toggles\":{{{}}},\"hash\":\"{hash}\",\"image\":\"{image}\"}}",
+            tg.join(",")
+        ));
+    }
+    std::fs::write(
+        dir.join("captures.json"),
+        format!("{{\"schema\":1,\"shots\":[{}]}}", entries.join(",")),
+    )
+    .unwrap();
+}
+
+/// Write a single-shot capture under `dir` (the common scoping-test shape).
+fn write_one(dir: &Path, name: &str, hash: &str, bytes: &[u8]) {
+    write_capture(
+        dir,
+        &[(name, &[("viewport", "desktop")], hash, "home.png", bytes)],
+    );
 }
 
 #[test]
@@ -77,8 +122,8 @@ fn classify_happy_path_separates_streams() {
         .arg(current())
         .assert()
         .success()
-        .stdout(predicate::str::contains("changed desktop/about"))
-        .stdout(predicate::str::contains("added desktop/pricing"))
+        .stdout(predicate::str::contains("changed about [viewport=desktop]"))
+        .stdout(predicate::str::contains("added pricing [viewport=desktop]"))
         .stdout(predicate::str::contains(
             "added 1 changed 1 removed 0 unchanged 2",
         ))
@@ -95,7 +140,9 @@ fn classify_json_contract() {
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""changed":true"#))
-        .stdout(predicate::str::contains(r#""status":"added""#));
+        .stdout(predicate::str::contains(r#""status":"added""#))
+        // The toggle map is part of each entry now, not a `project` field.
+        .stdout(predicate::str::contains(r#""toggles":{"viewport":"desktop"}"#));
 }
 
 #[test]
@@ -141,7 +188,7 @@ fn comment_writes_file_and_reports_path() {
     assert!(md.starts_with("<!-- screencomp -->"));
     assert!(md.contains("## Visual changes"));
     assert!(md.contains("### Changed"));
-    // Without a gallery URL the comment is a path listing, not inline images.
+    // Without a gallery URL the comment is a label listing, not inline images.
     assert!(!md.contains("<img"));
 }
 
@@ -165,8 +212,8 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
     let md = std::fs::read_to_string(&out).expect("comment file");
     // Small diff under the default limit: inline before/after images appear.
     assert!(md.contains("| Before | After |"));
-    assert!(md.contains("src=\"https://example.test/pr/12/baseline/desktop/about.png\""));
-    assert!(md.contains("src=\"https://example.test/pr/12/current/desktop/pricing.png\""));
+    assert!(md.contains("src=\"https://example.test/pr/12/baseline/about-desktop.png\""));
+    assert!(md.contains("src=\"https://example.test/pr/12/current/pricing-desktop.png\""));
     assert!(md.contains("width=\"380\""));
 }
 
@@ -174,10 +221,10 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
 fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
     // The headline image-free feature: with a digest-manifest baseline there are
     // no baseline PNGs to host, so a `--gallery-url` (a plain gallery of the
-    // current shots) must embed only "After" images at `<URL>/<project>/<name>.png`
-    // — never a `baseline/` URL that would 404 in the rendered comment.
+    // current shots) must embed only "After" images at `<URL>/<image>` — never a
+    // `baseline/` URL that would 404 in the rendered comment.
     let dir = TempDir::new().unwrap();
-    let manifest = dir.path().join("baseline.sha256");
+    let manifest = dir.path().join("baseline.json");
     bin()
         .args(["manifest", "--input"])
         .arg(baseline())
@@ -201,7 +248,7 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
 
     let md = std::fs::read_to_string(&out).expect("comment file");
     assert!(
-        md.contains("src=\"https://example.test/site/desktop/about.png\""),
+        md.contains("src=\"https://example.test/site/about-desktop.png\""),
         "{md}"
     );
     assert!(!md.contains("/baseline/"), "{md}");
@@ -222,13 +269,43 @@ fn gallery_creates_index_html() {
 
     let html = std::fs::read_to_string(dir.path().join("index.html")).expect("index.html");
     assert!(html.contains("<title>Screenshot gallery</title>"));
-    assert!(html.contains("src=\"desktop/about.png\""));
+    assert!(html.contains("<h2>about</h2>"));
+    assert!(html.contains("src=\"about-desktop.png\""));
 
     // The gallery is self-contained: every referenced image is copied alongside
     // index.html with identical bytes, so the directory is deploy-ready.
-    let copied = std::fs::read(dir.path().join("desktop/about.png")).expect("image copied");
-    let source = std::fs::read(current().join("desktop/about.png")).expect("source image");
+    let copied = std::fs::read(dir.path().join("about-desktop.png")).expect("image copied");
+    let source = std::fs::read(current().join("about-desktop.png")).expect("source image");
     assert_eq!(copied, source);
+}
+
+#[test]
+fn gallery_renders_toggle_controls_from_declared_dimensions() {
+    // With a `viewport` dimension declared, the multi-value `home` name gets a
+    // toggle control with the expected data attributes; the page deploys as-is.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nlabel = \"Viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+    let out = dir.path().join("site");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(out.join("index.html")).expect("index.html");
+    assert!(html.contains("data-dim=\"viewport\""), "{html}");
+    assert!(html.contains("data-val=\"mobile\""), "{html}");
+    assert!(html.contains("data-variant=\"viewport=mobile\""), "{html}");
 }
 
 #[test]
@@ -247,11 +324,11 @@ fn gallery_diff_mode_renders_before_after() {
 
     let html = std::fs::read_to_string(dir.path().join("index.html")).expect("index.html");
     assert!(html.contains("<h2>Changed</h2>"));
-    assert!(html.contains("src=\"baseline/desktop/about.png\""));
-    assert!(html.contains("src=\"current/desktop/about.png\""));
+    assert!(html.contains("src=\"baseline/about-desktop.png\""));
+    assert!(html.contains("src=\"current/about-desktop.png\""));
     // Both image trees are copied so before/after both render.
-    assert!(dir.path().join("baseline/desktop/about.png").exists());
-    assert!(dir.path().join("current/desktop/about.png").exists());
+    assert!(dir.path().join("baseline/about-desktop.png").exists());
+    assert!(dir.path().join("current/about-desktop.png").exists());
 }
 
 /// Host CPU arch, mirroring `commands::arch::host_arch`.
@@ -263,12 +340,6 @@ fn host_arch() -> String {
     .to_owned()
 }
 
-fn write_shot(root: &std::path::Path, arch: &str, project: &str, name: &str, bytes: &[u8]) {
-    let dir = root.join(arch).join(project);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
-}
-
 #[test]
 fn classify_arch_auto_compares_only_the_host_subtree() {
     let dir = TempDir::new().unwrap();
@@ -277,10 +348,10 @@ fn classify_arch_auto_compares_only_the_host_subtree() {
     let key = host_arch();
 
     // Host subtree changes; a foreign subtree differs too but must be ignored.
-    write_shot(&base, &key, "desktop", "home", b"old");
-    write_shot(&cur, &key, "desktop", "home", b"new");
-    write_shot(&base, "other-arch", "desktop", "home", b"a");
-    write_shot(&cur, "other-arch", "desktop", "home", b"b");
+    write_one(&base.join(&key), "home", &digest("aa"), b"old");
+    write_one(&cur.join(&key), "home", &digest("bb"), b"new");
+    write_one(&base.join("other-arch"), "home", &digest("11"), b"a");
+    write_one(&cur.join("other-arch"), "home", &digest("22"), b"b");
 
     bin()
         .args(["classify", "--arch", "auto", "--exit-code", "--baseline"])
@@ -289,7 +360,7 @@ fn classify_arch_auto_compares_only_the_host_subtree() {
         .arg(&cur)
         .assert()
         .code(3)
-        .stdout(predicate::str::contains("changed desktop/home"))
+        .stdout(predicate::str::contains("changed home [viewport=desktop]"))
         // Only the host subtree is compared (1 shot); the foreign subtree, which
         // also differs, is invisible to the scoped run.
         .stdout(predicate::str::contains(
@@ -307,8 +378,8 @@ fn classify_arch_default_from_config_scopes_to_the_host_subtree() {
     std::fs::write(&cfg, format!("[capture]\narches = [{key:?}]\n")).unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, &key, "desktop", "home", b"old");
-    write_shot(&cur, &key, "desktop", "home", b"new");
+    write_one(&base.join(&key), "home", &digest("aa"), b"old");
+    write_one(&cur.join(&key), "home", &digest("bb"), b"new");
 
     bin()
         .args(["--config"])
@@ -319,7 +390,7 @@ fn classify_arch_default_from_config_scopes_to_the_host_subtree() {
         .arg(&cur)
         .assert()
         .code(3)
-        .stdout(predicate::str::contains("changed desktop/home"))
+        .stdout(predicate::str::contains("changed home [viewport=desktop]"))
         .stdout(predicate::str::contains(
             "added 0 changed 1 removed 0 unchanged 0",
         ));
@@ -334,8 +405,8 @@ fn classify_host_arch_not_in_configured_arches_hard_errors_on_stderr() {
     std::fs::write(&cfg, "[capture]\narches = [\"sparc64\"]\n").unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "sparc64", "desktop", "home", b"x");
-    write_shot(&cur, "sparc64", "desktop", "home", b"x");
+    write_one(&base.join("sparc64"), "home", &digest("aa"), b"x");
+    write_one(&cur.join("sparc64"), "home", &digest("aa"), b"x");
 
     bin()
         .args(["--config"])
@@ -410,8 +481,8 @@ fn gallery_diff_scopes_both_trees_by_arch() {
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
     let out = TempDir::new().unwrap();
-    write_shot(&base, "arm64", "desktop", "home", b"old");
-    write_shot(&cur, "arm64", "desktop", "home", b"new");
+    write_one(&base.join("arm64"), "home", &digest("aa"), b"old");
+    write_one(&cur.join("arm64"), "home", &digest("bb"), b"new");
 
     bin()
         .args(["gallery", "--arch", "arm64", "--input"])
@@ -424,8 +495,8 @@ fn gallery_diff_scopes_both_trees_by_arch() {
         .success();
 
     // Copied trees drop the arch layer: the diff page is self-contained.
-    assert!(out.path().join("baseline/desktop/home.png").exists());
-    assert!(out.path().join("current/desktop/home.png").exists());
+    assert!(out.path().join("baseline/home.png").exists());
+    assert!(out.path().join("current/home.png").exists());
 }
 
 #[test]
@@ -433,8 +504,8 @@ fn missing_arch_subtree_hints_the_layout_on_stderr() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "arm64", "desktop", "home", b"x");
-    write_shot(&cur, "arm64", "desktop", "home", b"x");
+    write_one(&base.join("arm64"), "home", &digest("aa"), b"x");
+    write_one(&cur.join("arm64"), "home", &digest("aa"), b"x");
 
     bin()
         .args(["classify", "--arch", "x86_64", "--baseline"])
@@ -453,7 +524,7 @@ fn missing_arch_subtree_hints_the_layout_on_stderr() {
 
 #[test]
 fn verify_identical_captures_pass_and_diverging_ones_exit_three() {
-    // Two reads of the same tree are byte-identical: the gate passes.
+    // Two reads of the same capture are byte-identical: the gate passes.
     bin()
         .args(["verify", "--first"])
         .arg(current())
@@ -473,7 +544,7 @@ fn verify_identical_captures_pass_and_diverging_ones_exit_three() {
         .assert()
         .code(3)
         .stdout(predicate::str::contains("NOT reproducible:"))
-        .stdout(predicate::str::contains("differs desktop/about"))
+        .stdout(predicate::str::contains("differs about [viewport=desktop]"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -492,22 +563,64 @@ fn verify_json_contract() {
 
 #[test]
 fn doctor_reports_a_clean_capture_layout() {
+    // The fixtures use a `viewport` toggle, so declare it in config; doctor then
+    // lists the observed dimension and passes cleanly.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+
     bin()
+        .args(["--config"])
+        .arg(&cfg)
         .args(["doctor", "--input"])
         .arg(current())
         .assert()
         .success()
-        .stdout(predicate::str::contains("desktop (3 shots)"))
+        // The current fixture has three names (about, home, pricing) and four
+        // shots (home has two viewport variants).
+        .stdout(predicate::str::contains("names: 3"))
+        .stdout(predicate::str::contains("home (2 shots)"))
         .stdout(predicate::str::contains("shots: 4"))
-        .stdout(predicate::str::contains("ok: layout matches"))
+        .stdout(predicate::str::contains("viewport [desktop, mobile]"))
+        .stdout(predicate::str::contains("ok: capture index is well-formed"))
         .stderr(predicate::str::is_empty());
 }
 
 #[test]
-fn doctor_exit_code_gate_catches_a_misplaced_capture() {
+fn doctor_exit_code_gate_catches_a_capture_without_an_index() {
     let dir = TempDir::new().unwrap();
-    // A capture written to the root instead of <project>/<name>.png.
+    // A capture directory missing its captures.json index.
     std::fs::write(dir.path().join("home.png"), b"oops").unwrap();
+
+    bin()
+        .args(["doctor", "--exit-code", "--input"])
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("captures.json"));
+}
+
+#[test]
+fn doctor_exit_code_gate_catches_an_undeclared_toggle() {
+    // A valid index whose toggle key is not declared in config is a "problem"
+    // doctor gates on with --exit-code (output stays on stdout, no error).
+    let dir = TempDir::new().unwrap();
+    write_capture(
+        dir.path(),
+        &[(
+            "home",
+            &[("density", "2x")],
+            &digest("aa"),
+            "home.png",
+            b"a",
+        )],
+    );
 
     bin()
         .args(["doctor", "--exit-code", "--input"])
@@ -533,9 +646,9 @@ fn doctor_missing_input_fails_with_clean_stderr() {
 #[test]
 fn manifest_baseline_journey_replaces_committed_images() {
     let dir = TempDir::new().unwrap();
-    let manifest = dir.path().join("baseline.sha256");
+    let manifest = dir.path().join("baseline.json");
 
-    // Produce a digest manifest instead of committing baseline PNGs.
+    // Produce a digest baseline instead of committing baseline PNGs.
     bin()
         .args(["manifest", "--input"])
         .arg(baseline())
@@ -545,7 +658,7 @@ fn manifest_baseline_journey_replaces_committed_images() {
         .success()
         .stdout(predicate::str::contains("wrote"));
 
-    // Classify a current capture against just that manifest — no baseline images.
+    // Classify a current capture against just that baseline — no baseline images.
     bin()
         .args(["classify", "--baseline-manifest"])
         .arg(&manifest)
@@ -553,7 +666,7 @@ fn manifest_baseline_journey_replaces_committed_images() {
         .arg(current())
         .assert()
         .success()
-        .stdout(predicate::str::contains("changed desktop/about"))
+        .stdout(predicate::str::contains("changed about [viewport=desktop]"))
         .stdout(predicate::str::contains(
             "added 1 changed 1 removed 0 unchanged 2",
         ))
@@ -561,14 +674,18 @@ fn manifest_baseline_journey_replaces_committed_images() {
 }
 
 #[test]
-fn manifest_writes_sha256sum_style_to_stdout() {
+fn manifest_writes_pretty_json_index_to_stdout() {
+    // The written baseline is a pretty-printed captures.json index: schema +
+    // digests, with the image paths stripped (a baseline commits no PNGs).
     bin()
         .args(["manifest", "--input"])
         .arg(baseline())
         .assert()
         .success()
-        .stdout(predicate::str::contains("  desktop/about.png"))
-        .stdout(predicate::str::is_match(r"^[0-9a-f]{64}  ").unwrap());
+        .stdout(predicate::str::contains("\"schema\": 1"))
+        .stdout(predicate::str::contains("\"name\": \"about\""))
+        .stdout(predicate::str::contains("\"hash\":"))
+        .stdout(predicate::str::contains("\"image\"").not());
 }
 
 #[test]
@@ -587,7 +704,7 @@ fn classify_requires_exactly_one_baseline_source() {
         .args(["classify", "--baseline"])
         .arg(baseline())
         .arg("--baseline-manifest")
-        .arg("b.sha256")
+        .arg("b.json")
         .arg("--current")
         .arg(current())
         .assert()
@@ -598,8 +715,8 @@ fn classify_requires_exactly_one_baseline_source() {
 #[test]
 fn malformed_manifest_fails_with_clean_stderr() {
     let dir = TempDir::new().unwrap();
-    let manifest = dir.path().join("bad.sha256");
-    std::fs::write(&manifest, "deadbeef  desktop/home.png\n").unwrap();
+    let manifest = dir.path().join("bad.json");
+    std::fs::write(&manifest, "{not valid json").unwrap();
     bin()
         .args(["classify", "--baseline-manifest"])
         .arg(&manifest)
@@ -609,8 +726,7 @@ fn malformed_manifest_fails_with_clean_stderr() {
         .failure()
         .code(1)
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("invalid screenshot layout"))
-        .stderr(predicate::str::contains("line 1"));
+        .stderr(predicate::str::contains("invalid screenshot layout"));
 }
 
 #[test]
@@ -806,8 +922,8 @@ fn init_scaffolds_a_working_setup() {
     let scoped = TempDir::new().unwrap();
     let base = scoped.path().join("baseline");
     let cur = scoped.path().join("current");
-    write_shot(&base, &host_arch(), "desktop", "home", b"old");
-    write_shot(&cur, &host_arch(), "desktop", "home", b"new");
+    write_one(&base.join(host_arch()), "home", &digest("aa"), b"old");
+    write_one(&cur.join(host_arch()), "home", &digest("bb"), b"new");
     bin()
         .args(["comment", "--config"])
         .arg(&cfg)
@@ -853,8 +969,9 @@ fn init_scaffolds_a_working_setup() {
     assert!(hook.contains("ARCH=\"x86_64\""), "{hook}");
     assert!(hook.contains("DOCKER_PLATFORM=\"linux/arm64\""), "{hook}");
     assert!(hook.contains("DOCKER_PLATFORM=\"linux/amd64\""), "{hook}");
+    // The committed baseline is the new JSON index, not a `.sha256` text manifest.
     assert!(
-        hook.contains("MANIFEST=\"shots/baseline/${ARCH}.sha256\""),
+        hook.contains("MANIFEST=\"shots/baseline/${ARCH}.json\""),
         "{hook}"
     );
     // The classify call no longer passes --arch (it defaults from the config).
@@ -875,12 +992,13 @@ fn init_scaffolds_a_working_setup() {
 }
 
 #[test]
-fn comment_manifest_mode_before_after_from_separate_urls() {
-    // Manifest mode with explicit --baseline-url/--current-url restores a real
-    // before/after diff: "Before" from a canonical gallery, "After" from the PR
-    // one. This is the decoupling that makes manifest-mode comments usable.
+fn comment_manifest_mode_sources_before_from_a_separate_baseline_url() {
+    // A baseline manifest strips image paths on write, so manifest mode commits no
+    // "Before" PNG. But pointing --baseline-url at a separate canonical gallery
+    // (which hosts the same shot at the same relative path) still yields a real
+    // before/after diff: "Before" from the baseline base, "After" from --current-url.
     let dir = TempDir::new().unwrap();
-    let manifest = dir.path().join("baseline.sha256");
+    let manifest = dir.path().join("baseline.json");
     bin()
         .args(["manifest", "--input"])
         .arg(baseline())
@@ -905,13 +1023,15 @@ fn comment_manifest_mode_before_after_from_separate_urls() {
         .success();
 
     let md = std::fs::read_to_string(&out).expect("comment file");
+    // The changed shot (about [viewport=desktop]) shows a real before/after table,
+    // before sourced from the canonical gallery and after from the PR gallery.
     assert!(md.contains("| Before | After |"), "{md}");
     assert!(
-        md.contains("src=\"https://example.test/main/desktop/about.png\""),
+        md.contains("src=\"https://example.test/main/about-desktop.png\""),
         "{md}"
     );
     assert!(
-        md.contains("src=\"https://example.test/pr/4/desktop/about.png\""),
+        md.contains("src=\"https://example.test/pr/4/about-desktop.png\""),
         "{md}"
     );
 }
@@ -931,7 +1051,7 @@ fn comment_urls_resolve_to_real_gallery_files() {
         .assert()
         .success();
 
-    let manifest = dir.path().join("baseline.sha256");
+    let manifest = dir.path().join("baseline.json");
     bin()
         .args(["manifest", "--input"])
         .arg(baseline())

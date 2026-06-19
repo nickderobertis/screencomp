@@ -27,7 +27,7 @@ source equals this directory. Notable pieces:
 | `demo/.github/workflows/visual-docs.yml` | caller of the reusable workflow (`@v0`)          |
 | `demo/package.json` / `package-lock.json` | pinned `@playwright/test` (matches the CI image) |
 | `demo/playwright.config.ts`           | deterministic capture settings                      |
-| `demo/tests/screenshots.spec.ts`      | writes `$SHOTS_OUT/<project>/<name>.png`            |
+| `demo/tests/screenshots.spec.ts`      | writes `$SHOTS_OUT/captures.json` + the PNGs it references |
 | `demo/pages/*.html`                   | the static pages being photographed                 |
 | `demo/.gitignore`                     | commit the digest baseline, ignore generated PNGs   |
 
@@ -36,7 +36,7 @@ the documented consumer template).
 
 ## What the sync preserves (never overwrites)
 
-- The demo's **`.git`**, its committed **baselines** (`shots/baseline/<arch>.sha256`
+- The demo's **`.git`**, its committed **baselines** (`shots/baseline/<arch>.json`
   — digests of its real pixels, regenerated there), and its `.githooks/` (the hook
   is (re)installed from `examples/pre-push`). This `README.md` is not pushed.
 

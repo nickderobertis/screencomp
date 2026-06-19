@@ -1,18 +1,18 @@
 //! Criterion micro-benchmarks for the in-process work of each `screencomp` verb.
 //!
-//! These measure everything a single invocation does after process start: walk
-//! the `<root>/<project>/<name>.png` tree, SHA-256 every file, classify the two
-//! snapshots against each other, and render the requested output. Process
-//! startup and terminal I/O are deliberately excluded here — `scripts/bench.sh`
-//! covers those end to end with hyperfine.
+//! These measure everything a single invocation does after process start: parse
+//! the `captures.json` index of each capture, classify the two snapshots against
+//! each other, and render the requested output (plus, for `gallery`, copy the
+//! referenced images). Process startup and terminal I/O are deliberately excluded
+//! here — `scripts/bench.sh` covers those end to end with hyperfine.
 //!
-//! The hot path is the directory walk plus a byte digest over every file
-//! (`io::fs::discover`), so total bytes (projects × shots × size) is what these
-//! numbers move; the pure comparison and rendering on top of it is cheap. To
-//! keep the digest cost honest the synthetic trees are built once on disk,
-//! outside every timed loop, and each verb is benched at two scales so the
-//! slope with image count is visible. The sets are intentionally modest — a
-//! floor, not a worst case.
+//! The hot path is reading and parsing the index (`io::fs::discover`) plus, for
+//! `gallery`, copying every referenced PNG, so the shot count (projects × shots)
+//! and image size are what these numbers move; the pure comparison and rendering
+//! on top is cheap. The synthetic captures are built once on disk, outside every
+//! timed loop, and each verb is benched at two scales so the slope with shot
+//! count is visible. The sets are intentionally modest — a floor, not a worst
+//! case.
 //!
 //! Everything runs through the crate's only public entrypoint, [`run`], so the
 //! numbers track what the binary runs rather than internals that may be inlined
@@ -34,8 +34,8 @@ use screencomp::cli::{ClassifyArgs, Command, CommentArgs, GalleryArgs, OutputFor
 use screencomp::{Cli, run};
 use tempfile::TempDir;
 
-/// Shape of one synthetic screenshot tree: `projects` directories each holding
-/// `shots` PNGs of `kib` kibibytes.
+/// Shape of one synthetic capture: `projects` image subdirectories each holding
+/// `shots` PNGs of `kib` kibibytes, all indexed by one `captures.json`.
 struct TreeSpec {
     name: &'static str,
     projects: usize,
@@ -90,9 +90,21 @@ fn write_shot(path: &Utf8Path, seed: u64, kib: usize) -> io::Result<()> {
     fs::write(path, &buf)
 }
 
-/// Build a baseline/current pair under a fresh tempdir. `current` mirrors
+/// Deterministic 64-hex digest for a seed — stands in for the hash the capture
+/// step records in `captures.json` (screencomp trusts the index, never re-hashes).
+fn shot_hash(seed: u64) -> String {
+    format!("{seed:064x}")
+}
+
+/// One `captures.json` shot entry with no toggles.
+fn entry(name: &str, image: &str, hash: &str) -> String {
+    format!("{{\"name\":\"{name}\",\"toggles\":{{}},\"hash\":\"{hash}\",\"image\":\"{image}\"}}")
+}
+
+/// Build a baseline/current capture pair under a fresh tempdir. `current` mirrors
 /// `baseline` except for a realistic mix: ~1 shot per project changed, one added
-/// (only in current), and one removed (only in baseline).
+/// (only in current), and one removed (only in baseline). Each capture gets a
+/// `captures.json` index plus the PNGs it references.
 fn build(spec: &TreeSpec) -> Trees {
     let dir = TempDir::new().expect("tempdir");
     let root = Utf8Path::from_path(dir.path()).expect("utf-8 tempdir path");
@@ -100,23 +112,42 @@ fn build(spec: &TreeSpec) -> Trees {
     let current = root.join("current");
     let gallery_out = root.join("gallery-out");
 
+    let mut b_shots = Vec::new();
+    let mut c_shots = Vec::new();
     for p in 0..spec.projects {
         let proj = format!("project{p:02}");
-        let bdir = baseline.join(&proj);
-        let cdir = current.join(&proj);
-        fs::create_dir_all(&bdir).expect("create baseline project");
-        fs::create_dir_all(&cdir).expect("create current project");
+        fs::create_dir_all(baseline.join(&proj)).expect("create baseline project");
+        fs::create_dir_all(current.join(&proj)).expect("create current project");
         for s in 0..spec.shots {
-            let name = format!("shot{s:02}.png");
+            let name = format!("p{p:02}-s{s:02}");
+            let image = format!("{proj}/shot{s:02}.png");
             let seed = (p * spec.shots + s) as u64;
-            write_shot(&bdir.join(&name), seed, spec.kib).expect("write baseline shot");
+            write_shot(&baseline.join(&image), seed, spec.kib).expect("write baseline shot");
+            b_shots.push(entry(&name, &image, &shot_hash(seed)));
             let cseed = if s % 8 == 0 { seed ^ 0xFFFF } else { seed };
-            write_shot(&cdir.join(&name), cseed, spec.kib).expect("write current shot");
+            write_shot(&current.join(&image), cseed, spec.kib).expect("write current shot");
+            c_shots.push(entry(&name, &image, &shot_hash(cseed)));
         }
-        write_shot(&cdir.join("added.png"), 0xADDE_0000 + p as u64, spec.kib).expect("write added");
-        write_shot(&bdir.join("removed.png"), 0xDEAD_0000 + p as u64, spec.kib)
+        // Added only in current; removed only in baseline.
+        let added = format!("{proj}/added.png");
+        write_shot(&current.join(&added), 0xADDE_0000 + p as u64, spec.kib).expect("write added");
+        c_shots.push(entry(
+            &format!("p{p:02}-added"),
+            &added,
+            &shot_hash(0xADDE_0000 + p as u64),
+        ));
+        let removed = format!("{proj}/removed.png");
+        write_shot(&baseline.join(&removed), 0xDEAD_0000 + p as u64, spec.kib)
             .expect("write removed");
+        b_shots.push(entry(
+            &format!("p{p:02}-removed"),
+            &removed,
+            &shot_hash(0xDEAD_0000 + p as u64),
+        ));
     }
+
+    write_index(&baseline, &b_shots);
+    write_index(&current, &c_shots);
 
     Trees {
         name: spec.name,
@@ -125,6 +156,12 @@ fn build(spec: &TreeSpec) -> Trees {
         current,
         gallery_out,
     }
+}
+
+/// Write a `captures.json` listing `shots` into the capture directory `dir`.
+fn write_index(dir: &Utf8Path, shots: &[String]) {
+    let json = format!("{{\"schema\":1,\"shots\":[{}]}}", shots.join(","));
+    fs::write(dir.join("captures.json"), json).expect("write captures.json");
 }
 
 /// Build the tree pair for every spec once, ahead of any timed loop.

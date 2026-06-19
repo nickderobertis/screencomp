@@ -2,11 +2,13 @@
 
 use std::io::Write;
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 
 use super::{Ctx, baseline_snapshot, discover_scoped, resolve_arch, write_err};
 use crate::cli::{ClassifyArgs, OutputFormat};
-use crate::domain::classify::{Classification, Counts, Entry, Status, classify};
+use crate::domain::classify::{Classification, Counts, Status, classify};
 use crate::errors::AppError;
 
 pub(crate) fn run(args: &ClassifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
@@ -32,17 +34,33 @@ pub(crate) fn run(args: &ClassifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result
     Ok(0)
 }
 
+/// One shot in the JSON contract: name, toggle map, and status.
+#[derive(Serialize)]
+struct EntryView<'a> {
+    name: &'a str,
+    toggles: &'a BTreeMap<String, String>,
+    status: &'a str,
+}
+
 /// Stable single-line JSON contract for automation.
 fn write_json(classification: &Classification, out: &mut dyn Write) -> Result<(), AppError> {
     #[derive(Serialize)]
     struct Report<'a> {
-        entries: &'a [Entry],
+        entries: Vec<EntryView<'a>>,
         counts: Counts,
         changed: bool,
     }
 
     let report = Report {
-        entries: &classification.entries,
+        entries: classification
+            .entries
+            .iter()
+            .map(|e| EntryView {
+                name: &e.key.name,
+                toggles: &e.key.toggles,
+                status: e.status.label_lower(),
+            })
+            .collect(),
         counts: classification.counts,
         changed: classification.has_changes(),
     };
@@ -51,18 +69,12 @@ fn write_json(classification: &Classification, out: &mut dyn Write) -> Result<()
     writeln!(out, "{json}").map_err(write_err)
 }
 
-/// One line per changed screenshot, then a single summary line.
+/// One line per changed shot, then a single summary line.
 fn write_human(classification: &Classification, out: &mut dyn Write) -> Result<(), AppError> {
     for entry in &classification.entries {
         if entry.status != Status::Unchanged {
-            writeln!(
-                out,
-                "{} {}/{}",
-                entry.status.label_lower(),
-                entry.project,
-                entry.name
-            )
-            .map_err(write_err)?;
+            writeln!(out, "{} {}", entry.status.label_lower(), entry.key.label())
+                .map_err(write_err)?;
         }
     }
     let c = classification.counts;

@@ -42,7 +42,7 @@ inputs:
     required: false
     default: ''
   current:
-    description: 'Directory holding the current capture (<dir>/[<arch>/]<project>/<name>.png).'
+    description: 'Directory holding the current capture (<dir>/[<arch>/]captures.json plus its PNGs).'
     required: false
     default: shots/current
   verify-second:
@@ -50,7 +50,7 @@ inputs:
     required: false
     default: ''
   manifest:
-    description: 'Committed baseline manifest. Defaults to shots/baseline/<arch>.sha256 (or shots/baseline.sha256 when arch is empty).'
+    description: 'Committed baseline manifest. Defaults to shots/baseline/<arch>.json (or shots/baseline.json when arch is empty).'
     required: false
     default: ''
   gallery-title:
@@ -115,13 +115,13 @@ runs:
         if [ -n "$arch" ]; then
           echo "arch_arg=--arch $arch" >>"$GITHUB_OUTPUT"
           echo "marker_arg=--marker screencomp-${arch}" >>"$GITHUB_OUTPUT"
-          default_manifest="shots/baseline/${arch}.sha256"
+          default_manifest="shots/baseline/${arch}.json"
           subpath="/${arch}"          # leading slash: appended to a URL/dir
           dest="${arch}"              # Pages destination subdir
         else
           echo "arch_arg=" >>"$GITHUB_OUTPUT"
           echo "marker_arg=" >>"$GITHUB_OUTPUT"
-          default_manifest="shots/baseline.sha256"
+          default_manifest="shots/baseline.json"
           subpath=""
           dest=""
         fi
@@ -247,8 +247,8 @@ runs:
         comment_manifest="$manifest"
         if [ -n "${base_ref// }" ]; then
           git fetch --depth=1 origin "$base_ref" || true
-          if git show "origin/${base_ref}:${manifest}" >base-manifest.sha256 2>/dev/null; then
-            comment_manifest="base-manifest.sha256"
+          if git show "origin/${base_ref}:${manifest}" >base-manifest.json 2>/dev/null; then
+            comment_manifest="base-manifest.json"
             echo "comment 'Before' sourced from origin/${base_ref}:${manifest}"
           else
             echo "no manifest at origin/${base_ref}:${manifest}; comparing against the committed one"

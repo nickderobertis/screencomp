@@ -11,6 +11,7 @@
 //! runs of one build there is no "added"/"removed" change, only *divergence*, so
 //! the vocabulary is divergence-kind, not diff-status.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use serde::Serialize;
@@ -52,8 +53,8 @@ fn divergence_kind(status: Status) -> &'static str {
 fn write_json(result: &Classification, out: &mut dyn Write) -> Result<(), AppError> {
     #[derive(Serialize)]
     struct Divergent<'a> {
-        project: &'a str,
         name: &'a str,
+        toggles: &'a BTreeMap<String, String>,
         kind: &'a str,
     }
     #[derive(Serialize)]
@@ -68,8 +69,8 @@ fn write_json(result: &Classification, out: &mut dyn Write) -> Result<(), AppErr
         .iter()
         .filter(|e| e.status != Status::Unchanged)
         .map(|e| Divergent {
-            project: &e.project,
-            name: &e.name,
+            name: &e.key.name,
+            toggles: &e.key.toggles,
             kind: divergence_kind(e.status),
         })
         .collect();
@@ -89,10 +90,9 @@ fn write_human(result: &Classification, out: &mut dyn Write) -> Result<(), AppEr
         if entry.status != Status::Unchanged {
             writeln!(
                 out,
-                "{} {}/{}",
+                "{} {}",
                 divergence_kind(entry.status),
-                entry.project,
-                entry.name
+                entry.key.label()
             )
             .map_err(write_err)?;
         }

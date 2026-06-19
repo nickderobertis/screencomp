@@ -63,7 +63,8 @@ jobs:
         run: aws codeartifact login --tool npm --domain my-domain --repository my-repo
       # --------------------------------------------------------------------------
 
-      # Replace with your real capture; it MUST write $SHOTS_OUT/<project>/<name>.png.
+      # Replace with your real capture; it MUST write $SHOTS_OUT/captures.json
+      # (the index) plus the PNGs it references, computing each shot's hash.
       - name: Capture screenshots
         run: |
           npm ci

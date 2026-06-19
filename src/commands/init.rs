@@ -136,11 +136,12 @@ fn write_human(
         out,
         "\nNext steps:\n\
          1. Wire your real capture into .github/workflows/visual-docs.yml and\n   \
-         .githooks/pre-push so each writes shots/current/{arch}/<project>/<name>.png.\n\
+         .githooks/pre-push so each writes shots/current/{arch}/captures.json plus\n   \
+         the PNGs it references (each shot's name, toggles, hash, and image path).\n\
          2. {step_2}\n\
          3. Seed the baseline once on {arch} and commit it:\n   \
          screencomp manifest --input shots/current \\\n     \
-         --output shots/baseline/{arch}.sha256\n\
+         --output shots/baseline/{arch}.json\n\
          4. Enable GitHub Pages (Settings -> Pages -> Deploy from a branch: gh-pages /).\n\
          \n\
          To support another CPU arch, add it to [capture].arches in\n\
@@ -208,7 +209,7 @@ fn render_config(arch: &str) -> String {
 [capture]
 # CPU architectures you maintain screenshots for. Captures run in a Linux
 # container, so only the arch varies. Each entry has its own committed baseline
-# (shots/baseline/<arch>.sha256) and gets a CI capture lane; local commands
+# (shots/baseline/<arch>.json) and gets a CI capture lane; local commands
 # default to your host arch and require it to be listed here. Add an arch (e.g.
 # \"x86_64\") to support it — note every entry adds a CI job to each run.
 arches = [\"{arch}\"]
@@ -217,6 +218,21 @@ arches = [\"{arch}\"]
 title = \"Visual changes\"
 marker = \"screencomp\"        # [A-Za-z0-9_-]; one sticky comment per marker
 embed_limit = 10             # embed images inline when <= N shots differ (0 disables)
+
+# Toggle dimensions the gallery renders controls for. A shot's `toggles` in
+# captures.json reference these keys, so one screen becomes a single card you
+# toggle through (theme, viewport, …) instead of one card per variant. Each
+# `values` entry is a value the capture step can produce; the first is the
+# gallery default. Uncomment and adapt to the dimensions your capture varies.
+# [[toggle]]
+# key = \"theme\"
+# label = \"Theme\"
+# values = [\"light\", \"dark\"]
+#
+# [[toggle]]
+# key = \"viewport\"
+# label = \"Viewport\"
+# values = [\"desktop\", \"mobile\"]
 
 [guard]
 # Local pre-push guard (.githooks/pre-push): re-capture only when these globs
@@ -232,7 +248,7 @@ gallery = \"shots/review\"
 /// state — while the regenerated captures and galleries are.
 fn render_gitignore() -> String {
     format!(
-        "\n{GITIGNORE_MARKER} (shots/baseline/*.sha256), not the generated PNGs.\n\
+        "\n{GITIGNORE_MARKER} (shots/baseline/*.json), not the generated PNGs.\n\
          shots/current/\n\
          shots/verify/\n\
          shots/review/\n\
@@ -303,8 +319,9 @@ jobs:
       # intact; older history is collapsed into one base commit. Default 20; set 0
       # to collapse to a single commit.
       gh-pages-history-versions: 20
-      # Replace with your real capture. It MUST write $SHOTS_OUT/<project>/<name>.png
-      # ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
+      # Replace with your real capture. It MUST write $SHOTS_OUT/captures.json
+      # (each shot's name, toggles, hash, and image path) plus the PNGs it
+      # references ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
       capture-command: |
         npm ci
         npx playwright install --with-deps chromium
@@ -348,7 +365,7 @@ case \"$(uname -m)\" in
 esac
 
 # ---- adapt these to your repo -----------------------------------------------
-MANIFEST=\"shots/baseline/${ARCH}.sha256\"  # committed baseline for this arch
+MANIFEST=\"shots/baseline/${ARCH}.json\"    # committed baseline for this arch
 GALLERY=\"shots/review\"                     # [guard].gallery (review output)
 CURRENT=\"shots/current\"                    # capture root, mirrors visual-docs.yml
 # -----------------------------------------------------------------------------

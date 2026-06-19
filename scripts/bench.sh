@@ -3,8 +3,9 @@
 # End-to-end CLI latency benchmark. Drives the optimized release binary the way a
 # CI pipeline does — one process per command — and measures wall-clock time with
 # hyperfine across every verb. This captures the cost that matters in production:
-# process startup + directory walk (fs) + SHA-256 over every PNG + render, which
-# the in-process Criterion benches (`benches/commands.rs`) deliberately exclude.
+# process startup + parsing the captures.json index + render (and, for gallery,
+# copying images), which the in-process Criterion benches (`benches/commands.rs`)
+# deliberately exclude.
 #
 # Usage:
 #   scripts/bench.sh            Full run (warmup + adaptive sampling).

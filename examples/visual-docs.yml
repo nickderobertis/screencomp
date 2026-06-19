@@ -4,15 +4,18 @@
 # reusable workflow in the screencomp README ("Batteries-included reusable
 # workflow"), which this mirrors. This single-arch example captures one arch
 # (x86_64); to support more, add an arch lane (a runner of that arch, a separate
-# shots/current/<arch> and shots/baseline/<arch>.sha256).
+# shots/current/<arch> and shots/baseline/<arch>.json).
 #
-# The repository commits only a tiny per-arch digest *manifest*
-# (`shots/baseline/<arch>.sha256`), never the baseline PNGs — so it never
-# accumulates binary history and grows without bound. screencomp compares by
-# content digest, so the manifest is all that `classify`/`comment` need.
+# A capture is a directory holding a `captures.json` index plus the PNGs it
+# references; your capture step writes the index and each shot's hash. The
+# repository commits only a tiny per-arch digest *manifest*
+# (`shots/baseline/<arch>.json` — the index with image paths stripped), never the
+# baseline PNGs, so it never accumulates binary history and grows without bound.
+# screencomp compares by content digest, so the manifest is all that
+# `classify`/`comment` need.
 #
 # Lifecycle (STRICT gate — the developer owns the baseline):
-#   * Seed once:   capture, then `screencomp manifest ... > the .sha256`, commit.
+#   * Seed once:   capture, then `screencomp manifest ... > the .json`, commit.
 #   * Locally:     the pre-push guard (examples/pre-push) re-captures on relevant
 #                  changes, regenerates the manifest, and blocks the push until you
 #                  COMMIT it — so an intended change is already reflected by the
@@ -43,11 +46,11 @@
 # ("Per-arch comparison") for the determinism details.
 #
 # Prerequisites:
-#   * A committed baseline manifest at shots/baseline/x86_64.sha256. Seed it once
+#   * A committed baseline manifest at shots/baseline/x86_64.json. Seed it once
 #     (before the first PR, or the classify step has nothing to compare against):
 #     run the capture, then
 #       screencomp manifest --input shots/current --arch auto \
-#         --output shots/baseline/x86_64.sha256
+#         --output shots/baseline/x86_64.json
 #     and commit it.
 #   * GitHub Pages enabled (Settings -> Pages -> GitHub Actions).
 name: Visual docs
@@ -78,7 +81,7 @@ jobs:
       id-token: write # Pages deployment auth
     env:
       SHOTS_OUT: shots/current/x86_64
-      MANIFEST: shots/baseline/x86_64.sha256
+      MANIFEST: shots/baseline/x86_64.json
       # Chromium flags, set via your Playwright config's launchOptions.args
       # (listed here so the contract is visible). They split into two kinds:
       #
@@ -104,7 +107,8 @@ jobs:
         with:
           version: latest
 
-      # Replace with your real capture; it MUST write $SHOTS_OUT/<project>/<name>.png.
+      # Replace with your real capture; it MUST write $SHOTS_OUT/captures.json
+      # (the index) plus the PNGs it references, computing each shot's hash.
       - name: Capture screenshots
         run: |
           npm ci
@@ -154,8 +158,8 @@ jobs:
           comment_manifest="$MANIFEST"
           if [ -n "$BASE_REF" ]; then
             git fetch --depth=1 origin "$BASE_REF" || true
-            if git show "origin/${BASE_REF}:${MANIFEST}" >base-manifest.sha256 2>/dev/null; then
-              comment_manifest="base-manifest.sha256"
+            if git show "origin/${BASE_REF}:${MANIFEST}" >base-manifest.json 2>/dev/null; then
+              comment_manifest="base-manifest.json"
             fi
           fi
           screencomp comment --baseline-manifest "$comment_manifest" \
@@ -211,5 +215,5 @@ jobs:
 #     -v "$PWD:/work" -v /work/node_modules -w /work \
 #     mcr.microsoft.com/playwright:v1.60.0-noble \
 #     bash -lc 'npm ci && SHOTS_OUT=shots/current/x86_64 npx playwright test'
-#   screencomp classify --baseline-manifest shots/baseline/x86_64.sha256 \
+#   screencomp classify --baseline-manifest shots/baseline/x86_64.json \
 #     --current shots/current --arch x86_64 --exit-code

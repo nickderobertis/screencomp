@@ -56,7 +56,7 @@
   interface change OR a demo-capture break is fixed by editing `demo/`;
   `sync-demo.yml` then `rsync --delete` mirrors `demo/` directly onto
   `screencomp-demo`'s `main` (no PR — a fully automated loop), preserving the
-  demo's `.git`, its committed `shots/baseline/<arch>.sha256` (digests of its real
+  demo's `.git`, its committed `shots/baseline/<arch>.json` (digests of its real
   pixels, regenerated there), and `.githooks/` (the hook is installed from the
   shared `examples/pre-push`); this internal `demo/README.md` is not pushed. It
   uses the `SCREENCOMP_DEMO_PAT` (`contents: write`; the demo's `main` must allow

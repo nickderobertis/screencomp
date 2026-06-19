@@ -1,15 +1,17 @@
 //! `screencomp` — deterministic screenshot tooling for the visual-docs framework.
 //!
-//! The library exposes pure-by-default operations over a screenshot tree laid
-//! out as `<root>/<project>/<name>.png`:
+//! The library exposes pure-by-default operations over a capture described by a
+//! `captures.json` index (each shot's toggles, content hash, and image path),
+//! optionally scoped under a `<root>/<arch>/` layer:
 //!
 //! - **classify** a current capture against a baseline (added/changed/removed/unchanged),
-//! - **gallery** render a static HTML index of a capture,
+//! - **gallery** render a static HTML index of a capture, with user-defined toggle
+//!   controls (theme, viewport, …) so one screen is one card you toggle through,
 //! - **comment** render the sticky pull-request comment body for a classification,
-//! - **manifest** write a tree's digests as a committable, image-free baseline,
+//! - **manifest** write a capture's digests as a committable, image-free baseline,
 //! - **verify** assert two captures of one build are byte-identical (the
 //!   reproducibility gate),
-//! - **doctor** preflight a capture's arch subtree and `<project>/<name>.png` layout,
+//! - **doctor** preflight a capture's arch subtree and `captures.json` index,
 //! - **arches** print the project's configured `[capture].arches` (drives the CI matrix),
 //! - **scope** match a changed-path list against the `[guard].paths` globs, so
 //!   the optional local pre-push guard re-captures only when it should,

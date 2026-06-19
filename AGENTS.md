@@ -8,12 +8,22 @@ comments, commit messages, or one-off notes.
 ## What this is
 
 `screencomp` — a CLI for the visual-docs framework with deterministic,
-network-free operations over screenshot trees laid out as
-`<root>/<arch>/<project>/<name>.png`: `classify`, `gallery`, `comment`, `manifest`
-(an image-free digest baseline), `verify` (the reproducibility gate — two captures
-of one build must be byte-identical), `doctor` (preflight the arch subtree and
-layout), and `arches` (print the configured `[capture].arches` for the CI matrix).
-Screenshots are compared by byte digest; nothing decodes images.
+network-free operations over a *capture*: a `captures.json` index (each shot's
+`name`, `toggles`, content `hash`, and `image` path) plus the PNGs it references,
+optionally scoped under a `<root>/<arch>/` layer. Commands: `classify`, `gallery`
+(renders user-defined toggle controls — theme, viewport, … — so one screen is one
+card you toggle through), `comment`, `manifest` (an image-free digest baseline),
+`verify` (the reproducibility gate — two captures of one build must be
+byte-identical), `doctor` (preflight the arch subtree and the index), and `arches`
+(print the configured `[capture].arches` for the CI matrix). Shots are compared by
+the `hash` recorded in `captures.json` — the hash IS the source of truth and
+nothing decodes (or re-hashes) images; the capture step owns producing it.
+
+A shot's identity is its `name` plus its toggle map; there is no fixed `project`
+dimension — "screen size" and the like are just toggles, declared once in
+`screencomp.toml` as `[[toggle]]` tables (`key`, optional `label`, ordered
+`values`). The gallery renders one control group per dimension that distinguishes
+a name's shots.
 
 Captures always run in a Linux container, so the OS never varies between a
 developer and CI — the only dimension that affects pixels is the CPU arch. The
@@ -22,7 +32,7 @@ supported arches are declared once in `screencomp.toml` under `[capture].arches`
 arch and CI fans out one capture lane per arch. Native macOS/Windows captures are
 not supported (they could never be byte-reproducible between local and CI). Arch
 subtree keys are bare arches: `x86_64`, `arm64`; the per-arch baseline is
-`shots/baseline/<arch>.sha256`.
+`shots/baseline/<arch>.json`.
 
 ## Two standing goals on every task
 

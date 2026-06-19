@@ -10,37 +10,44 @@ can be recomputed rather than committed, so repositories avoid binary churn.
 
 ## What it does
 
-Screenshots follow a single convention — `<root>/<project>/<name>.png` — where
-each `<project>` is a Playwright project/variant. From two such trees,
-`screencomp`:
+A capture is a directory holding a JSON index, `captures.json`, plus the PNG
+files it references. The capture step (your Playwright job) writes the index and
+computes each shot's content hash; `screencomp` treats that hash as the source of
+truth and never decodes or re-hashes the PNGs. A shot's identity is its `name`
+plus a map of *toggles* (e.g. `theme=dark`, `viewport=desktop`), so the old fixed
+"project" dimension is gone — screen size and the like are now just toggles. From
+two such captures, `screencomp`:
 
 - **`classify`** — compares `current` against `baseline` and labels each
-  screenshot `added` / `changed` / `removed` / `unchanged` (by content hash).
-- **`gallery`** — renders a self-contained `index.html` index of a tree, or a
+  shot `added` / `changed` / `removed` / `unchanged` (by content hash).
+- **`gallery`** — renders a self-contained `index.html` index of a capture, or a
   before/after **diff gallery** when given a `--baseline` (great for PR previews).
+  One screen is a single card with [toggle controls](#toggle-controls-one-card-per-screen),
+  not one card per variant.
 - **`comment`** — renders the sticky Markdown PR comment body for a
   classification (with a stable HTML marker for upserts).
-- **`manifest`** — writes a tree's digests as a tiny text file usable as a
-  committed, image-free baseline (`classify`/`comment` accept it via
-  `--baseline-manifest`).
+- **`manifest`** — writes a capture's index as an image-stripped, pretty-printed
+  JSON baseline you commit *instead of* the PNGs (`classify`/`comment` accept it
+  via `--baseline-manifest`).
 - **`verify`** — asserts two captures of the *same* build are byte-identical
   (the [reproducibility gate](#reproducibility-gate-verify)); exits non-zero the
   moment they diverge.
 - **`doctor`** — a [preflight](#preflight-doctor) that prints the resolved
-  arch subtree and sanity-checks the `<project>/<name>.png` layout before you
-  classify; `doctor --env` instead checks the *setup* (is the pre-push guard
-  enabled, does the workflow pin match this CLI, is Docker present).
+  arch subtree and sanity-checks the `captures.json` index before you classify;
+  `doctor --env` instead checks the *setup* (is the pre-push guard enabled, does
+  the workflow pin match this CLI, is Docker present).
 - **`arches`** — prints the project's configured `[capture].arches` (one per
   line, or a JSON array); the CI matrix reads it to fan out one capture lane per
   arch.
 
-It never decodes images — it content-hashes bytes — so output is deterministic
-and the tool has no image-codec dependencies.
+It never decodes images — it compares the content hashes recorded in
+`captures.json` — so output is deterministic and the tool has no image-codec
+dependencies.
 
 Captures always run in a Linux container, so the OS never varies between a
 developer and CI — the only thing that changes the content hash is the CPU
 architecture. Each command takes an optional `--arch` to compare within a single
-`<root>/<arch>/<project>/<name>.png` subtree (see
+`<root>/<arch>/captures.json` subtree (see
 [Per-arch comparison](#per-arch-comparison)). The supported arches are declared
 once in `screencomp.toml` (`[capture].arches`), so local commands default to your
 host arch and CI fans one lane out per arch.
@@ -150,7 +157,7 @@ jobs:
   visual-docs:
     uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
     with:
-      capture-command: |        # MUST write $SHOTS_OUT/<project>/<name>.png
+      capture-command: |        # MUST write $SHOTS_OUT/captures.json + the PNGs it references
         npm ci
         npx playwright install --with-deps chromium
         npx playwright test
@@ -320,27 +327,32 @@ capture into both the workflow and the hook, seed the baseline once and commit i
 switch to [CI auto-accept](#pick-your-gate) set `fail-on-drift: false` and
 `update-manifest: true` in the workflow.
 
-Given trees laid out as `<root>/<project>/<name>.png`:
+Given two captures — each a directory with a `captures.json` index plus its
+PNGs — that resolve to these shots:
 
 ```text
-baseline/desktop/home.png      current/desktop/home.png      # unchanged
-baseline/desktop/about.png     current/desktop/about.png     # changed
-                               current/desktop/pricing.png   # added
-baseline/mobile/home.png                                     # removed
+baseline: home                          current: home                          # unchanged
+baseline: about                         current: about                         # changed
+                                        current: pricing                       # added
+baseline: home [viewport=mobile]                                               # removed
 ```
 
-Classify (human, then machine-readable):
+Classify (human, then machine-readable). The human label is the shot's `name`,
+plus its toggles in key order when any are set:
 
 ```sh
 $ screencomp classify --baseline baseline --current current
-changed desktop/about
-added desktop/pricing
-removed mobile/home
+changed about
+added pricing
+removed home [viewport=mobile]
 added 1 changed 1 removed 1 unchanged 1
 
 $ screencomp classify --baseline baseline --current current --format json
-{"entries":[…],"counts":{"added":1,"changed":1,"removed":1,"unchanged":1},"changed":true}
+{"entries":[{"name":"about","toggles":{},"status":"changed"},…],"counts":{"added":1,"changed":1,"removed":1,"unchanged":1},"changed":true}
 ```
+
+Each JSON entry is `{"name":…,"toggles":{…},"status":…}` — the toggle map
+identifies which variant of a screen the entry is.
 
 Build a gallery and render the PR comment:
 
@@ -358,10 +370,11 @@ screencomp comment --baseline baseline --current current \
 ```
 
 The diff gallery groups shots into Changed (rendered before/after), Added,
-Removed, and Unchanged, and copies both image trees so it is self-contained at
-`<output>/baseline/<project>/<name>.png` and `<output>/current/<project>/<name>.png`.
-A plain gallery (no `--baseline`) instead lays a single tree out flat at
-`<output>/<project>/<name>.png`.
+Removed, and Unchanged, and copies both captures' images so it is self-contained:
+each shot's PNG lands at `<output>/baseline/<image>` and `<output>/current/<image>`,
+where `<image>` is the path that shot's entry records in `captures.json`. A plain
+gallery (no `--baseline`) instead copies a single capture's images flat at
+`<output>/<image>`.
 
 When the diff is small (at most `comment.embed_limit` screenshots differ — 10 by
 default) and the comment can resolve an image URL, it embeds the changed shots
@@ -369,19 +382,50 @@ inline (changed before/after, added/removed as a single image) and still links t
 the full gallery. Larger diffs fall back to a path listing plus the link.
 Override the threshold with `--embed-limit <N>` (`0` disables embedding).
 
-The comment resolves its "Before" and "After" image URLs to match the gallery
-layout above:
+The comment resolves each preview image as `<base>/<image>` using that shot's
+`image` path from `captures.json`, matching the gallery layout above:
 
 - `--gallery-url <URL>` is the "View full gallery" link and, on its own, derives
-  the preview bases from what `gallery` writes. With an image-tree baseline
-  (`--baseline`) that is a diff gallery, so `<URL>/baseline/…` and `<URL>/current/…`.
-  With `--baseline-manifest` no baseline PNGs exist, so it points "After" at a
-  plain gallery of the current shots (`<URL>/…`) and omits "Before" rather than
-  emit a baseline URL that would 404.
+  the preview bases from what `gallery` writes. With an image baseline
+  (`--baseline`) that is a diff gallery, so `<URL>/baseline/<image>` and
+  `<URL>/current/<image>`. With `--baseline-manifest` no baseline PNGs exist, so
+  it points "After" at a plain gallery of the current shots (`<URL>/<image>`) and
+  omits "Before" rather than emit a baseline URL that would 404.
 - `--baseline-url <URL>` / `--current-url <URL>` override either side explicitly,
-  each in the plain `<URL>/<project>/<name>.png` layout. This is how manifest mode
-  still shows a real before/after diff: point `--baseline-url` at a canonical/main
-  gallery and `--current-url` at the per-PR one.
+  each in the plain `<URL>/<image>` layout. This is how manifest mode still shows
+  a real before/after diff: point `--baseline-url` at a canonical/main gallery and
+  `--current-url` at the per-PR one.
+
+### Toggle controls: one card per screen
+
+A shot varies over user-defined *toggle dimensions* — `theme`, `viewport`,
+`density`, … — recorded per shot in `captures.json` (`"toggles": {"theme":
+"dark"}`) and declared once in `screencomp.toml` as `[[toggle]]` tables. Instead
+of rendering one card per variant (a wall of near-duplicate `home`/`home-dark`/
+`home-mobile` thumbnails), the gallery renders **one card per screen `name`** with
+a control group per dimension; clicking a toggle swaps the visible image in place:
+
+```toml
+# screencomp.toml — one [[toggle]] per dimension your capture varies over.
+[[toggle]]
+key = "theme"               # required; [A-Za-z0-9_-]; matches a shot's toggle keys
+label = "Theme"             # optional display label; defaults to the key
+values = ["light", "dark"]  # required, ordered; the first is the gallery default
+
+[[toggle]]
+key = "viewport"
+label = "Viewport"
+values = ["desktop", "mobile"]
+```
+
+A control group appears only for a dimension that *distinguishes* a given name —
+one with two or more of its declared values actually present among that name's
+shots — so a screen captured at a single theme shows no theme control. Dimensions
+render in declaration order, each value in its declared order, opening on the first
+(the default). A toggle key or value a shot uses but no `[[toggle]]` declares is a
+problem [`doctor`](#preflight-doctor) flags. The gallery is a single self-contained
+`index.html` (inline CSS/JS, image `src`s relative to the page), so it deploys
+as-is to Pages.
 
 `classify --exit-code` returns a non-zero status when differences exist, for
 automation that wants a signal without parsing output:
@@ -396,18 +440,19 @@ unaffected).
 ### Image-free baselines (digest manifest)
 
 Since comparison is by content digest, the baseline pixels are unnecessary — only
-the per-shot digests are. `screencomp manifest` writes them as a tiny
-`sha256sum`-style text file, which you commit *instead of* the PNGs so the
-repository never accumulates binary history:
+the per-shot digests are. `screencomp manifest` writes the capture's index as a
+pretty-printed JSON baseline (the `captures.json` schema with each `image` path
+stripped, since a baseline commits no PNGs), which you commit *instead of* the
+images so the repository never accumulates binary history:
 
 ```sh
-# Record the current capture as the baseline (one line per shot). With
-# [capture].arches set, --arch defaults to the host arch and can be omitted.
+# Record the current capture as the baseline. With [capture].arches set, --arch
+# defaults to the host arch and can be omitted.
 screencomp manifest --input shots/current --arch auto \
-    --output shots/baseline/x86_64.sha256
+    --output shots/baseline/x86_64.json
 
 # Later, classify a new capture against that manifest — no baseline images.
-screencomp classify --baseline-manifest shots/baseline/x86_64.sha256 \
+screencomp classify --baseline-manifest shots/baseline/x86_64.json \
     --current shots/current --arch auto
 ```
 
@@ -416,21 +461,21 @@ alternative to `--baseline <DIR>` (exactly one is required). The manifest is
 already arch-specific, so `--arch` then scopes only `--current`. Its
 diff in a pull request (old hash → new hash per shot) is an exact, reviewable
 record of what changed; render the actual pixels with `gallery` (which still
-needs an image tree). See [`examples/visual-docs.yml`](examples/visual-docs.yml).
+needs a capture with images). See [`examples/visual-docs.yml`](examples/visual-docs.yml).
 
 ### Per-arch comparison
 
 Captures always run in a Linux container, so the OS that renders a screenshot
 never varies between a developer and CI — but the same UI rendered on a different
 **CPU architecture** still produces byte-different PNGs. So the one dimension you
-split on is the arch: give each arch its own subtree and pass `--arch` to compare
-only within it:
+split on is the arch: give each arch its own subtree (a `captures.json` index plus
+its PNGs under `<root>/<arch>/`) and pass `--arch` to compare only within it:
 
 ```text
-shots/baseline/x86_64/desktop/home.png
-shots/baseline/arm64/desktop/home.png
-shots/current/x86_64/desktop/home.png
-shots/current/arm64/desktop/home.png
+shots/baseline/x86_64/captures.json   (+ the PNGs it references)
+shots/baseline/arm64/captures.json
+shots/current/x86_64/captures.json
+shots/current/arm64/captures.json
 ```
 
 ```sh
@@ -519,33 +564,38 @@ for the fix.
 
 ### Preflight (`doctor`)
 
-Before the first classify, confirm captures actually landed where every command
-looks for them. `doctor` resolves the arch subtree and scans the
-`<root>/<project>/<name>.png` layout:
+Before the first classify, confirm the capture actually landed where every command
+looks for it and that its index is well-formed. `doctor` resolves the arch subtree
+and reads the `captures.json` index, reporting the screen names, the toggle
+dimensions it observed, and the shot count:
 
 ```sh
 $ screencomp doctor --input shots/current --arch auto
 arch: x86_64 (auto)
-inspected: shots/current/x86_64
-projects: 2
-  desktop (3 shots)
-  mobile (1 shot)
-shots: 4
-ok: layout matches <project>/<name>.png
+inspected: shots/current/x86_64/captures.json
+names: 2
+  home (2 shots)
+  about (1 shot)
+shots: 3
+toggles: 1
+  theme [light, dark]
+ok: capture index is well-formed
 ```
 
-It flags the two mistakes that otherwise surface only as a confusing *empty
-diff*: a capture written to the wrong path (`.png` files stranded at the root
-instead of under a `<project>/` directory), and an empty capture — often an
-`--arch` that does not match the subtree on disk. Pass `--exit-code` to
-turn either problem into a non-zero (`3`) status for a CI preflight gate, or
-`--format json` for a machine-readable report.
+It flags the problems that otherwise surface only as a confusing *empty diff* or a
+broken gallery: an empty capture (often an `--arch` that does not match the subtree
+on disk), a shot using a toggle key or value that no `[[toggle]]` in
+`screencomp.toml` declares, and a referenced `image` missing on disk. Any of these
+makes the verdict line `problems found: capture index will not render as expected`
+instead of `ok: capture index is well-formed`. Pass `--exit-code` to turn a problem
+into a non-zero (`3`) status for a CI preflight gate, or `--format json` for a
+machine-readable report.
 
 Pass `--baseline-manifest <file>` to also sanity-check a committed manifest
 against the capture. `doctor` then warns on the *other* confusing failure — when
 **every** shot looks changed — which is almost always a baseline captured on a
 different arch than the host, not a real diff. It catches it two ways: an
-`<arch>.sha256` filename naming an arch other than the capture's, and
+`<arch>.json` filename naming an arch other than the capture's, and
 shared shots with zero unchanged. Both are advisory and never fail the gate.
 
 #### `doctor --env`: is the setup actually wired?
@@ -737,7 +787,7 @@ There are **two independent comparisons**, and conflating them is a common
 first-PR confusion:
 
 - **The committed digest manifest is the pass/fail gate.** `classify --exit-code`
-  compares the capture against `shots/baseline/<arch>.sha256`. Under the
+  compares the capture against `shots/baseline/<arch>.json`. Under the
   [strict gate](#pick-your-gate) you regenerate and commit that manifest locally
   (the pre-push guard), so by the time CI runs it already matches — the gate is
   green.
@@ -754,12 +804,12 @@ no committed baseline to pass the gate yet. Seed it once, in the **same arch
 container CI uses**, then commit:
 
 ```sh
-# 1. Capture into shots/current/<arch>/… (your real capture, in the pinned container).
+# 1. Capture into shots/current/<arch>/captures.json (your real capture, in the pinned container).
 # 2. Confirm the capture is deterministic before you trust it as a baseline:
 screencomp verify --first shots/current --second shots/verify --arch auto
-# 3. Record the digests as the committed baseline and commit the .sha256 file:
+# 3. Record the digests as the committed baseline and commit the .json file:
 screencomp manifest --input shots/current --arch auto \
-  --output shots/baseline/$(screencomp arches | head -1).sha256
+  --output shots/baseline/$(screencomp arches | head -1).json
 ```
 
 `verify` is the determinism check that makes an image-free baseline safe — it
@@ -781,7 +831,8 @@ Human output goes to stdout; errors go to stderr; the two never mix.
 ## Configuration
 
 Commands read optional configuration — `[capture].arches` (the arch list, also
-the default arch for every command), `[comment]`, and `[guard].paths`. `--config`
+the default arch for every command), `[comment]`, `[[toggle]]` (the gallery's
+toggle dimensions), and `[guard].paths`. `--config`
 is a global flag, so it works on any subcommand. Resolution
 order: `--config <file>` → `$SCREENCOMP_CONFIG` → a `screencomp.toml`
 auto-discovered by walking up from the working directory → built-in defaults (so
@@ -796,7 +847,7 @@ so the pre-push guard's `scope` fires even if the hook forgets `--config`.
 [capture]
 # CPU architectures you maintain screenshots for — the single source of truth.
 # Captures run in a Linux container, so only the arch varies. Each entry gets its
-# own committed baseline (shots/baseline/<arch>.sha256) and a CI capture lane;
+# own committed baseline (shots/baseline/<arch>.json) and a CI capture lane;
 # local commands default to your host arch and require it to be listed here.
 arches = ["arm64"]          # or ["x86_64", "arm64"]
 
@@ -806,15 +857,32 @@ marker = "screencomp"       # [A-Za-z0-9_-]; embedded as <!-- marker --> for ups
 show_unchanged = false      # also list unchanged screenshots
 embed_limit = 10            # embed images inline when ≤ N shots differ (0 disables)
 
+# One [[toggle]] per dimension your screenshots vary over. The gallery renders a
+# control group per dimension that has ≥2 distinct values present for a screen, so
+# one screen is a single card you toggle through instead of one card per variant.
+[[toggle]]
+key = "theme"               # required; [A-Za-z0-9_-]; matches a shot's toggle keys
+label = "Theme"             # optional display label; defaults to the key
+values = ["light", "dark"]  # required, ordered; the first is the gallery default
+
+[[toggle]]
+key = "viewport"
+label = "Viewport"
+values = ["desktop", "mobile"]
+
 [guard]                                          # optional local pre-push guard
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**"] # globs that trigger a re-capture
-manifest = "shots/baseline/arm64.sha256"           # committed digest baseline
+manifest = "shots/baseline/arm64.json"             # committed digest baseline
 gallery  = "shots/review"                          # local review-gallery output dir
 ```
 
 `[capture].arches` drives both the CI matrix (`screencomp arches --format json`)
-and the per-arch default; the baseline manifest filename is `shots/baseline/<arch>.sha256`.
-All `[guard]` fields are optional; with no `paths` the guard never fires. Only
+and the per-arch default; the baseline manifest filename is `shots/baseline/<arch>.json`.
+Each `[[toggle]]` declares a gallery dimension by `key` (matched against a shot's
+toggle keys in `captures.json`), an optional `label`, and the ordered `values` it
+can take (the first is the default); a toggle key or value a shot uses but no
+`[[toggle]]` declares is a problem [`doctor`](#preflight-doctor) flags. All
+`[guard]` fields are optional; with no `paths` the guard never fires. Only
 `scope` consumes `paths` — the rest document where the hook template finds the
 baseline and writes its review gallery.
 

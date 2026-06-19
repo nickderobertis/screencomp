@@ -30,7 +30,7 @@ arches = ["x86_64"]   # arch(es) you maintain; the hook detects the host arch it
 # Globs (matched against `git diff --name-only`, repo-root-relative) that should
 # trigger a re-capture. Empty/omitted means the guard never fires.
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**", "public/**"]
-manifest = "shots/baseline/x86_64.sha256"        # committed digest baseline
+manifest = "shots/baseline/x86_64.json"          # committed digest baseline
 gallery  = "shots/review"                        # local review-gallery output dir
 ```
 

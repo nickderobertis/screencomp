@@ -29,14 +29,16 @@ If you need neither — just adapt the **Capture screenshots** step — start fr
 
 ### Image-free baselines (digest manifest)
 
-The workflow commits only a tiny per-arch **digest manifest**
-(`shots/baseline/<arch>.sha256`), never the baseline PNGs. Because
+A capture is a directory holding a `captures.json` index plus the PNGs it
+references; the capture step writes the index and each shot's hash. The workflow
+commits only a tiny per-arch **digest manifest** (`shots/baseline/<arch>.json` —
+the index with image paths stripped), never the baseline PNGs. Because
 `screencomp` compares by content digest, the manifest is all that `classify` and
 `comment` need, so the repository never accumulates binary history and grows
 without bound. The manifest's diff in a PR (old hash → new hash per shot) is the
 precise record of what changed; the gallery published to Pages shows the current
 pixels. Seed it once with `screencomp manifest --input shots/current --arch
-auto --output shots/baseline/<arch>.sha256` and commit it.
+auto --output shots/baseline/<arch>.json` and commit it.
 
 ### Standard configuration: capture in one pinned container
 
@@ -44,7 +46,7 @@ A screenshot's bytes depend on the OS, CPU, fonts, and GPU that rendered it.
 Pinning capture to a single Linux container — on CI and locally — fixes the OS
 everywhere, so the ONLY dimension left is the CPU **arch**. That is the single
 source of truth declared once in `screencomp.toml` (`[capture].arches`), with one
-subtree and one baseline per arch (`shots/baseline/<arch>.sha256`).
+subtree and one baseline per arch (`shots/baseline/<arch>.json`).
 
 macOS cannot run Linux containers natively (Docker runs a Linux VM), so a
 container on a Mac renders Linux pixels; `--platform=linux/amd64` (or
@@ -119,10 +121,11 @@ commit and push.
 
 Prerequisites:
 
-- A committed baseline manifest at `shots/baseline/x86_64.sha256` (text), one per
-  arch in `[capture].arches`.
+- A committed baseline manifest at `shots/baseline/x86_64.json` (the index with
+  image paths stripped), one per arch in `[capture].arches`.
 - The capture step writes the current run to
-  `shots/current/<arch>/<project>/<name>.png` inside the pinned container.
+  `shots/current/<arch>/captures.json` plus the PNGs it references, inside the
+  pinned container.
 - GitHub Pages enabled (**Settings → Pages → Build and deployment → GitHub Actions**).
 
 ## Local pre-push guard (the strict gate's local half)
@@ -155,7 +158,7 @@ arches = ["x86_64"]   # the arch(es) you maintain; also the per-command default
 
 [guard]
 paths = ["src/**/*.{ts,tsx,css}", "playwright/**", "public/**"]
-manifest = "shots/baseline/x86_64.sha256"
+manifest = "shots/baseline/x86_64.json"
 gallery  = "shots/review"
 ```
 
