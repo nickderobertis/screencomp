@@ -10,7 +10,8 @@
 // byte-reproducible.
 //
 // The reusable workflow exports SHOTS_OUT (e.g. shots/current/x86_64); locally it
-// defaults to shots/current.
+// defaults to shots/current. This spec is the canonical reference for how a
+// consumer emits the captures.json schema (schema, name, toggles, hash, image).
 import { test } from '@playwright/test';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
