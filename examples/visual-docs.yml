@@ -60,9 +60,12 @@ on:
 permissions:
   contents: read
 
+# Cancel only superseded PR previews; never the canonical (push-to-main) deploy or
+# the scheduled prune. They share the refs/heads/main concurrency key, so cancelling
+# would let a follow-up push kill an in-flight gallery deploy — queue them instead.
 concurrency:
   group: visual-docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   visual-docs:

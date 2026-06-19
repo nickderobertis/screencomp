@@ -160,12 +160,18 @@ on:
           "Branch protection".
         required: false
 
-# Serialize Pages deploys: every run writes to the same gh-pages branch, so
-# overlapping pushes would race. Per-ref cancellation keeps superseded PR runs
-# from piling up.
+# Serialize gh-pages writes WITHOUT dropping canonical deploys. Every run writes
+# the same gh-pages branch, so overlapping runs on one ref would race — but the
+# fix is to QUEUE them, not cancel. Keyed by github.ref, the default branch's key
+# (refs/heads/main) is shared by every push and the scheduled prune, so
+# cancel-in-progress:true would let a second push (a follow-up merge, the sync
+# bot's next push) kill the in-flight canonical deploy ~2s in, leaving a blessed
+# gallery half-deployed for someone to re-run by hand. So cancel ONLY PR previews,
+# where a newer push should supersede a stale one; on push/schedule it is off, so
+# runs queue on the shared ref instead of cancelling each other.
 concurrency:
   group: visual-docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---- Arches: resolve the capture arch matrix ------------------------------
@@ -317,9 +323,10 @@ jobs:
   # into one base commit, discarding the accreted blobs. Runs only when the caller
   # forwards a `schedule:` trigger. A destructive rewrite of
   # the GENERATED branch only — nothing bases work on gh-pages, and the canonical
-  # gallery is regenerated on the next default-branch push regardless. Schedule it
-  # at a quiet hour: the force-push shares a concurrency group with default-branch
-  # deploys (same github.ref) but not with in-flight PR previews, which redeploy.
+  # gallery is regenerated on the next default-branch push regardless. The
+  # force-push shares the default branch's concurrency group with push deploys
+  # (same github.ref), so it queues behind an in-flight deploy rather than racing
+  # it; it does not touch in-flight PR previews (a different ref), which redeploy.
   prune-history:
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest

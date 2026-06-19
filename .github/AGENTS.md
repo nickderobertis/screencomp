@@ -6,6 +6,14 @@
 - Pin actions to a stable major or a commit SHA. Default `permissions` to
   `contents: read`; grant a write scope only on the job that needs it (the binary
   upload job gets `contents: write`, the image push job `packages: write`).
+- The visual-docs concurrency group (`visual-docs-${{ github.ref }}`, in the
+  reusable workflow and both `examples/visual-docs*.yml`) must keep
+  `cancel-in-progress` scoped to PRs (`github.event_name == 'pull_request'`), never
+  a bare `true`. The default branch's key (`refs/heads/main`) is shared by every
+  push and the scheduled prune, so blanket cancellation lets a follow-up push (a
+  quick second merge, the sync bot) kill an in-flight canonical gallery deploy ~2s
+  in — a half-deployed gallery someone then re-runs by hand. PR previews still
+  cancel (supersede stale ones); push/schedule queue on the shared ref.
 - The release workflow runs tests before building any artifact and never
   publishes untested binaries or images. crates.io publish stays gated behind a
   repo variable and a token secret.
