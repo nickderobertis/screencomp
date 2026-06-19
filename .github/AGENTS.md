@@ -56,9 +56,18 @@
   interface change OR a demo-capture break is fixed by editing `demo/`;
   `sync-demo.yml` then `rsync --delete` mirrors `demo/` directly onto
   `screencomp-demo`'s `main` (no PR — a fully automated loop), preserving the
-  demo's `.git`, its committed `shots/baseline/<arch>.json` (digests of its real
-  pixels, regenerated there), and `.githooks/` (the hook is installed from the
-  shared `examples/pre-push`); this internal `demo/README.md` is not pushed. It
+  demo's `.git`, its committed `shots/baseline/<arch>.json`, and `.githooks/` (the
+  hook is installed from the shared `examples/pre-push`); this internal
+  `demo/README.md` is not pushed. The demo's capture is one script,
+  `demo/capture.sh`, shared by the caller workflow's `capture-command` and the
+  reseed below so they can't diverge. When a screencomp release changes the
+  capture index's format and leaves that baseline unreadable, `sync-demo` (which
+  also runs `on: release: published`, when the demo's `@v0` CLI is the just-released
+  one) reseeds `shots/baseline/<arch>.json` from a fresh capture in the SAME pinned
+  Playwright container — the byte-reproducibility the whole project rests on — and
+  commits it in the same push, so the demo self-heals from seed-not-gate back to
+  gating with no human step. A baseline that merely *drifted* (still readable) is
+  left alone — that stays the developer's to own. It
   uses the `SCREENCOMP_DEMO_PAT` (`contents: write`; the demo's `main` must allow
   the bot's push), no-ops without the secret, and shares a static `sync-demo`
   concurrency group. Keep `demo/` deterministic and in lockstep with the CLI — a
