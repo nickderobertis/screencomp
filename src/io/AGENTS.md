@@ -3,5 +3,6 @@
 - The only place filesystem access is allowed; keep domain logic out of it.
 - Paths are `camino` UTF-8; a non-UTF-8 entry is an error, not a lossy guess.
 - Wrap failures in `AppError` with operation and path context.
-- Layout convention is `<root>/<project>/<name>.png`; ignore non-`.png` files and
-  top-level non-directories rather than failing.
+- A capture is a directory holding `captures.json` (the index) plus the PNGs it
+  references by relative path. A missing directory is `NotADirectory`; a directory
+  without `captures.json`, or a malformed index, is `InvalidLayout`.

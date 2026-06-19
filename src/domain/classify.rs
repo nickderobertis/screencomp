@@ -1,14 +1,11 @@
-//! Compare two snapshots and classify each screenshot.
+//! Compare two snapshots and classify each shot.
 
 use std::collections::BTreeSet;
 
-use serde::Serialize;
-
 use super::snapshot::{ShotKey, Snapshot};
 
-/// Per-screenshot comparison result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// Per-shot comparison result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Status {
     /// Present in current, absent in baseline.
     Added,
@@ -32,41 +29,43 @@ impl Status {
     }
 }
 
-/// One classified screenshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One classified shot.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
-    /// Project/variant directory name.
-    pub(crate) project: String,
-    /// Screenshot base name.
-    pub(crate) name: String,
+    /// Identity (name + toggles) of the shot.
+    pub(crate) key: ShotKey,
     /// Comparison result.
     pub(crate) status: Status,
+    /// Baseline image path, when the baseline carried one (absent in manifest mode).
+    pub(crate) baseline_image: Option<String>,
+    /// Current image path, when the current capture carried one.
+    pub(crate) current_image: Option<String>,
 }
 
 /// Aggregate counts by status.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct Counts {
-    /// Number of added screenshots.
+    /// Number of added shots.
     pub(crate) added: usize,
-    /// Number of changed screenshots.
+    /// Number of changed shots.
     pub(crate) changed: usize,
-    /// Number of removed screenshots.
+    /// Number of removed shots.
     pub(crate) removed: usize,
-    /// Number of unchanged screenshots.
+    /// Number of unchanged shots.
     pub(crate) unchanged: usize,
 }
 
 /// Full classification of a current capture against a baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Classification {
-    /// Entries in `(project, name)` order.
+    /// Entries in `(name, toggles)` order.
     pub(crate) entries: Vec<Entry>,
     /// Aggregate counts.
     pub(crate) counts: Counts,
 }
 
 impl Classification {
-    /// Whether any screenshot was added, changed, or removed.
+    /// Whether any shot was added, changed, or removed.
     pub(crate) fn has_changes(&self) -> bool {
         self.counts.added + self.counts.changed + self.counts.removed > 0
     }
@@ -80,10 +79,12 @@ pub(crate) fn classify(baseline: &Snapshot, current: &Snapshot) -> Classificatio
     let mut counts = Counts::default();
 
     for key in keys {
-        let status = match (baseline.get(key), current.get(key)) {
+        let base = baseline.get(key);
+        let cur = current.get(key);
+        let status = match (base, cur) {
             (None, Some(_)) => Status::Added,
             (Some(_), None) => Status::Removed,
-            (Some(a), Some(b)) if a == b => Status::Unchanged,
+            (Some(a), Some(b)) if a.hash == b.hash => Status::Unchanged,
             (Some(_), Some(_)) => Status::Changed,
             (None, None) => unreachable!("key originates from one of the snapshots"),
         };
@@ -96,9 +97,10 @@ pub(crate) fn classify(baseline: &Snapshot, current: &Snapshot) -> Classificatio
         }
 
         entries.push(Entry {
-            project: key.project.clone(),
-            name: key.name.clone(),
+            key: key.clone(),
             status,
+            baseline_image: base.and_then(|s| s.image.clone()),
+            current_image: cur.and_then(|s| s.image.clone()),
         });
     }
 
@@ -108,16 +110,14 @@ pub(crate) fn classify(baseline: &Snapshot, current: &Snapshot) -> Classificatio
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::snapshot::Shot;
 
-    fn snap(items: &[(&str, &str, &str)]) -> Snapshot {
+    fn snap(items: &[(ShotKey, &str)]) -> Snapshot {
         let mut s = Snapshot::new();
-        for (project, name, digest) in items {
+        for (key, digest) in items {
             s.insert(
-                ShotKey {
-                    project: (*project).to_owned(),
-                    name: (*name).to_owned(),
-                },
-                (*digest).to_owned(),
+                key.clone(),
+                Shot::new(*digest, Some(format!("{}.png", key.name))),
             );
         }
         s
@@ -126,15 +126,15 @@ mod tests {
     #[test]
     fn detects_every_status() {
         let baseline = snap(&[
-            ("desktop", "home", "aa"),
-            ("desktop", "about", "bb"),
-            ("mobile", "home", "cc"),
+            (ShotKey::with("home", &[("theme", "light")]), "aa"),
+            (ShotKey::with("about", &[("theme", "light")]), "bb"),
+            (ShotKey::with("home", &[("theme", "dark")]), "cc"),
         ]);
         let current = snap(&[
-            ("desktop", "home", "aa"),  // unchanged
-            ("desktop", "about", "zz"), // changed
-            ("desktop", "pricing", "dd"), // added
-                                        // mobile/home removed
+            (ShotKey::with("home", &[("theme", "light")]), "aa"), // unchanged
+            (ShotKey::with("about", &[("theme", "light")]), "zz"), // changed
+            (ShotKey::with("pricing", &[("theme", "light")]), "dd"), // added
+                                                                  // home[theme=dark] removed
         ]);
 
         let c = classify(&baseline, &current);
@@ -144,26 +144,37 @@ mod tests {
         assert_eq!(c.counts.unchanged, 1);
         assert!(c.has_changes());
 
-        // Deterministic order: (project, name).
-        let order: Vec<(&str, Status)> = c
+        // Deterministic order: (name, toggles).
+        let order: Vec<(String, Status)> = c
             .entries
             .iter()
-            .map(|e| (e.name.as_str(), e.status))
+            .map(|e| (e.key.label(), e.status))
             .collect();
         assert_eq!(
             order,
             vec![
-                ("about", Status::Changed),
-                ("home", Status::Unchanged),
-                ("pricing", Status::Added),
-                ("home", Status::Removed),
+                ("about [theme=light]".to_owned(), Status::Changed),
+                ("home [theme=dark]".to_owned(), Status::Removed),
+                ("home [theme=light]".to_owned(), Status::Unchanged),
+                ("pricing [theme=light]".to_owned(), Status::Added),
             ]
         );
     }
 
     #[test]
+    fn carries_both_image_sides() {
+        let baseline = snap(&[(ShotKey::bare("home"), "aa")]);
+        let current = snap(&[(ShotKey::bare("home"), "bb")]);
+        let c = classify(&baseline, &current);
+        let e = &c.entries[0];
+        assert_eq!(e.status, Status::Changed);
+        assert_eq!(e.baseline_image.as_deref(), Some("home.png"));
+        assert_eq!(e.current_image.as_deref(), Some("home.png"));
+    }
+
+    #[test]
     fn identical_snapshots_have_no_changes() {
-        let s = snap(&[("desktop", "home", "aa")]);
+        let s = snap(&[(ShotKey::bare("home"), "aa")]);
         let c = classify(&s, &s);
         assert!(!c.has_changes());
         assert_eq!(c.counts.unchanged, 1);

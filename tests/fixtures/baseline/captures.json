@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "shots": [
+    { "name": "about", "toggles": { "viewport": "desktop" }, "hash": "1111111111111111111111111111111111111111111111111111111111111111", "image": "about-desktop.png" },
+    { "name": "home", "toggles": { "viewport": "desktop" }, "hash": "3333333333333333333333333333333333333333333333333333333333333333", "image": "home-desktop.png" },
+    { "name": "home", "toggles": { "viewport": "mobile" }, "hash": "4444444444444444444444444444444444444444444444444444444444444444", "image": "home-mobile.png" }
+  ]
+}

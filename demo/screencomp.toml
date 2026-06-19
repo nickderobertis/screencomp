@@ -15,6 +15,13 @@ title = "Visual changes"
 marker = "screencomp"        # [A-Za-z0-9_-]; one sticky comment per marker
 embed_limit = 10             # embed images inline when <= N shots differ (0 disables)
 
+# The demo captures each page at two viewports; the gallery renders this as a
+# toggle so one page is a single card you switch between, instead of two cards.
+[[toggle]]
+key = "viewport"
+label = "Viewport"
+values = ["desktop", "mobile"]
+
 [guard]
 # Local pre-push guard (.githooks/pre-push): re-capture only when these globs
 # change. Adjust to the files that actually affect the demo's screenshots.

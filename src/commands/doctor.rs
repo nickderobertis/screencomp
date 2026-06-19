@@ -20,10 +20,10 @@ use std::io::Write;
 use camino::Utf8Path;
 use serde::Serialize;
 
-use super::{Ctx, arch, discover_scoped, resolve_arch, scan_scoped, write_err};
+use super::{Ctx, arch, discover_scoped, resolve_arch, write_err};
 use crate::cli::{DoctorArgs, OutputFormat};
 use crate::domain::classify::classify;
-use crate::domain::layout::LayoutScan;
+use crate::domain::layout::{self, CapturePreflight};
 use crate::domain::preflight;
 use crate::errors::AppError;
 use crate::io::{fs, host};
@@ -53,26 +53,32 @@ pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
     let scoped = arch::scope(input, plat);
     // A missing scoped directory is the same hard error every command raises, so
     // a wrong `--arch` fails identically here (with a layout hint).
-    let scan = scan_scoped(input, plat)?;
+    let snapshot = discover_scoped(input, plat)?;
+    let scan = layout::preflight(&snapshot, &ctx.config.toggles);
+    // Images the index references but the capture step never wrote: a silently
+    // broken gallery. Reported as a problem alongside the toggle checks.
+    let missing_images = fs::missing_images(&scoped, &snapshot);
 
-    // Optional sanity check against a committed manifest: catch the "everything
+    // Optional sanity check against a committed baseline: catch the "everything
     // changed" arch mismatch before it reaches classify.
     let warnings = match args.baseline_manifest.as_deref() {
         Some(manifest) => baseline_warnings(manifest, input, plat)?,
         None => Vec::new(),
     };
 
+    let problems = scan.has_problems() || !missing_images.is_empty();
+
     match args.format {
         OutputFormat::Json => {
-            write_json(input, plat, &scoped, &scan, &warnings, out)?;
+            write_json(input, plat, &scoped, &scan, &missing_images, &warnings, out)?;
         }
         OutputFormat::Human if !ctx.quiet => {
-            write_human(plat, auto, &scoped, &scan, &warnings, out)?;
+            write_human(plat, auto, &scoped, &scan, &missing_images, &warnings, out)?;
         }
         OutputFormat::Human => {}
     }
 
-    if args.exit_code && scan.has_problems() {
+    if args.exit_code && problems {
         return Ok(3);
     }
     Ok(0)
@@ -84,10 +90,9 @@ pub(crate) fn run(args: &DoctorArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
 /// A screenshot's bytes depend on the CPU arch and fonts that rendered it, so a
 /// baseline captured on another arch makes *every* shot look changed — the
 /// single most confusing first-run failure. This flags it two ways: when the
-/// manifest's `<arch>.sha256` filename names an arch other than the capture's,
-/// and when the comparison finds shared shots but zero unchanged. Both are
-/// advisory (they never fail the gate), since a legitimately total rewrite looks
-/// the same.
+/// baseline's `<arch>.json` filename names an arch other than the capture's, and
+/// when the comparison finds shared shots but zero unchanged. Both are advisory
+/// (they never fail the gate), since a legitimately total rewrite looks the same.
 fn baseline_warnings(
     manifest: &Utf8Path,
     input: &Utf8Path,
@@ -102,7 +107,7 @@ fn baseline_warnings(
 
     let mut warnings = Vec::new();
 
-    // The manifest filename encodes its arch by convention (x86_64.sha256).
+    // The baseline filename encodes its arch by convention (x86_64.json).
     if let Some(stem) = manifest.file_stem()
         && looks_like_arch_key(stem)
         && arch::canonical(stem) != reference
@@ -139,23 +144,31 @@ fn write_json(
     input: &Utf8Path,
     arch: Option<&str>,
     scoped: &Utf8Path,
-    scan: &LayoutScan,
+    scan: &CapturePreflight,
+    missing_images: &[String],
     warnings: &[String],
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
     #[derive(Serialize)]
-    struct Project<'a> {
+    struct Name<'a> {
         name: &'a str,
         shots: usize,
+    }
+    #[derive(Serialize)]
+    struct Toggle<'a> {
+        key: &'a str,
+        values: &'a [String],
     }
     #[derive(Serialize)]
     struct Report<'a> {
         input: &'a str,
         arch: Option<&'a str>,
         inspected: &'a str,
-        projects: Vec<Project<'a>>,
-        loose_pngs: &'a [String],
+        names: Vec<Name<'a>>,
+        toggles: Vec<Toggle<'a>>,
         total_shots: usize,
+        undeclared_toggles: &'a [String],
+        missing_images: &'a [String],
         warnings: &'a [String],
         ok: bool,
     }
@@ -164,31 +177,41 @@ fn write_json(
         input: input.as_str(),
         arch,
         inspected: scoped.as_str(),
-        projects: scan
-            .projects
+        names: scan
+            .names
             .iter()
-            .map(|p| Project {
-                name: &p.name,
-                shots: p.shots,
+            .map(|n| Name {
+                name: &n.name,
+                shots: n.shots,
             })
             .collect(),
-        loose_pngs: &scan.loose_pngs,
+        toggles: scan
+            .toggles
+            .iter()
+            .map(|t| Toggle {
+                key: &t.key,
+                values: &t.values,
+            })
+            .collect(),
         total_shots: scan.total_shots(),
+        undeclared_toggles: &scan.undeclared,
+        missing_images,
         warnings,
-        ok: !scan.has_problems(),
+        ok: !scan.has_problems() && missing_images.is_empty(),
     };
     let json = serde_json::to_string(&report)
         .map_err(|e| AppError::io("serializing JSON", std::io::Error::other(e)))?;
     writeln!(out, "{json}").map_err(write_err)
 }
 
-/// Human-readable preflight report: resolved arch, scanned path, projects, and
-/// any layout problems, ending in a single verdict line.
+/// Human-readable preflight report: resolved arch, inspected path, names, observed
+/// toggles, and any problems, ending in a single verdict line.
 fn write_human(
     arch: Option<&str>,
     auto: bool,
     scoped: &Utf8Path,
-    scan: &LayoutScan,
+    scan: &CapturePreflight,
+    missing_images: &[String],
     warnings: &[String],
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
@@ -196,45 +219,60 @@ fn write_human(
         // Arch auto-detected from the host (explicit `auto` or the config default).
         Some(key) if auto => writeln!(out, "arch: {key} (auto)"),
         Some(key) => writeln!(out, "arch: {key}"),
-        // No arch layer: the root is treated as project-level.
-        None => writeln!(out, "arch: none (root is project-level)"),
+        // No arch layer: the root holds the capture index directly.
+        None => writeln!(out, "arch: none (root holds the capture index)"),
     }
     .map_err(write_err)?;
-    writeln!(out, "inspected: {scoped}").map_err(write_err)?;
+    writeln!(out, "inspected: {scoped}/{}", fs::CAPTURES_FILE).map_err(write_err)?;
 
-    writeln!(out, "projects: {}", scan.projects.len()).map_err(write_err)?;
-    for project in &scan.projects {
+    writeln!(out, "names: {}", scan.names.len()).map_err(write_err)?;
+    for name in &scan.names {
         writeln!(
             out,
             "  {} ({} {})",
-            project.name,
-            project.shots,
-            if project.shots == 1 { "shot" } else { "shots" }
+            name.name,
+            name.shots,
+            if name.shots == 1 { "shot" } else { "shots" }
         )
         .map_err(write_err)?;
     }
     writeln!(out, "shots: {}", scan.total_shots()).map_err(write_err)?;
 
-    if !scan.loose_pngs.is_empty() {
-        writeln!(
-            out,
-            "warning: {} .png file(s) directly under the root (expected <project>/<name>.png): {}",
-            scan.loose_pngs.len(),
-            scan.loose_pngs.join(", ")
-        )
-        .map_err(write_err)?;
+    if scan.toggles.is_empty() {
+        writeln!(out, "toggles: none").map_err(write_err)?;
+    } else {
+        writeln!(out, "toggles: {}", scan.toggles.len()).map_err(write_err)?;
+        for toggle in &scan.toggles {
+            writeln!(out, "  {} [{}]", toggle.key, toggle.values.join(", ")).map_err(write_err)?;
+        }
     }
+
     if scan.total_shots() == 0 {
         writeln!(out, "warning: no screenshots found under {scoped}").map_err(write_err)?;
+    }
+    for undeclared in &scan.undeclared {
+        writeln!(out, "warning: {undeclared}").map_err(write_err)?;
+    }
+    if !missing_images.is_empty() {
+        writeln!(
+            out,
+            "warning: {} referenced image(s) missing on disk: {}",
+            missing_images.len(),
+            missing_images.join(", ")
+        )
+        .map_err(write_err)?;
     }
     for warning in warnings {
         writeln!(out, "warning: {warning}").map_err(write_err)?;
     }
 
-    if scan.has_problems() {
-        writeln!(out, "problems found: layout will not classify as expected")
+    if scan.has_problems() || !missing_images.is_empty() {
+        writeln!(
+            out,
+            "problems found: capture index will not render as expected"
+        )
     } else {
-        writeln!(out, "ok: layout matches <project>/<name>.png")
+        writeln!(out, "ok: capture index is well-formed")
     }
     .map_err(write_err)
 }

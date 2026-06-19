@@ -48,7 +48,7 @@ case "$(uname -m)" in
 esac
 
 # ---- adapt these to your repo; mirror screencomp.toml's [guard] --------------
-MANIFEST="shots/baseline/${ARCH}.sha256"      # committed baseline for this arch
+MANIFEST="shots/baseline/${ARCH}.json"        # committed baseline for this arch
 GALLERY="shots/review"                        # [guard].gallery  (review output)
 CURRENT="shots/current"                       # capture root, mirrors visual-docs.yml
 CONFIG="${SCREENCOMP_CONFIG:-screencomp.toml}" # supplies [guard].paths to `scope`
@@ -158,8 +158,9 @@ if [ -n "$host_ca" ] && [ -f "$host_ca" ]; then
 fi
 
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
-# Capture into $CURRENT/$ARCH/<project>/<name>.png using the SAME pinned container
-# and flags as examples/visual-docs.yml, so local bytes match CI. The anonymous
+# Capture into $CURRENT/$ARCH/captures.json (plus the PNGs it references) using the
+# SAME pinned container and flags as examples/visual-docs.yml, so local bytes match
+# CI. Your capture step writes captures.json and each shot's hash. The anonymous
 # `-v /work/node_modules` volume masks the bind-mounted host tree so `npm ci`
 # installs into the container cleanly — matching CI's fresh checkout instead of
 # churning (or colliding with) your host node_modules. The CA mounts above (if

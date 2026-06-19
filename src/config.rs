@@ -12,6 +12,8 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::Deserialize;
 
+use crate::domain::toggle::ToggleDim;
+
 /// Environment variable consulted for a config path when `--config` is absent.
 pub(crate) const CONFIG_ENV: &str = "SCREENCOMP_CONFIG";
 
@@ -27,6 +29,9 @@ pub(crate) struct Config {
     pub(crate) comment: CommentConfig,
     /// Settings for the optional local pre-push guard.
     pub(crate) guard: GuardConfig,
+    /// User-defined toggle dimensions the gallery renders controls for, in
+    /// declaration order. Empty (the default) means a flat gallery with no toggles.
+    pub(crate) toggles: Vec<ToggleDim>,
 }
 
 /// Capture-wide settings.
@@ -86,6 +91,7 @@ impl Default for Config {
                 embed_limit: 10,
             },
             guard: GuardConfig::default(),
+            toggles: Vec::new(),
         }
     }
 }
@@ -190,6 +196,17 @@ struct RawConfig {
     comment: RawCommentConfig,
     #[serde(default)]
     guard: RawGuardConfig,
+    /// `[[toggle]]` array-of-tables declaring the gallery's toggle dimensions.
+    #[serde(default)]
+    toggle: Vec<RawToggle>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawToggle {
+    key: String,
+    label: Option<String>,
+    values: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -240,6 +257,7 @@ impl RawConfig {
         }
 
         let guard = self.guard.validate()?;
+        let toggles = validate_toggles(self.toggle)?;
 
         Ok(Config {
             capture,
@@ -252,8 +270,64 @@ impl RawConfig {
                 embed_limit: comment.embed_limit.unwrap_or(defaults.comment.embed_limit),
             },
             guard,
+            toggles,
         })
     }
+}
+
+/// Validate the declared `[[toggle]]` dimensions into [`ToggleDim`]s.
+///
+/// Each dimension needs a `[A-Za-z0-9_-]` key (matching a shot's toggle keys),
+/// a non-empty ordered list of distinct non-empty values, and a unique key across
+/// dimensions. The `label` defaults to the key when omitted.
+fn validate_toggles(raw: Vec<RawToggle>) -> Result<Vec<ToggleDim>, ConfigError> {
+    let mut seen_keys = std::collections::BTreeSet::new();
+    let mut dims = Vec::with_capacity(raw.len());
+    for t in raw {
+        if t.key.is_empty()
+            || !t
+                .key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(ConfigError::Invalid {
+                reason: format!(
+                    "toggle.key {:?} must be non-empty and match [A-Za-z0-9_-]",
+                    t.key
+                ),
+            });
+        }
+        if !seen_keys.insert(t.key.clone()) {
+            return Err(ConfigError::Invalid {
+                reason: format!("duplicate toggle.key {:?}", t.key),
+            });
+        }
+        if t.values.is_empty() {
+            return Err(ConfigError::Invalid {
+                reason: format!("toggle {:?} must declare at least one value", t.key),
+            });
+        }
+        let mut seen_values = std::collections::BTreeSet::new();
+        for v in &t.values {
+            if v.is_empty() {
+                return Err(ConfigError::Invalid {
+                    reason: format!("toggle {:?} has an empty value", t.key),
+                });
+            }
+            if !seen_values.insert(v.clone()) {
+                return Err(ConfigError::Invalid {
+                    reason: format!("toggle {:?} has a duplicate value {v:?}", t.key),
+                });
+            }
+        }
+        let label = t.label.unwrap_or_else(|| t.key.clone());
+        dims.push(ToggleDim {
+            key: t.key,
+            label,
+            values: t.values,
+        });
+    }
+    Ok(dims)
 }
 
 impl RawCaptureConfig {
@@ -430,6 +504,63 @@ mod tests {
     #[test]
     fn rejects_unknown_guard_field() {
         let err = toml::from_str::<RawConfig>("[guard]\nnope = true\n").unwrap_err();
+        assert!(err.to_string().contains("nope") || err.to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn toggles_default_to_empty() {
+        let cfg = load(None, None, None).expect("defaults load");
+        assert!(cfg.toggles.is_empty());
+    }
+
+    #[test]
+    fn accepts_toggles_with_label_defaulting_to_key() {
+        let raw: RawConfig = toml::from_str(
+            "[[toggle]]\nkey = \"theme\"\nlabel = \"Theme\"\nvalues = [\"light\", \"dark\"]\n\
+             [[toggle]]\nkey = \"viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+        )
+        .unwrap();
+        let cfg = raw.validate().expect("valid");
+        assert_eq!(cfg.toggles.len(), 2);
+        assert_eq!(cfg.toggles[0].key, "theme");
+        assert_eq!(cfg.toggles[0].label, "Theme");
+        assert_eq!(cfg.toggles[0].values, ["light", "dark"]);
+        // label defaults to key when omitted.
+        assert_eq!(cfg.toggles[1].label, "viewport");
+    }
+
+    #[test]
+    fn rejects_bad_toggle_key() {
+        let raw: RawConfig =
+            toml::from_str("[[toggle]]\nkey = \"has space\"\nvalues = [\"a\"]\n").unwrap();
+        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_duplicate_toggle_key() {
+        let raw: RawConfig = toml::from_str(
+            "[[toggle]]\nkey = \"theme\"\nvalues = [\"a\"]\n\
+             [[toggle]]\nkey = \"theme\"\nvalues = [\"b\"]\n",
+        )
+        .unwrap();
+        assert!(matches!(raw.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_empty_and_duplicate_toggle_values() {
+        let empty: RawConfig =
+            toml::from_str("[[toggle]]\nkey = \"theme\"\nvalues = []\n").unwrap();
+        assert!(matches!(empty.validate(), Err(ConfigError::Invalid { .. })));
+        let dup: RawConfig =
+            toml::from_str("[[toggle]]\nkey = \"theme\"\nvalues = [\"a\", \"a\"]\n").unwrap();
+        assert!(matches!(dup.validate(), Err(ConfigError::Invalid { .. })));
+    }
+
+    #[test]
+    fn rejects_unknown_toggle_field() {
+        let err =
+            toml::from_str::<RawConfig>("[[toggle]]\nkey = \"t\"\nvalues = [\"a\"]\nnope = 1\n")
+                .unwrap_err();
         assert!(err.to_string().contains("nope") || err.to_string().contains("unknown"));
     }
 }

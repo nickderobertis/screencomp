@@ -46,12 +46,19 @@ jobs:
     with:
       arches: '["x86_64"]'
       container: mcr.microsoft.com/playwright:v1.60.0-noble
-      # A deterministic, browser-free capture: fixed bytes so the reproducibility
-      # gate (capture twice, require byte-identical) passes.
+      # A deterministic, browser-free capture: fixed bytes and fixed hashes in
+      # captures.json so the reproducibility gate (capture twice, require the
+      # recorded hashes to match) passes.
       capture-command: |
-        mkdir -p "$SHOTS_OUT/demo"
-        printf 'fake-home-shot' > "$SHOTS_OUT/demo/home.png"
-        printf 'fake-about-shot' > "$SHOTS_OUT/demo/about.png"
+        mkdir -p "$SHOTS_OUT"
+        printf 'fake-home-shot' > "$SHOTS_OUT/home.png"
+        printf 'fake-about-shot' > "$SHOTS_OUT/about.png"
+        cat > "$SHOTS_OUT/captures.json" <<'JSON'
+        {"schema":1,"shots":[
+        {"name":"home","toggles":{"viewport":"desktop"},"hash":"1111111111111111111111111111111111111111111111111111111111111111","image":"home.png"},
+        {"name":"about","toggles":{"viewport":"desktop"},"hash":"2222222222222222222222222222222222222222222222222222222222222222","image":"about.png"}
+        ]}
+        JSON
       verify: true
       pages: false
       publish: false
@@ -76,10 +83,13 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          if [ -n "$ARCH" ]; then sub="$ARCH/demo"; else sub="demo"; fi
           for root in shots/current shots/verify; do
-            mkdir -p "$root/$sub"
-            printf 'fake-home-shot' > "$root/$sub/home.png"
+            dir="$root${ARCH:+/$ARCH}"
+            mkdir -p "$dir"
+            printf 'fake-home-shot' > "$dir/home.png"
+            cat > "$dir/captures.json" <<'JSON'
+          {"schema":1,"shots":[{"name":"home","toggles":{"viewport":"desktop"},"hash":"1111111111111111111111111111111111111111111111111111111111111111","image":"home.png"}]}
+          JSON
           done
       - uses: ./ # install the screencomp CLI on the host
         with:

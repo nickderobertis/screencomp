@@ -36,6 +36,55 @@ fn invoke(args: &[&str]) -> (Result<i32, AppError>, String) {
     (result, String::from_utf8(out).expect("stdout is UTF-8"))
 }
 
+/// A 64-hex digest from a single repeated byte, e.g. `digest("aa")`.
+fn digest(seed: &str) -> String {
+    seed.repeat(64 / seed.len())
+}
+
+/// One shot to write into a capture index: `(name, toggles, hash,
+/// image_filename, image_bytes)`.
+type ShotSpec<'a> = (
+    &'a str,
+    &'a [(&'a str, &'a str)],
+    &'a str,
+    &'a str,
+    &'a [u8],
+);
+
+/// Write a `captures.json` index (and its referenced images) into `dir`.
+///
+/// The directory is created as needed; this is the new capture shape that
+/// replaced the old `<project>/<name>.png` tree.
+fn write_capture(dir: &Path, shots: &[ShotSpec<'_>]) {
+    std::fs::create_dir_all(dir).unwrap();
+    let mut entries = Vec::new();
+    for (name, toggles, hash, image, bytes) in shots {
+        std::fs::write(dir.join(image), bytes).unwrap();
+        let tg: Vec<String> = toggles
+            .iter()
+            .map(|(k, v)| format!("\"{k}\":\"{v}\""))
+            .collect();
+        entries.push(format!(
+            "{{\"name\":\"{name}\",\"toggles\":{{{}}},\"hash\":\"{hash}\",\"image\":\"{image}\"}}",
+            tg.join(",")
+        ));
+    }
+    std::fs::write(
+        dir.join("captures.json"),
+        format!("{{\"schema\":1,\"shots\":[{}]}}", entries.join(",")),
+    )
+    .unwrap();
+}
+
+/// Write a single-shot capture under `dir`, the common helper for the many
+/// scoping/error tests that only need one shot.
+fn write_one(dir: &Path, name: &str, hash: &str, bytes: &[u8]) {
+    write_capture(
+        dir,
+        &[(name, &[("viewport", "desktop")], hash, "home.png", bytes)],
+    );
+}
+
 #[test]
 fn classify_human_reports_changes_and_summary() {
     let (code, out) = invoke(&[
@@ -47,8 +96,8 @@ fn classify_human_reports_changes_and_summary() {
         &current(),
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("changed desktop/about"), "{out}");
-    assert!(out.contains("added desktop/pricing"), "{out}");
+    assert!(out.contains("changed about [viewport=desktop]"), "{out}");
+    assert!(out.contains("added pricing [viewport=desktop]"), "{out}");
     assert!(
         out.contains("added 1 changed 1 removed 0 unchanged 2"),
         "{out}"
@@ -70,8 +119,13 @@ fn classify_json_is_single_line_contract() {
     assert_eq!(code.unwrap(), 0);
     assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
     assert!(out.contains(r#""changed":true"#), "{out}");
+    // The JSON carries the name and the toggle map, no more `project` field.
     assert!(
-        out.contains(r#"{"project":"desktop","name":"pricing","status":"added"}"#),
+        out.contains(r#"{"name":"pricing","toggles":{"viewport":"desktop"},"status":"added"}"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"{"name":"about","toggles":{"viewport":"desktop"},"status":"changed"}"#),
         "{out}"
     );
     assert!(
@@ -127,13 +181,51 @@ fn gallery_writes_index_html() {
     let html =
         std::fs::read_to_string(out_dir.path().join("index.html")).expect("index.html written");
     assert!(html.contains("<title>Screenshot gallery</title>"));
-    assert!(html.contains("src=\"desktop/about.png\""));
+    // One card per name, image referenced by its relative path.
+    assert!(html.contains("<h2>about</h2>"), "{html}");
+    assert!(html.contains("src=\"about-desktop.png\""), "{html}");
 
     // The referenced image is copied next to index.html, byte-for-byte.
-    let copied = std::fs::read(out_dir.path().join("desktop/about.png")).expect("image copied");
-    let source = std::fs::read(std::path::Path::new(&current()).join("desktop/about.png"))
+    let copied = std::fs::read(out_dir.path().join("about-desktop.png")).expect("image copied");
+    let source = std::fs::read(std::path::Path::new(&current()).join("about-desktop.png"))
         .expect("source image");
     assert_eq!(copied, source);
+}
+
+#[test]
+fn gallery_renders_a_toggle_control_per_declared_dimension() {
+    // With a `viewport` dimension declared, the `home` name (which has both
+    // desktop and mobile present) gets a control; `about`/`pricing` (one value)
+    // do not. The control buttons carry `data-dim`/`data-val`, and the variant
+    // images carry `data-variant` keyed by the toggle.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nlabel = \"Viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+    let out_dir = TempDir::new().unwrap();
+    let out_str = path_str(out_dir.path());
+
+    let (code, _) = invoke(&[
+        "screencomp",
+        "--config",
+        cfg.to_str().unwrap(),
+        "gallery",
+        "--input",
+        &current(),
+        "--output",
+        &out_str,
+    ]);
+    assert_eq!(code.unwrap(), 0);
+
+    let html = std::fs::read_to_string(out_dir.path().join("index.html")).expect("index.html");
+    assert!(html.contains("data-dim=\"viewport\""), "{html}");
+    assert!(html.contains("data-val=\"desktop\""), "{html}");
+    assert!(html.contains("data-val=\"mobile\""), "{html}");
+    assert!(html.contains("data-variant=\"viewport=desktop\""), "{html}");
+    assert!(html.contains("data-variant=\"viewport=mobile\""), "{html}");
 }
 
 #[test]
@@ -155,8 +247,8 @@ fn gallery_diff_mode_copies_both_trees() {
 
     let html = std::fs::read_to_string(out_dir.path().join("index.html")).expect("index.html");
     assert!(html.contains("<h2>Changed</h2>"));
-    assert!(out_dir.path().join("baseline/desktop/about.png").exists());
-    assert!(out_dir.path().join("current/desktop/about.png").exists());
+    assert!(out_dir.path().join("baseline/about-desktop.png").exists());
+    assert!(out_dir.path().join("current/about-desktop.png").exists());
 }
 
 #[test]
@@ -179,8 +271,8 @@ fn comment_writes_markdown_file() {
     let md = std::fs::read_to_string(&file).expect("comment file written");
     assert!(md.starts_with("<!-- screencomp -->"));
     assert!(md.contains("## Visual changes"));
-    assert!(md.contains("### Changed\n- `desktop/about`"));
-    // No base URL: a path listing, never inline images.
+    assert!(md.contains("### Changed\n- `about [viewport=desktop]`"));
+    // No base URL: a label listing, never inline images.
     assert!(!md.contains("<img"));
 }
 
@@ -198,23 +290,23 @@ fn comment_embeds_inline_previews_with_gallery_url() {
         "https://example.test/pr/9/",
     ]);
     assert_eq!(code.unwrap(), 0);
-    // Changed shot: before/after from both trees.
+    // Changed shot: before/after from both trees (URLs are `<base>/<image>`).
     assert!(out.contains("### Changed"), "{out}");
     assert!(
-        out.contains("src=\"https://example.test/pr/9/baseline/desktop/about.png\""),
+        out.contains("src=\"https://example.test/pr/9/baseline/about-desktop.png\""),
         "{out}"
     );
     assert!(
-        out.contains("src=\"https://example.test/pr/9/current/desktop/about.png\""),
+        out.contains("src=\"https://example.test/pr/9/current/about-desktop.png\""),
         "{out}"
     );
     // Added shot: single image from current.
     assert!(
-        out.contains("src=\"https://example.test/pr/9/current/desktop/pricing.png\""),
+        out.contains("src=\"https://example.test/pr/9/current/pricing-desktop.png\""),
         "{out}"
     );
-    // Embed mode replaces the path listing but keeps the gallery link.
-    assert!(!out.contains("- `desktop/about`"), "{out}");
+    // Embed mode replaces the label listing but keeps the gallery link.
+    assert!(!out.contains("- `about [viewport=desktop]`"), "{out}");
     assert!(
         out.contains("[View full gallery](https://example.test/pr/9/)"),
         "{out}"
@@ -237,7 +329,10 @@ fn comment_embed_limit_zero_falls_back_to_listing() {
     ]);
     assert_eq!(code.unwrap(), 0);
     assert!(!out.contains("<img"), "{out}");
-    assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
+    assert!(
+        out.contains("### Changed\n- `about [viewport=desktop]`"),
+        "{out}"
+    );
 }
 
 /// Host CPU arch, mirroring `commands::arch::host_arch` (which is crate-private)
@@ -248,13 +343,6 @@ fn host_arch() -> String {
         other => other,
     }
     .to_owned()
-}
-
-/// Write `bytes` to `<root>/<arch>/<project>/<name>.png`.
-fn write_shot(root: &Path, arch: &str, project: &str, name: &str, bytes: &[u8]) {
-    let dir = root.join(arch).join(project);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
 }
 
 /// Write a `screencomp.toml` with the given `[capture].arches`, returning its path.
@@ -279,10 +367,10 @@ fn arch_flag_scopes_comparison_to_one_subtree() {
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
 
-    write_shot(&base, "arm64", "desktop", "home", b"same");
-    write_shot(&cur, "arm64", "desktop", "home", b"same");
-    write_shot(&base, "x86_64", "desktop", "home", b"old");
-    write_shot(&cur, "x86_64", "desktop", "home", b"new");
+    write_one(&base.join("arm64"), "home", &digest("aa"), b"same");
+    write_one(&cur.join("arm64"), "home", &digest("aa"), b"same");
+    write_one(&base.join("x86_64"), "home", &digest("bb"), b"old");
+    write_one(&cur.join("x86_64"), "home", &digest("cc"), b"new");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -312,7 +400,7 @@ fn arch_flag_scopes_comparison_to_one_subtree() {
         "x86_64",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(out.contains("changed home [viewport=desktop]"), "{out}");
 }
 
 #[test]
@@ -322,8 +410,8 @@ fn arch_auto_resolves_to_the_host_subtree() {
     let cur = dir.path().join("current");
     let key = host_arch();
 
-    write_shot(&base, &key, "desktop", "home", b"old");
-    write_shot(&cur, &key, "desktop", "home", b"new");
+    write_one(&base.join(&key), "home", &digest("bb"), b"old");
+    write_one(&cur.join(&key), "home", &digest("cc"), b"new");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -336,7 +424,7 @@ fn arch_auto_resolves_to_the_host_subtree() {
         "auto",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(out.contains("changed home [viewport=desktop]"), "{out}");
 }
 
 #[test]
@@ -348,11 +436,11 @@ fn arch_default_from_config_scopes_to_the_host_subtree() {
     let cfg = write_arches_config(dir.path(), &[&key]);
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, &key, "desktop", "home", b"old");
-    write_shot(&cur, &key, "desktop", "home", b"new");
+    write_one(&base.join(&key), "home", &digest("bb"), b"old");
+    write_one(&cur.join(&key), "home", &digest("cc"), b"new");
     // A foreign subtree would differ but must be invisible to the scoped run.
-    write_shot(&base, "other-arch", "desktop", "home", b"a");
-    write_shot(&cur, "other-arch", "desktop", "home", b"b");
+    write_one(&base.join("other-arch"), "home", &digest("11"), b"a");
+    write_one(&cur.join("other-arch"), "home", &digest("22"), b"b");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -365,7 +453,7 @@ fn arch_default_from_config_scopes_to_the_host_subtree() {
         cur.to_str().unwrap(),
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(out.contains("changed home [viewport=desktop]"), "{out}");
     assert!(
         out.contains("added 0 changed 1 removed 0 unchanged 0"),
         "{out}"
@@ -380,8 +468,8 @@ fn arch_not_in_configured_arches_hard_errors() {
     let cfg = write_arches_config(dir.path(), &["sparc64"]);
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "sparc64", "desktop", "home", b"x");
-    write_shot(&cur, "sparc64", "desktop", "home", b"x");
+    write_one(&base.join("sparc64"), "home", &digest("aa"), b"x");
+    write_one(&cur.join("sparc64"), "home", &digest("aa"), b"x");
 
     let (result, _) = invoke(&[
         "screencomp",
@@ -416,8 +504,8 @@ fn explicit_arch_overrides_configured_arches() {
     let cfg = write_arches_config(dir.path(), &["sparc64"]);
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "x86_64", "desktop", "home", b"old");
-    write_shot(&cur, "x86_64", "desktop", "home", b"new");
+    write_one(&base.join("x86_64"), "home", &digest("bb"), b"old");
+    write_one(&cur.join("x86_64"), "home", &digest("cc"), b"new");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -432,7 +520,7 @@ fn explicit_arch_overrides_configured_arches() {
         "x86_64",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(out.contains("changed home [viewport=desktop]"), "{out}");
 }
 
 #[test]
@@ -459,8 +547,8 @@ fn missing_arch_subtree_explains_the_layout() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "arm64", "desktop", "home", b"x");
-    write_shot(&cur, "arm64", "desktop", "home", b"x");
+    write_one(&base.join("arm64"), "home", &digest("aa"), b"x");
+    write_one(&cur.join("arm64"), "home", &digest("aa"), b"x");
 
     let (result, _) = invoke(&[
         "screencomp",
@@ -476,33 +564,25 @@ fn missing_arch_subtree_explains_the_layout() {
         panic!("expected an InvalidLayout hint, got {result:?}");
     };
     assert!(reason.contains("x86_64"), "{reason}");
-    // The hint points at the arch layer and what the root actually holds.
+    // The hint points at the arch layer and the expected captures.json path.
     assert!(reason.contains("--arch"), "{reason}");
-    assert!(reason.contains("arm64"), "{reason}");
+    assert!(reason.contains("captures.json"), "{reason}");
 }
 
 #[test]
-fn arch_against_loose_pngs_hints_to_add_a_project_dir() {
-    // Capture written flat (loose .png at the root) while --arch expects a
-    // subtree: the hint must call out the loose files and the fix.
+fn capture_dir_without_index_is_invalid_layout() {
+    // A capture directory written without its `captures.json` (the wrong-path
+    // mistake a capture step makes) is an InvalidLayout naming the missing file.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
     std::fs::create_dir_all(&cur).unwrap();
     std::fs::write(cur.join("home.png"), b"x").unwrap();
 
-    let (result, _) = invoke(&[
-        "screencomp",
-        "manifest",
-        "--input",
-        cur.to_str().unwrap(),
-        "--arch",
-        "x86_64",
-    ]);
+    let (result, _) = invoke(&["screencomp", "manifest", "--input", cur.to_str().unwrap()]);
     let Err(AppError::InvalidLayout { reason, .. }) = result else {
         panic!("expected an InvalidLayout hint, got {result:?}");
     };
-    assert!(reason.contains("loose .png"), "{reason}");
-    assert!(reason.contains("omit --arch"), "{reason}");
+    assert!(reason.contains("captures.json"), "{reason}");
 }
 
 #[test]
@@ -529,9 +609,9 @@ fn comment_marker_and_title_flags_override_config() {
 #[test]
 fn manifest_then_classify_against_it_matches_a_dir_baseline() {
     let dir = TempDir::new().unwrap();
-    let manifest = path_str(&dir.path().join("baseline.sha256"));
+    let manifest = path_str(&dir.path().join("baseline.json"));
 
-    // Write a digest manifest of the baseline fixture.
+    // Write a JSON digest baseline of the baseline fixture.
     let (code, _) = invoke(&[
         "screencomp",
         "manifest",
@@ -542,11 +622,11 @@ fn manifest_then_classify_against_it_matches_a_dir_baseline() {
     ]);
     assert_eq!(code.unwrap(), 0);
     let body = std::fs::read_to_string(&manifest).unwrap();
-    assert!(
-        body.lines()
-            .all(|l| l.contains("  ") && l.ends_with(".png")),
-        "{body}"
-    );
+    // Pretty-printed schema-1 index, digests present, images stripped.
+    assert!(body.contains("\"schema\": 1"), "{body}");
+    assert!(body.contains("\"hash\""), "{body}");
+    assert!(!body.contains("\"image\""), "baseline drops images: {body}");
+    assert!(body.ends_with('\n'), "{body}");
 
     // Classifying against the manifest yields the same result as the image dir.
     let (code, out) = invoke(&[
@@ -562,14 +642,49 @@ fn manifest_then_classify_against_it_matches_a_dir_baseline() {
         out.contains("added 1 changed 1 removed 0 unchanged 2"),
         "{out}"
     );
-    assert!(out.contains("changed desktop/about"), "{out}");
-    assert!(out.contains("added desktop/pricing"), "{out}");
+    assert!(out.contains("changed about [viewport=desktop]"), "{out}");
+    assert!(out.contains("added pricing [viewport=desktop]"), "{out}");
+}
+
+#[test]
+fn manifest_baseline_round_trips_as_a_parseable_index() {
+    // The written baseline is itself a captures.json-shaped index: re-reading it
+    // as a `--baseline-manifest` reproduces the same digests, so a committed
+    // baseline is a self-describing artifact (no separate parser).
+    let dir = TempDir::new().unwrap();
+    let manifest = path_str(&dir.path().join("baseline.json"));
+    invoke(&[
+        "screencomp",
+        "manifest",
+        "--input",
+        &baseline(),
+        "--output",
+        &manifest,
+    ])
+    .0
+    .unwrap();
+
+    // Comparing the baseline against itself via the manifest sees no changes.
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline-manifest",
+        &manifest,
+        "--current",
+        &baseline(),
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("added 0 changed 0 removed 0 unchanged 3"),
+        "{out}"
+    );
 }
 
 #[test]
 fn comment_accepts_a_baseline_manifest() {
     let dir = TempDir::new().unwrap();
-    let manifest = path_str(&dir.path().join("b.sha256"));
+    let manifest = path_str(&dir.path().join("b.json"));
     invoke(&[
         "screencomp",
         "manifest",
@@ -590,7 +705,10 @@ fn comment_accepts_a_baseline_manifest() {
         &current(),
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("### Changed\n- `desktop/about`"), "{out}");
+    assert!(
+        out.contains("### Changed\n- `about [viewport=desktop]`"),
+        "{out}"
+    );
 }
 
 #[test]
@@ -599,7 +717,7 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
     // gallery of the current shots) must source "After" images from `<URL>/...`
     // and never emit a `baseline/` URL that would 404.
     let dir = TempDir::new().unwrap();
-    let manifest = path_str(&dir.path().join("b.sha256"));
+    let manifest = path_str(&dir.path().join("b.json"));
     invoke(&[
         "screencomp",
         "manifest",
@@ -624,7 +742,7 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
     assert_eq!(code.unwrap(), 0);
     // Plain layout, current shots only: no `baseline/` or `current/` segment.
     assert!(
-        out.contains("src=\"https://example.test/site/desktop/about.png\""),
+        out.contains("src=\"https://example.test/site/about-desktop.png\""),
         "{out}"
     );
     assert!(!out.contains("/baseline/"), "{out}");
@@ -632,11 +750,13 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
 }
 
 #[test]
-fn comment_manifest_mode_sources_before_from_baseline_url() {
-    // An explicit `--baseline-url` (a canonical/main gallery) restores a real
-    // before/after diff in manifest mode: Before from it, After from --current-url.
+fn comment_manifest_mode_sources_before_from_a_separate_baseline_url() {
+    // A baseline manifest commits no image paths (stripped on write), but pointing
+    // `--baseline-url` at a separate canonical gallery that hosts the same shot at
+    // the same relative path restores a real before/after diff: "Before" from that
+    // base, "After" from --current-url.
     let dir = TempDir::new().unwrap();
-    let manifest = path_str(&dir.path().join("b.sha256"));
+    let manifest = path_str(&dir.path().join("b.json"));
     invoke(&[
         "screencomp",
         "manifest",
@@ -663,11 +783,11 @@ fn comment_manifest_mode_sources_before_from_baseline_url() {
     assert_eq!(code.unwrap(), 0);
     assert!(out.contains("| Before | After |"), "{out}");
     assert!(
-        out.contains("src=\"https://example.test/main/desktop/about.png\""),
+        out.contains("src=\"https://example.test/main/about-desktop.png\""),
         "{out}"
     );
     assert!(
-        out.contains("src=\"https://example.test/pr/9/desktop/about.png\""),
+        out.contains("src=\"https://example.test/pr/9/about-desktop.png\""),
         "{out}"
     );
 }
@@ -677,9 +797,9 @@ fn manifest_and_classify_are_arch_scoped() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
     let cur = dir.path().join("current");
-    write_shot(&base, "x86_64", "desktop", "home", b"v1");
-    write_shot(&cur, "x86_64", "desktop", "home", b"v2");
-    let manifest = path_str(&dir.path().join("x86_64.sha256"));
+    write_one(&base.join("x86_64"), "home", &digest("aa"), b"v1");
+    write_one(&cur.join("x86_64"), "home", &digest("bb"), b"v2");
+    let manifest = path_str(&dir.path().join("x86_64.json"));
 
     invoke(&[
         "screencomp",
@@ -693,15 +813,10 @@ fn manifest_and_classify_are_arch_scoped() {
     ])
     .0
     .unwrap();
-    // The manifest drops the arch segment.
-    assert_eq!(
-        std::fs::read_to_string(&manifest)
-            .unwrap()
-            .lines()
-            .next()
-            .map(|l| l.ends_with("desktop/home.png")),
-        Some(true)
-    );
+    // The manifest drops the arch segment (it is just the scoped index).
+    let body = std::fs::read_to_string(&manifest).unwrap();
+    assert!(body.contains("\"name\": \"home\""), "{body}");
+    assert!(!body.contains("x86_64"), "{body}");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -715,14 +830,14 @@ fn manifest_and_classify_are_arch_scoped() {
         "--exit-code",
     ]);
     assert_eq!(code.unwrap(), 3);
-    assert!(out.contains("changed desktop/home"), "{out}");
+    assert!(out.contains("changed home [viewport=desktop]"), "{out}");
 }
 
 #[test]
 fn malformed_manifest_is_invalid_layout_error() {
     let dir = TempDir::new().unwrap();
-    let manifest = dir.path().join("bad.sha256");
-    std::fs::write(&manifest, "not-a-digest  desktop/home.png\n").unwrap();
+    let manifest = dir.path().join("bad.json");
+    std::fs::write(&manifest, "{not valid json").unwrap();
     let (result, _) = invoke(&[
         "screencomp",
         "classify",
@@ -732,6 +847,31 @@ fn malformed_manifest_is_invalid_layout_error() {
         &current(),
     ]);
     assert!(matches!(result, Err(AppError::InvalidLayout { .. })));
+}
+
+#[test]
+fn manifest_with_bad_digest_is_invalid_layout_error() {
+    // A hand-edited index with a non-64-hex digest fails loudly rather than
+    // silently dropping the shot.
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("bad.json");
+    std::fs::write(
+        &manifest,
+        r#"{"schema":1,"shots":[{"name":"home","hash":"nothex"}]}"#,
+    )
+    .unwrap();
+    let (result, _) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline-manifest",
+        manifest.to_str().unwrap(),
+        "--current",
+        &current(),
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected InvalidLayout, got {result:?}");
+    };
+    assert!(reason.contains("hex digest"), "{reason}");
 }
 
 #[test]
@@ -763,20 +903,13 @@ fn explicit_missing_config_is_config_error() {
     assert!(matches!(result, Err(AppError::Config(_))));
 }
 
-/// Write `bytes` to `<root>/<project>/<name>.png` (no platform layer).
-fn write_flat(root: &Path, project: &str, name: &str, bytes: &[u8]) {
-    let dir = root.join(project);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(format!("{name}.png")), bytes).unwrap();
-}
-
 #[test]
 fn verify_identical_captures_pass() {
     let dir = TempDir::new().unwrap();
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
-    write_flat(&a, "desktop", "home", b"pixels");
-    write_flat(&b, "desktop", "home", b"pixels");
+    write_one(&a, "home", &digest("aa"), b"pixels");
+    write_one(&b, "home", &digest("aa"), b"pixels");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -798,10 +931,21 @@ fn verify_divergent_captures_exit_three_with_kinds() {
     let dir = TempDir::new().unwrap();
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
-    write_flat(&a, "desktop", "home", b"v1"); // differs between runs
-    write_flat(&b, "desktop", "home", b"v2");
-    write_flat(&a, "desktop", "only_first", b"x"); // dropped in second run
-    write_flat(&b, "desktop", "only_second", b"y"); // appeared in second run
+    // `home` differs between runs; `only_first` is dropped; `only_second` appears.
+    write_capture(
+        &a,
+        &[
+            ("home", &[], &digest("aa"), "home.png", b"v1"),
+            ("only_first", &[], &digest("11"), "of.png", b"x"),
+        ],
+    );
+    write_capture(
+        &b,
+        &[
+            ("home", &[], &digest("bb"), "home.png", b"v2"),
+            ("only_second", &[], &digest("22"), "os.png", b"y"),
+        ],
+    );
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -812,9 +956,9 @@ fn verify_divergent_captures_exit_three_with_kinds() {
         b.to_str().unwrap(),
     ]);
     assert_eq!(code.unwrap(), 3);
-    assert!(out.contains("differs desktop/home"), "{out}");
-    assert!(out.contains("only-in-first desktop/only_first"), "{out}");
-    assert!(out.contains("only-in-second desktop/only_second"), "{out}");
+    assert!(out.contains("differs home"), "{out}");
+    assert!(out.contains("only-in-first only_first"), "{out}");
+    assert!(out.contains("only-in-second only_second"), "{out}");
     assert!(
         out.contains("NOT reproducible: 1 differ, 1 only in first run, 1 only in second (of 3)"),
         "{out}"
@@ -826,8 +970,8 @@ fn verify_json_is_single_line_contract() {
     let dir = TempDir::new().unwrap();
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
-    write_flat(&a, "desktop", "home", b"v1");
-    write_flat(&b, "desktop", "home", b"v2");
+    write_one(&a, "home", &digest("aa"), b"v1");
+    write_one(&b, "home", &digest("bb"), b"v2");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -844,7 +988,7 @@ fn verify_json_is_single_line_contract() {
     assert!(out.contains(r#""reproducible":false"#), "{out}");
     assert!(out.contains(r#""checked":1"#), "{out}");
     assert!(
-        out.contains(r#"{"project":"desktop","name":"home","kind":"differs"}"#),
+        out.contains(r#"{"name":"home","toggles":{"viewport":"desktop"},"kind":"differs"}"#),
         "{out}"
     );
 }
@@ -855,11 +999,11 @@ fn verify_is_arch_scoped() {
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
     let key = host_arch();
-    write_shot(&a, &key, "desktop", "home", b"same");
-    write_shot(&b, &key, "desktop", "home", b"same");
+    write_one(&a.join(&key), "home", &digest("aa"), b"same");
+    write_one(&b.join(&key), "home", &digest("aa"), b"same");
     // A foreign subtree diverges but must be invisible to the scoped run.
-    write_shot(&a, "other-arch", "desktop", "home", b"p");
-    write_shot(&b, "other-arch", "desktop", "home", b"q");
+    write_one(&a.join("other-arch"), "home", &digest("11"), b"p");
+    write_one(&b.join("other-arch"), "home", &digest("22"), b"q");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -882,20 +1026,129 @@ fn verify_is_arch_scoped() {
 fn doctor_reports_layout_and_passes_a_clean_tree() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
-    write_flat(&input, "desktop", "home", b"a");
-    write_flat(&input, "desktop", "about", b"b");
-    write_flat(&input, "mobile", "home", b"c");
+    write_capture(
+        &input,
+        &[
+            ("home", &[], &digest("aa"), "home.png", b"a"),
+            ("about", &[], &digest("bb"), "about.png", b"b"),
+            ("pricing", &[], &digest("cc"), "pricing.png", b"c"),
+        ],
+    );
 
     let (code, out) = invoke(&["screencomp", "doctor", "--input", input.to_str().unwrap()]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains("arch: none (root is project-level)"), "{out}");
-    assert!(out.contains("desktop (2 shots)"), "{out}");
-    assert!(out.contains("mobile (1 shot)"), "{out}");
-    assert!(out.contains("shots: 3"), "{out}");
     assert!(
-        out.contains("ok: layout matches <project>/<name>.png"),
+        out.contains("arch: none (root holds the capture index)"),
         "{out}"
     );
+    assert!(out.contains("inspected:"), "{out}");
+    assert!(out.contains("captures.json"), "{out}");
+    assert!(out.contains("names: 3"), "{out}");
+    assert!(out.contains("about (1 shot)"), "{out}");
+    assert!(out.contains("shots: 3"), "{out}");
+    assert!(out.contains("toggles: none"), "{out}");
+    assert!(out.contains("ok: capture index is well-formed"), "{out}");
+}
+
+#[test]
+fn doctor_reports_observed_toggle_dimensions() {
+    // The `home` name varies across two viewport values; with the dimension
+    // declared, doctor lists the observed toggle and its values and stays clean.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+    let input = dir.path().join("current");
+    write_capture(
+        &input,
+        &[
+            (
+                "home",
+                &[("viewport", "desktop")],
+                &digest("aa"),
+                "hd.png",
+                b"a",
+            ),
+            (
+                "home",
+                &[("viewport", "mobile")],
+                &digest("bb"),
+                "hm.png",
+                b"b",
+            ),
+        ],
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "--config",
+        cfg.to_str().unwrap(),
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("home (2 shots)"), "{out}");
+    assert!(out.contains("toggles: 1"), "{out}");
+    assert!(out.contains("viewport [desktop, mobile]"), "{out}");
+    assert!(out.contains("ok: capture index is well-formed"), "{out}");
+}
+
+#[test]
+fn doctor_flags_an_undeclared_toggle_as_a_problem() {
+    // A toggle key with no declared `[[toggle]]` dimension cannot render a gallery
+    // control, so doctor reports it as a problem and `--exit-code` gates on it.
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    write_capture(
+        &input,
+        &[("home", &[("density", "2x")], &digest("aa"), "h.png", b"a")],
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("warning:"), "{out}");
+    assert!(out.contains("density"), "{out}");
+    assert!(out.contains("not declared in [[toggle]]"), "{out}");
+    assert!(out.contains("problems found"), "{out}");
+}
+
+#[test]
+fn doctor_flags_a_referenced_image_missing_on_disk() {
+    // The index references a PNG the capture step never wrote: a silently broken
+    // gallery. doctor flags the missing image and gates with `--exit-code`.
+    let dir = TempDir::new().unwrap();
+    let input = dir.path().join("current");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::write(
+        input.join("captures.json"),
+        format!(
+            r#"{{"schema":1,"shots":[{{"name":"home","toggles":{{}},"hash":"{}","image":"gone.png"}}]}}"#,
+            digest("aa")
+        ),
+    )
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--input",
+        input.to_str().unwrap(),
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert!(out.contains("warning:"), "{out}");
+    assert!(out.contains("gone.png"), "{out}");
+    assert!(out.contains("problems found"), "{out}");
 }
 
 #[test]
@@ -903,7 +1156,7 @@ fn doctor_resolves_auto_arch_key() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
     let key = host_arch();
-    write_shot(&input, &key, "desktop", "home", b"a");
+    write_one(&input.join(&key), "home", &digest("aa"), b"a");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -925,7 +1178,7 @@ fn doctor_arch_defaulted_from_config_shows_auto_suffix() {
     let key = host_arch();
     let cfg = write_arches_config(dir.path(), &[&key]);
     let input = dir.path().join("current");
-    write_shot(&input, &key, "desktop", "home", b"a");
+    write_one(&input.join(&key), "home", &digest("aa"), b"a");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -943,7 +1196,7 @@ fn doctor_arch_defaulted_from_config_shows_auto_suffix() {
 fn doctor_explicit_arch_key_is_shown_without_auto_suffix() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
-    write_shot(&input, "x86_64", "desktop", "home", b"a");
+    write_one(&input.join("x86_64"), "home", &digest("aa"), b"a");
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -962,8 +1215,17 @@ fn doctor_explicit_arch_key_is_shown_without_auto_suffix() {
 fn doctor_json_contract_reports_problems() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
-    write_flat(&input, "desktop", "home", b"a");
-    std::fs::write(input.join("stray.png"), b"oops").unwrap();
+    // An undeclared toggle key is a problem; the JSON carries the full contract.
+    write_capture(
+        &input,
+        &[(
+            "home",
+            &[("density", "2x")],
+            &digest("aa"),
+            "home.png",
+            b"a",
+        )],
+    );
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -978,9 +1240,11 @@ fn doctor_json_contract_reports_problems() {
     assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
     assert!(out.contains(r#""ok":false"#), "{out}");
     assert!(out.contains(r#""total_shots":1"#), "{out}");
-    assert!(out.contains(r#""loose_pngs":["stray.png"]"#), "{out}");
     assert!(out.contains(r#""arch":null"#), "{out}");
-    assert!(out.contains(r#"{"name":"desktop","shots":1}"#), "{out}");
+    assert!(out.contains(r#"{"name":"home","shots":1}"#), "{out}");
+    assert!(out.contains(r#""undeclared_toggles":["#), "{out}");
+    assert!(out.contains("density"), "{out}");
+    assert!(out.contains(r#""missing_images":[]"#), "{out}");
 }
 
 #[test]
@@ -988,8 +1252,8 @@ fn verify_and_doctor_quiet_suppress_human_output() {
     let dir = TempDir::new().unwrap();
     let a = dir.path().join("run-a");
     let b = dir.path().join("run-b");
-    write_flat(&a, "desktop", "home", b"v1");
-    write_flat(&b, "desktop", "home", b"v2");
+    write_one(&a, "home", &digest("aa"), b"v1");
+    write_one(&b, "home", &digest("bb"), b"v2");
 
     // Quiet still gates (exit 3) but writes nothing to stdout.
     let (code, out) = invoke(&[
@@ -1010,12 +1274,12 @@ fn verify_and_doctor_quiet_suppress_human_output() {
 }
 
 #[test]
-fn doctor_exit_code_flags_loose_pngs() {
+fn doctor_exit_code_flags_an_empty_capture() {
     let dir = TempDir::new().unwrap();
     let input = dir.path().join("current");
     std::fs::create_dir_all(&input).unwrap();
-    // A capture stranded at the root instead of under a project directory.
-    std::fs::write(input.join("home.png"), b"a").unwrap();
+    // A valid but empty index: nothing downstream would render.
+    std::fs::write(input.join("captures.json"), r#"{"schema":1,"shots":[]}"#).unwrap();
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -1026,7 +1290,7 @@ fn doctor_exit_code_flags_loose_pngs() {
     ]);
     assert_eq!(code.unwrap(), 3);
     assert!(out.contains("warning:"), "{out}");
-    assert!(out.contains("home.png"), "{out}");
+    assert!(out.contains("no screenshots"), "{out}");
     assert!(out.contains("problems found"), "{out}");
 }
 
@@ -1111,7 +1375,7 @@ fn scope_no_match_exits_zero() {
 fn scope_json_is_single_line_contract() {
     let dir = TempDir::new().unwrap();
     let cfg = write_guard_config(dir.path(), &["shots/**"]);
-    let changed = write_changed(dir.path(), &["shots/baseline/x.sha256", "Cargo.toml"]);
+    let changed = write_changed(dir.path(), &["shots/baseline/x.json", "Cargo.toml"]);
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -1129,7 +1393,7 @@ fn scope_json_is_single_line_contract() {
     assert!(out.contains(r#""matched":true"#), "{out}");
     assert!(out.contains(r#""considered":2"#), "{out}");
     assert!(
-        out.contains(r#""paths":["shots/baseline/x.sha256"]"#),
+        out.contains(r#""paths":["shots/baseline/x.json"]"#),
         "{out}"
     );
 }
@@ -1161,7 +1425,7 @@ fn scope_empty_input_never_matches() {
 fn scope_without_guard_paths_matches_nothing() {
     // Default config has no globs, so even a screenshot path is not relevant.
     let dir = TempDir::new().unwrap();
-    let changed = write_changed(dir.path(), &["shots/current/desktop/home.png"]);
+    let changed = write_changed(dir.path(), &["shots/current/captures.json"]);
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -1314,17 +1578,24 @@ fn doctor_warns_on_a_cross_arch_baseline_manifest() {
     // to surface as an arch mismatch rather than a real diff.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
-    write_flat(&cur, "desktop", "home", b"new-bytes");
+    write_one(&cur, "home", &digest("aa"), b"new-bytes");
 
-    // Manifest holds the same shot name but a different digest, named for an arch
-    // that cannot be the host.
+    // Manifest holds the same shot identity but a different digest, named for an
+    // arch that cannot be the host.
     let other = if host_arch() == "x86_64" {
         "arm64"
     } else {
         "x86_64"
     };
-    let manifest = dir.path().join(format!("{other}.sha256"));
-    std::fs::write(&manifest, format!("{}  desktop/home.png\n", "a".repeat(64))).unwrap();
+    let manifest = dir.path().join(format!("{other}.json"));
+    std::fs::write(
+        &manifest,
+        format!(
+            r#"{{"schema":1,"shots":[{{"name":"home","toggles":{{"viewport":"desktop"}},"hash":"{}"}}]}}"#,
+            digest("ff")
+        ),
+    )
+    .unwrap();
 
     let (code, out) = invoke(&[
         "screencomp",
@@ -1361,14 +1632,15 @@ fn doctor_warns_on_a_cross_arch_baseline_manifest() {
 
 #[test]
 fn doctor_non_arch_manifest_name_skips_the_filename_warning() {
-    // A manifest not named after an arch (baseline.sha256) must not trip the
+    // A manifest not named after an arch (baseline.json) must not trip the
     // filename heuristic, and a matching, identical shot leaves doctor clean.
+    // A bare shot (no toggles) keeps the index free of undeclared-toggle problems.
     let dir = TempDir::new().unwrap();
     let cur = dir.path().join("current");
-    write_flat(&cur, "desktop", "home", b"pixels");
+    write_capture(&cur, &[("home", &[], &digest("aa"), "home.png", b"pixels")]);
 
-    // Generate a correct digest from the capture itself, named non-platform-like.
-    let manifest = dir.path().join("baseline.sha256");
+    // Generate a correct baseline from the capture itself, named non-arch-like.
+    let manifest = dir.path().join("baseline.json");
     invoke(&[
         "screencomp",
         "manifest",
@@ -1391,7 +1663,7 @@ fn doctor_non_arch_manifest_name_skips_the_filename_warning() {
     assert_eq!(code.unwrap(), 0);
     assert!(!out.contains("baseline manifest"), "{out}");
     assert!(!out.contains("every shared shot differs"), "{out}");
-    assert!(out.contains("ok: layout matches"), "{out}");
+    assert!(out.contains("ok: capture index is well-formed"), "{out}");
 }
 
 #[test]
@@ -1414,7 +1686,7 @@ fn init_defaults_to_the_host_arch() {
         // The scaffold's [capture].arches is the resolved arch, not the literal "auto".
         let toml = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
         assert!(toml.contains(&format!("arches = [\"{key}\"]")), "{toml}");
-        assert!(!toml.contains("auto"), "{toml}");
+        assert!(!toml.contains("\"auto\""), "{toml}");
 
         // The caller carries no per-arch input: the arch list lives in the config.
         let wf =
@@ -1433,6 +1705,25 @@ fn init_json_reports_each_file_action() {
     assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
     assert!(out.contains(r#""action":"created""#), "{out}");
     assert!(out.contains("screencomp.toml"), "{out}");
+}
+
+#[test]
+fn init_scaffolds_json_baselines() {
+    // The scaffold references `.json` digest baselines (the new index shape),
+    // not the old `.sha256` text manifests: the hook and the config point at
+    // `shots/baseline/<arch>.json`.
+    let dir = TempDir::new().unwrap();
+    let root = path_str(dir.path());
+    invoke(&["screencomp", "init", "--dir", &root, "--arch", "arm64"])
+        .0
+        .unwrap();
+
+    let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
+    assert!(
+        hook.contains("shots/baseline/${ARCH}.json"),
+        "hook must point at a .json baseline: {hook}"
+    );
+    assert!(!hook.contains(".sha256"), "{hook}");
 }
 
 #[test]

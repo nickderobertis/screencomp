@@ -48,7 +48,7 @@ pub enum Command {
     Verify(VerifyArgs),
 
     /// Preflight a capture: print the resolved arch subtree and sanity-check the
-    /// `<root>/<project>/<name>.png` layout before classifying.
+    /// `captures.json` index before classifying.
     Doctor(DoctorArgs),
 
     /// Print the project's configured `[capture].arches` (one per line, or JSON).
@@ -81,7 +81,7 @@ pub enum OutputFormat {
 #[derive(Debug, clap::Args)]
 #[command(group(ArgGroup::new("classify_baseline").required(true).args(["baseline", "baseline_manifest"])))]
 pub struct ClassifyArgs {
-    /// Baseline screenshot root (`<dir>/<project>/<name>.png`). Mutually
+    /// Baseline screenshot root (`<dir>/captures.json`). Mutually
     /// exclusive with `--baseline-manifest`.
     #[arg(long, value_name = "DIR")]
     pub baseline: Option<Utf8PathBuf>,
@@ -97,10 +97,10 @@ pub struct ClassifyArgs {
     pub current: Utf8PathBuf,
 
     /// Restrict the comparison to one CPU-arch subtree
-    /// (`<root>/<arch>/<project>/<name>.png`), since identical UI rendered on a
+    /// (`<root>/<arch>/captures.json`), since identical UI rendered on a
     /// different architecture differs byte-for-byte. `auto` detects the host arch
     /// (e.g. `x86_64`, `arm64`). When omitted, defaults to the host arch if
-    /// `[capture].arches` is configured, else treats the root as project-level.
+    /// `[capture].arches` is configured, else reads the root's captures.json directly.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
 
@@ -116,7 +116,7 @@ pub struct ClassifyArgs {
 /// Arguments for [`Command::Gallery`].
 #[derive(Debug, clap::Args)]
 pub struct GalleryArgs {
-    /// Screenshot root to index (`<dir>/<project>/<name>.png`). In diff mode this
+    /// Screenshot root to index (`<dir>/captures.json`). In diff mode this
     /// is the current capture.
     #[arg(long, value_name = "DIR")]
     pub input: Utf8PathBuf,
@@ -128,8 +128,8 @@ pub struct GalleryArgs {
 
     /// Restrict to one CPU-arch subtree (`<root>/<arch>/...`) of `--input` and,
     /// in diff mode, `--baseline`. `auto` detects the host arch. When omitted,
-    /// defaults to the host arch if `[capture].arches` is configured, else treats
-    /// the roots as project-level.
+    /// defaults to the host arch if `[capture].arches` is configured, else reads
+    /// each root's captures.json directly.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
 
@@ -160,9 +160,9 @@ pub struct CommentArgs {
     pub current: Utf8PathBuf,
 
     /// Restrict the comparison to one CPU-arch subtree
-    /// (`<root>/<arch>/<project>/<name>.png`). `auto` detects the host arch
+    /// (`<root>/<arch>/captures.json`). `auto` detects the host arch
     /// (e.g. `x86_64`, `arm64`). When omitted, defaults to the host arch if
-    /// `[capture].arches` is configured, else treats the roots as project-level.
+    /// `[capture].arches` is configured, else reads each root's captures.json directly.
     /// Pair a per-arch `--marker` to keep one sticky comment each.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
@@ -186,14 +186,14 @@ pub struct CommentArgs {
     pub gallery_url: Option<String>,
 
     /// Base URL hosting the baseline ("Before") images in the plain
-    /// `<URL>/<project>/<name>.png` layout (e.g. a canonical/main gallery).
+    /// `<URL>/<image>` layout (e.g. a canonical/main gallery).
     /// Overrides whatever `--gallery-url` would derive. The way to show a real
     /// before/after diff in manifest mode, where no baseline PNGs are committed.
     #[arg(long, value_name = "URL")]
     pub baseline_url: Option<String>,
 
     /// Base URL hosting the current ("After") images in the plain
-    /// `<URL>/<project>/<name>.png` layout. Overrides whatever `--gallery-url`
+    /// `<URL>/<image>` layout. Overrides whatever `--gallery-url`
     /// would derive; pair with `--baseline-url` to source each side independently.
     #[arg(long, value_name = "URL")]
     pub current_url: Option<String>,
@@ -212,13 +212,13 @@ pub struct CommentArgs {
 /// Arguments for [`Command::Manifest`].
 #[derive(Debug, clap::Args)]
 pub struct ManifestArgs {
-    /// Screenshot root to digest (`<dir>/<project>/<name>.png`).
+    /// Screenshot root to digest (`<dir>/captures.json`).
     #[arg(long, value_name = "DIR")]
     pub input: Utf8PathBuf,
 
     /// Restrict to one CPU-arch subtree (`<root>/<arch>/...`) of `--input`.
     /// `auto` detects the host arch. When omitted, defaults to the host arch if
-    /// `[capture].arches` is configured, else treats the root as project-level.
+    /// `[capture].arches` is configured, else reads the root's captures.json directly.
     /// The written manifest never includes the arch segment.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
@@ -231,7 +231,7 @@ pub struct ManifestArgs {
 /// Arguments for [`Command::Verify`].
 #[derive(Debug, clap::Args)]
 pub struct VerifyArgs {
-    /// First capture of the build (`<dir>/<project>/<name>.png`).
+    /// First capture of the build (`<dir>/captures.json`).
     #[arg(long, value_name = "DIR")]
     pub first: Utf8PathBuf,
 
@@ -240,9 +240,9 @@ pub struct VerifyArgs {
     pub second: Utf8PathBuf,
 
     /// Restrict the comparison to one CPU-arch subtree
-    /// (`<root>/<arch>/<project>/<name>.png`) of both captures. `auto` detects
+    /// (`<root>/<arch>/captures.json`) of both captures. `auto` detects
     /// the host arch. When omitted, defaults to the host arch if
-    /// `[capture].arches` is configured, else treats the roots as project-level.
+    /// `[capture].arches` is configured, else reads each root's captures.json directly.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
 
@@ -254,7 +254,7 @@ pub struct VerifyArgs {
 /// Arguments for [`Command::Doctor`].
 #[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
-    /// Capture root to inspect (`<dir>/<project>/<name>.png`). Required unless
+    /// Capture root to inspect (`<dir>/captures.json`). Required unless
     /// `--env` is given (which preflights the repo's setup, not a capture).
     #[arg(long, value_name = "DIR", required_unless_present = "env")]
     pub input: Option<Utf8PathBuf>,
@@ -272,16 +272,16 @@ pub struct DoctorArgs {
     pub dir: Utf8PathBuf,
 
     /// Resolve and inspect a single CPU-arch subtree
-    /// (`<root>/<arch>/<project>/<name>.png`). `auto` detects the host arch (the
+    /// (`<root>/<arch>/captures.json`). `auto` detects the host arch (the
     /// resolved arch is printed). When omitted, defaults to the host arch if
-    /// `[capture].arches` is configured, else treats the root as project-level.
+    /// `[capture].arches` is configured, else reads the root's captures.json directly.
     #[arg(long, value_name = "ARCH")]
     pub arch: Option<String>,
 
     /// Optional committed digest manifest to sanity-check against the capture.
     /// `doctor` warns when every shot differs (the classic symptom of a baseline
     /// captured on a different arch than this host) or when the manifest's
-    /// `<arch>.sha256` filename names an arch other than the capture's.
+    /// `<arch>.json` filename names an arch other than the capture's.
     #[arg(long, value_name = "FILE")]
     pub baseline_manifest: Option<Utf8PathBuf>,
 

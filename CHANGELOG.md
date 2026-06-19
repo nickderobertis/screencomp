@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- [**breaking**] user-defined gallery toggles backed by a `captures.json` index.
+  A capture is now a directory holding `captures.json` (each shot's `name`,
+  `toggles`, content `hash`, and `image` path) plus the PNGs it references, rather
+  than a `<project>/<name>.png` tree. A shot's identity is its name plus a toggle
+  map — the old fixed `project` dimension is gone; declare toggle dimensions
+  (theme, viewport, …) in `screencomp.toml` as `[[toggle]]` tables and the gallery
+  renders one control group per dimension so a screen is a single card you toggle
+  through. `manifest` writes a JSON baseline (`<arch>.json`, was `<arch>.sha256`);
+  the `classify`/`verify` JSON contracts replace `project`+`name` with `name`+a
+  `toggles` map; `comment` resolves inline images by each shot's `image` path.
+  Migrate by having your capture step emit `captures.json` and re-seeding the
+  baseline with `screencomp manifest`.
+
 ## [0.3.1](https://github.com/nickderobertis/screencomp/compare/v0.3.0...v0.3.1) - 2026-06-19
 
 ### Added

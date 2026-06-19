@@ -15,7 +15,6 @@ pub(crate) mod verify;
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::config::{self, Config, ConfigError};
-use crate::domain::layout::LayoutScan;
 use crate::domain::snapshot::Snapshot;
 use crate::errors::AppError;
 use crate::io::fs;
@@ -65,7 +64,7 @@ pub(crate) fn resolve_arch(
     })
 }
 
-/// Scope `root` to `arch` and walk it into a [`Snapshot`].
+/// Scope `root` to `arch` and read its capture index into a [`Snapshot`].
 ///
 /// On a missing arch subtree the bare "not a directory" error is enriched with a
 /// layout hint (see [`hint_missing_subtree`]), since that is the error a
@@ -75,23 +74,15 @@ pub(crate) fn discover_scoped(root: &Utf8Path, arch: Option<&str>) -> Result<Sna
     fs::discover(&scoped).map_err(|e| hint_missing_subtree(e, root, arch))
 }
 
-/// Scope `root` to `arch` and scan its layout, with the same hint as
-/// [`discover_scoped`] on a missing subtree.
-pub(crate) fn scan_scoped(root: &Utf8Path, arch: Option<&str>) -> Result<LayoutScan, AppError> {
-    let scoped = arch::scope(root, arch);
-    fs::scan_layout(&scoped).map_err(|e| hint_missing_subtree(e, root, arch))
-}
-
 /// Turn a bare [`AppError::NotADirectory`] for a missing arch subtree into an
 /// [`AppError::InvalidLayout`] that explains the arch layer.
 ///
-/// An arch adds a `<root>/<arch>/` layer above `<project>/<name>.png`. When that
-/// subtree is absent but `root` itself exists, the usual cause is a wrong arch
-/// (e.g. `arm64` vs `x86_64`) or a capture written without the arch segment —
-/// both of which the bare error hides. The hint names the host arch and what the
-/// root actually holds so the fix is obvious. The error is returned untouched
-/// when no arch was requested or the root is also missing (a genuinely absent
-/// tree, not a layout mistake).
+/// An arch adds a `<root>/<arch>/` layer above the `captures.json` index. When
+/// that subtree is absent but `root` itself exists, the usual cause is a wrong
+/// arch (e.g. `arm64` vs `x86_64`) or a capture written without the arch segment.
+/// The hint names the host arch and points at the right path. The error is
+/// returned untouched when no arch was requested or the root is also missing (a
+/// genuinely absent capture, not a layout mistake).
 fn hint_missing_subtree(err: AppError, root: &Utf8Path, arch_spec: Option<&str>) -> AppError {
     let (Some(spec), AppError::NotADirectory { path }) = (arch_spec, &err) else {
         return err;
@@ -104,23 +95,15 @@ fn hint_missing_subtree(err: AppError, root: &Utf8Path, arch_spec: Option<&str>)
 
     let mut reason = format!(
         "expected the arch subtree {path} \
-         (with --arch {key}, screencomp looks for {root}/{key}/<project>/<name>.png)"
+         (with --arch {key}, screencomp looks for {root}/{key}/{file})",
+        file = fs::CAPTURES_FILE,
     );
-    match fs::scan_layout(root) {
-        Ok(scan) if !scan.loose_pngs.is_empty() => reason.push_str(&format!(
-            "; found {} loose .png file(s) directly under {root} \
-             — move them into {root}/{key}/<project>/, or omit --arch",
-            scan.loose_pngs.len()
-        )),
-        Ok(scan) if !scan.projects.is_empty() => {
-            let names: Vec<&str> = scan.projects.iter().map(|p| p.name.as_str()).collect();
-            reason.push_str(&format!(
-                "; {root} contains [{}] instead — check the arch \
-                 (this host is {host}), or omit --arch",
-                names.join(", ")
-            ));
-        }
-        _ => {}
+    // A capture written at the root without the arch segment is the common slip.
+    if fs::discover(root).is_ok() {
+        reason.push_str(&format!(
+            "; {root} is itself a capture (no arch segment) — write it under \
+             {root}/{key}/ (this host is {host}), or omit --arch"
+        ));
     }
     AppError::InvalidLayout {
         path: path.clone(),

@@ -18,13 +18,13 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
     let index = args.output.join("index.html");
 
     match &args.baseline {
-        // Plain gallery of a single tree.
+        // Plain gallery of a single capture, with toggle controls.
         None => {
-            let html = render_html(&current, &args.title);
+            let html = render_html(&current, &ctx.config.toggles, &args.title);
             fs::write_string(&index, &html)?;
             // Copy the referenced images next to index.html so the output is a
             // self-contained, deploy-ready directory.
-            let images = fs::copy_png_tree(&input_root, &args.output)?;
+            let images = fs::copy_images(&input_root, &args.output, &current)?;
             if !ctx.quiet {
                 writeln!(out, "wrote {index} ({images} images)").map_err(write_err)?;
             }
@@ -36,9 +36,9 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
             let classification = classify(&baseline, &current);
             let html = render_diff_html(&classification, &args.title);
             fs::write_string(&index, &html)?;
-            // Both trees are referenced by the diff page (before and after).
-            let base = fs::copy_png_tree(&baseline_root, &args.output.join("baseline"))?;
-            let cur = fs::copy_png_tree(&input_root, &args.output.join("current"))?;
+            // Both captures are referenced by the diff page (before and after).
+            let base = fs::copy_images(&baseline_root, &args.output.join("baseline"), &baseline)?;
+            let cur = fs::copy_images(&input_root, &args.output.join("current"), &current)?;
             if !ctx.quiet {
                 writeln!(
                     out,
