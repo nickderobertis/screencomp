@@ -972,3 +972,176 @@ fn comment_urls_resolve_to_real_gallery_files() {
         "expected at least one inline image to verify: {md}"
     );
 }
+
+/// Whether `git` is installed, so git-dependent assertions can skip cleanly in a
+/// minimal environment rather than fail.
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// Run `git -C <dir> <args>`, asserting success.
+fn git(dir: &TempDir, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(args)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok, "git {args:?} failed");
+}
+
+#[test]
+fn init_hook_survives_proxies_and_matches_ci_clean_install() {
+    // The scaffolded capture must work in containerized/proxied dev environments
+    // and match CI's fresh checkout — the gaps that cost the most setup time.
+    let dir = TempDir::new().unwrap();
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto"])
+        .assert()
+        .success();
+    let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
+    // Anonymous node_modules volume: `npm ci` installs cleanly inside the
+    // container instead of churning the bind-mounted host tree.
+    assert!(hook.contains("-v /work/node_modules"), "{hook}");
+    // Host CA pass-through so a TLS-intercepting proxy doesn't break `npm ci`.
+    assert!(hook.contains("NODE_EXTRA_CA_CERTS"), "{hook}");
+    assert!(hook.contains("ca_args"), "{hook}");
+    // A missing CLI is loud and opt-in-strict, never a silent skip.
+    assert!(hook.contains("SCREENCOMP_GUARD_REQUIRE"), "{hook}");
+    assert!(hook.contains("cannot run"), "{hook}");
+}
+
+#[test]
+fn init_enable_hook_wires_the_git_hooks_path() {
+    if !git_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    git(&dir, &["init", "-q"]);
+
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto", "--enable-hook"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Enabled the local pre-push guard"));
+
+    // Git is now pointed at the committed hooks directory.
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "--get", "core.hooksPath"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ".githooks");
+}
+
+#[test]
+fn init_enable_hook_outside_a_repo_reports_without_failing() {
+    // The scaffold still succeeds; only the enable step is skipped, with guidance.
+    let dir = TempDir::new().unwrap();
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto", "--enable-hook", "--format", "json"])
+        .assert()
+        .success()
+        // A bare temp dir is not a git repo, so enabling fails (or git is absent).
+        .stdout(
+            predicate::str::contains(r#""hook_enabled":"failed""#)
+                .or(predicate::str::contains(r#""hook_enabled":"git-unavailable""#)),
+        );
+}
+
+#[test]
+fn doctor_env_flags_a_scaffolded_but_unenabled_guard() {
+    // The inert-guard gap: init drops .githooks/pre-push but core.hooksPath is
+    // never set, so the repo looks protected while nothing runs.
+    let dir = TempDir::new().unwrap();
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto"])
+        .assert()
+        .success();
+
+    bin()
+        .args(["doctor", "--env", "--exit-code", "--dir"])
+        .arg(dir.path())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("PRESENT BUT NOT ENABLED"))
+        .stdout(predicate::str::contains("problems found"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn doctor_env_flags_a_workflow_version_skew() {
+    let dir = TempDir::new().unwrap();
+    let workflows = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&workflows).unwrap();
+    std::fs::write(
+        workflows.join("visual-docs.yml"),
+        "jobs:\n  visual-docs:\n    uses: nickderobertis/screencomp/.github/workflows/\
+         visual-docs-reusable.yml@v9.9.9\n",
+    )
+    .unwrap();
+
+    bin()
+        .args(["doctor", "--env", "--exit-code", "--dir"])
+        .arg(dir.path())
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("SKEW"))
+        .stdout(predicate::str::contains("v9.9.9"));
+}
+
+#[test]
+fn doctor_env_clean_directory_reports_ready_json() {
+    let dir = TempDir::new().unwrap();
+    bin()
+        .args(["doctor", "--env", "--dir"])
+        .arg(dir.path())
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""pre_push_guard":"not-scaffolded""#,
+        ))
+        .stdout(predicate::str::contains(r#""workflow_pin":"no-workflow""#))
+        .stdout(predicate::str::contains(r#""ok":true"#))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn doctor_env_reports_an_enabled_guard_in_step() {
+    if !git_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    git(&dir, &["init", "-q"]);
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto", "--enable-hook"])
+        .assert()
+        .success();
+
+    // Guard enabled and the scaffolded workflow pins this very CLI version, so the
+    // environment is ready (Docker is advisory and never fails the preflight).
+    bin()
+        .args(["doctor", "--env", "--dir"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pre-push guard: enabled"))
+        .stdout(predicate::str::contains("matches this CLI"))
+        .stdout(predicate::str::contains("ok: environment ready"));
+}

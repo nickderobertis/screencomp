@@ -27,6 +27,7 @@ use super::{Ctx, arch, write_err};
 use crate::cli::{InitArgs, OutputFormat};
 use crate::errors::AppError;
 use crate::io::fs::{self, Scaffold};
+use crate::io::host::{self, HookEnable};
 
 /// Sentinel line in the `.gitignore` block; its presence means the block is
 /// already there, keeping a re-run idempotent.
@@ -76,18 +77,48 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
         ),
     ];
 
+    // Optionally wire the guard so the strict gate's local half actually runs,
+    // instead of leaving the developer an undocumented `git config` step (the gap
+    // where a scaffolded-but-inert hook silently protects nothing).
+    let hook_enable = args
+        .enable_hook
+        .then(|| host::set_hooks_path(&args.dir, ".githooks"));
+
     match args.format {
-        OutputFormat::Json => write_json(&outcomes, out)?,
-        OutputFormat::Human if !ctx.quiet => write_human(&arch, &outcomes, out)?,
+        OutputFormat::Json => write_json(&outcomes, hook_enable.as_ref(), out)?,
+        OutputFormat::Human if !ctx.quiet => {
+            write_human(&arch, &outcomes, hook_enable.as_ref(), out)?;
+        }
         OutputFormat::Human => {}
     }
     Ok(0)
+}
+
+/// Render the "enable the guard" line for the human report, reflecting what
+/// `--enable-hook` did (or the command to run when it was not used or failed).
+fn enable_step(hook_enable: Option<&HookEnable>) -> String {
+    match hook_enable {
+        Some(HookEnable::Set) => {
+            "Enabled the local pre-push guard (core.hooksPath -> .githooks).".to_owned()
+        }
+        Some(HookEnable::GitUnavailable) => "Could not enable the guard: git is not on PATH. \
+             Once installed, run: git config core.hooksPath .githooks"
+            .to_owned(),
+        Some(HookEnable::Failed(detail)) => format!(
+            "Could not enable the guard (git: {detail}). \
+             Run it yourself from a git checkout: git config core.hooksPath .githooks"
+        ),
+        None => "Enable the local pre-push guard (the strict gate's local half):\n   \
+             git config core.hooksPath .githooks   (or re-run init with --enable-hook)"
+            .to_owned(),
+    }
 }
 
 /// Human-readable report: one line per file, then next steps.
 fn write_human(
     arch: &str,
     outcomes: &[(Utf8PathBuf, Scaffold)],
+    hook_enable: Option<&HookEnable>,
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
     for (path, outcome) in outcomes {
@@ -98,13 +129,15 @@ fn write_human(
         };
         writeln!(out, "{verb} {path}").map_err(write_err)?;
     }
+    // When `--enable-hook` succeeded, the guard is already wired, so step 2 below
+    // confirms it; otherwise it prints the command (or why the attempt failed).
+    let step_2 = enable_step(hook_enable);
     writeln!(
         out,
         "\nNext steps:\n\
          1. Wire your real capture into .github/workflows/visual-docs.yml and\n   \
          .githooks/pre-push so each writes shots/current/{arch}/<project>/<name>.png.\n\
-         2. Enable the local pre-push guard (the strict gate's local half):\n   \
-         git config core.hooksPath .githooks\n\
+         2. {step_2}\n\
          3. Seed the baseline once on {arch} and commit it:\n   \
          screencomp manifest --input shots/current \\\n     \
          --output shots/baseline/{arch}.sha256\n\
@@ -123,7 +156,11 @@ fn write_human(
 }
 
 /// Stable single-line JSON contract for automation.
-fn write_json(outcomes: &[(Utf8PathBuf, Scaffold)], out: &mut dyn Write) -> Result<(), AppError> {
+fn write_json(
+    outcomes: &[(Utf8PathBuf, Scaffold)],
+    hook_enable: Option<&HookEnable>,
+    out: &mut dyn Write,
+) -> Result<(), AppError> {
     #[derive(Serialize)]
     struct File<'a> {
         path: &'a str,
@@ -132,6 +169,10 @@ fn write_json(outcomes: &[(Utf8PathBuf, Scaffold)], out: &mut dyn Write) -> Resu
     #[derive(Serialize)]
     struct Report<'a> {
         files: Vec<File<'a>>,
+        /// Present only when `--enable-hook` was passed: `enabled`,
+        /// `git-unavailable`, or `failed`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        hook_enabled: Option<&'a str>,
     }
 
     let files = outcomes
@@ -145,8 +186,16 @@ fn write_json(outcomes: &[(Utf8PathBuf, Scaffold)], out: &mut dyn Write) -> Resu
             },
         })
         .collect();
-    let json = serde_json::to_string(&Report { files })
-        .map_err(|e| AppError::io("serializing JSON", std::io::Error::other(e)))?;
+    let hook_enabled = hook_enable.map(|outcome| match outcome {
+        HookEnable::Set => "enabled",
+        HookEnable::GitUnavailable => "git-unavailable",
+        HookEnable::Failed(_) => "failed",
+    });
+    let json = serde_json::to_string(&Report {
+        files,
+        hook_enabled,
+    })
+    .map_err(|e| AppError::io("serializing JSON", std::io::Error::other(e)))?;
     writeln!(out, "{json}").map_err(write_err)
 }
 
@@ -307,9 +356,18 @@ CURRENT=\"shots/current\"                    # capture root, mirrors visual-docs
 # No-op under CI: the visual-docs workflow is the source of truth there.
 [ -n \"${CI:-}\" ] && exit 0
 
-# If the CLI is not installed, do not block the push — just say so.
+# Without the CLI the guard CANNOT evaluate the push, so do NOT skip silently — a
+# strict gate you believe is protecting you but isn't is the worst outcome. Warn
+# loudly and skip; set SCREENCOMP_GUARD_REQUIRE=1 to fail here instead (safest
+# once everyone has the CLI). CI still gates this regardless.
 if ! command -v screencomp >/dev/null 2>&1; then
-  echo \"pre-push: screencomp not on PATH; skipping the visual guard\" >&2
+  {
+    echo \"pre-push: screencomp is NOT on PATH — the visual guard cannot run.\"
+    echo \"          Install it: https://github.com/nickderobertis/screencomp#install\"
+    echo \"          then enable the hook: git config core.hooksPath .githooks\"
+    echo \"          Set SCREENCOMP_GUARD_REQUIRE=1 to fail here instead.\"
+  } >&2
+  [ -n \"${SCREENCOMP_GUARD_REQUIRE:-}\" ] && exit 1
   exit 0
 fi
 
@@ -362,9 +420,23 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Pass the host's extra CA bundle into the container so a TLS-intercepting egress
+# proxy (corporate networks, Codespaces, hosted dev envs) does not break `npm ci`
+# with SELF_SIGNED_CERT_IN_CHAIN — which npm hides behind the cryptic `Exit
+# handler never called!` until you re-run with --loglevel verbose. No-op when none.
+ca_args=()
+host_ca=\"${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-}}\"
+if [ -n \"$host_ca\" ] && [ -f \"$host_ca\" ]; then
+  ca_args+=(-v \"$host_ca:/host-ca.crt:ro\" \\
+    -e NODE_EXTRA_CA_CERTS=/host-ca.crt -e SSL_CERT_FILE=/host-ca.crt)
+fi
+
 # ---- adapt this to YOUR stack (same image/flags as visual-docs.yml) ----------
+# The anonymous -v /work/node_modules volume masks the bind-mounted host tree so
+# `npm ci` installs cleanly inside the container, matching CI's fresh checkout.
 docker run --rm --platform=\"$DOCKER_PLATFORM\" --ipc=host --shm-size=2g \\
-  -v \"$PWD:/work\" -w /work \\
+  -v \"$PWD:/work\" -v /work/node_modules -w /work \\
+  ${ca_args[@]+\"${ca_args[@]}\"} \\
   mcr.microsoft.com/playwright:v1.60.0-noble \\
   bash -lc \"npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test\"
 # ------------------------------------------------------------------------------
