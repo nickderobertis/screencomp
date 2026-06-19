@@ -11,7 +11,9 @@
 #   curl -fsSL .../install.sh | sh -s -- --version v0.1.0 --to ~/.local/bin
 #
 # Equivalent environment variables: SCREENCOMP_VERSION, SCREENCOMP_INSTALL_DIR.
-# Set GITHUB_TOKEN to lift the GitHub API rate limit when resolving "latest".
+# Resolving "latest" calls the unauthenticated GitHub API, which rate-limits per
+# IP and 403s on shared/proxied egress (CI, Codespaces, corporate networks). Set
+# GITHUB_TOKEN to lift the limit, or sidestep the lookup by pinning --version.
 #
 # Covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
 # (Git Bash / MSYS / WSL). For native Windows PowerShell or unpublished targets,
@@ -108,7 +110,10 @@ download() {
 # Resolve the latest release tag by reading "tag_name" from the GitHub API.
 latest_tag() {
     _body="$(api_get "https://api.github.com/repos/$REPO/releases/latest")" \
-        || err "could not query the latest release (set GITHUB_TOKEN if rate-limited)"
+        || err "could not query the latest release. The unauthenticated GitHub API
+       rate-limits per IP and 403s on shared/proxied egress (CI, Codespaces,
+       corporate networks). Set GITHUB_TOKEN, or skip the lookup entirely by
+       pinning a version: install.sh --version vX.Y.Z (see the Releases page)."
     _tag="$(printf '%s\n' "$_body" \
         | grep -m1 '"tag_name"' \
         | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')"

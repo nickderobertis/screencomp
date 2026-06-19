@@ -254,9 +254,22 @@ pub struct VerifyArgs {
 /// Arguments for [`Command::Doctor`].
 #[derive(Debug, clap::Args)]
 pub struct DoctorArgs {
-    /// Capture root to inspect (`<dir>/<project>/<name>.png`).
-    #[arg(long, value_name = "DIR")]
-    pub input: Utf8PathBuf,
+    /// Capture root to inspect (`<dir>/<project>/<name>.png`). Required unless
+    /// `--env` is given (which preflights the repo's setup, not a capture).
+    #[arg(long, value_name = "DIR", required_unless_present = "env")]
+    pub input: Option<Utf8PathBuf>,
+
+    /// Preflight the *environment* instead of a capture: is the pre-push guard
+    /// enabled (`core.hooksPath`), does the scaffolded workflow's pinned version
+    /// match this CLI, and is Docker available to capture? Surfaces the
+    /// integration gaps that otherwise bite only at push time. Ignores `--input`.
+    #[arg(long)]
+    pub env: bool,
+
+    /// Repository root to inspect in `--env` mode (defaults to the current
+    /// directory). Where the `.githooks` guard and `.github/workflows` live.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub dir: Utf8PathBuf,
 
     /// Resolve and inspect a single CPU-arch subtree
     /// (`<root>/<arch>/<project>/<name>.png`). `auto` detects the host arch (the
@@ -306,6 +319,15 @@ pub struct InitArgs {
     /// more arches to `screencomp.toml` later to gain CI lanes.
     #[arg(long, value_name = "ARCH", default_value = "auto")]
     pub arch: String,
+
+    /// Also enable the scaffolded pre-push guard by pointing Git at the committed
+    /// hooks directory (`git config core.hooksPath .githooks`), so the strict
+    /// gate's local half actually runs instead of waiting on an undocumented
+    /// manual step. Without it, `init` only prints the command. Overwrites any
+    /// existing `core.hooksPath` (e.g. a lefthook/husky setup), so opt in only
+    /// when `.githooks` is your hook manager.
+    #[arg(long)]
+    pub enable_hook: bool,
 
     /// Overwrite files that already exist instead of leaving them untouched.
     /// Without this, `init` writes only the files that are missing and reports

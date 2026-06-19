@@ -168,6 +168,25 @@ pub(crate) fn read_text(path: &Utf8Path) -> Result<String, AppError> {
     fs::read_to_string(path).map_err(|e| AppError::io(format!("reading {path}"), e))
 }
 
+/// Read `path` into a string, treating a missing file as `Ok(None)`.
+///
+/// `doctor --env` inspects optional repository files (a scaffolded workflow that
+/// may not exist yet), so absence is a normal state to report, not an error,
+/// while any other failure (permissions, non-UTF-8) still surfaces.
+pub(crate) fn read_optional(path: &Utf8Path) -> Result<Option<String>, AppError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(AppError::io(format!("reading {path}"), e)),
+    }
+}
+
+/// Whether `path` is an existing regular file. A presence probe for the
+/// environment preflight (e.g. "is the committed pre-push hook there?").
+pub(crate) fn file_exists(path: &Utf8Path) -> bool {
+    path.is_file()
+}
+
 /// Walk from `start` up through its ancestors, returning the first existing
 /// `<dir>/<filename>`.
 ///

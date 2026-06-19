@@ -2,3 +2,4 @@
 //! helpers that look pure.
 
 pub(crate) mod fs;
+pub(crate) mod host;

@@ -1542,3 +1542,171 @@ fn reusable_workflow_floats_its_own_action_pins() {
         "expected 4 internal screencomp action refs; found {refs}"
     );
 }
+
+/// Whether `git` is installed, so git-dependent assertions skip cleanly.
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+#[test]
+fn doctor_env_json_flags_a_scaffolded_but_unenabled_guard() {
+    let dir = TempDir::new().unwrap();
+    // A committed hook with no `core.hooksPath` (a bare temp dir is not a repo):
+    // the inert-guard gap, reported as a problem in the JSON contract.
+    let hook = dir.path().join(".githooks/pre-push");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/usr/bin/env bash\n").unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--env",
+        "--dir",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "--exit-code",
+    ]);
+    assert_eq!(code.unwrap(), 3);
+    assert_eq!(out.lines().count(), 1, "JSON must be one line: {out}");
+    assert!(
+        out.contains(r#""pre_push_guard":"present-not-enabled""#),
+        "{out}"
+    );
+    assert!(out.contains(r#""ok":false"#), "{out}");
+}
+
+#[test]
+fn doctor_env_json_flags_a_version_skew_and_reads_the_pin() {
+    let dir = TempDir::new().unwrap();
+    let workflows = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&workflows).unwrap();
+    std::fs::write(
+        workflows.join("visual-docs.yml"),
+        "uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v9.9.9\n",
+    )
+    .unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--env",
+        "--dir",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    // No --exit-code, so the run still exits 0 while reporting the skew.
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(r#""workflow_pin":"skew""#), "{out}");
+    assert!(out.contains(r#""pinned_version":"9.9.9""#), "{out}");
+    assert!(out.contains(r#""ok":false"#), "{out}");
+}
+
+#[test]
+fn doctor_env_reports_a_workflow_without_a_recognizable_pin() {
+    let dir = TempDir::new().unwrap();
+    let workflows = dir.path().join(".github/workflows");
+    std::fs::create_dir_all(&workflows).unwrap();
+    // A workflow that exists but pins nothing screencomp recognizes.
+    std::fs::write(workflows.join("visual-docs.yml"), "name: something else\n").unwrap();
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--env",
+        "--dir",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains("no recognizable"), "{out}");
+}
+
+#[test]
+fn doctor_env_reports_a_custom_hooks_path() {
+    if !git_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+    // A repo wired to a different hook manager (no committed .githooks/pre-push).
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", path, "init", "-q"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", path, "config", "core.hooksPath", "my-hooks"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "doctor",
+        "--env",
+        "--dir",
+        path,
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(r#""pre_push_guard":"custom""#), "{out}");
+    assert!(out.contains(r#""hooks_path":"my-hooks""#), "{out}");
+    assert!(out.contains(r#""ok":true"#), "{out}");
+}
+
+#[test]
+fn init_enable_hook_json_reports_enabled_in_a_repo() {
+    if !git_available() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", path, "init", "-q"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "init",
+        "--dir",
+        path,
+        "--arch",
+        "auto",
+        "--enable-hook",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(r#""hook_enabled":"enabled""#), "{out}");
+}
+
+#[test]
+fn doctor_env_quiet_suppresses_human_output() {
+    let dir = TempDir::new().unwrap();
+    let (code, out) = invoke(&[
+        "screencomp",
+        "-q",
+        "doctor",
+        "--env",
+        "--dir",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.is_empty(),
+        "quiet env doctor stdout should be empty: {out}"
+    );
+}

@@ -59,9 +59,18 @@ if [ -n "${CI:-}" ]; then
   exit 0
 fi
 
-# If the CLI is not installed, do not block the push — just say so.
+# Without the CLI the guard CANNOT evaluate the push, so do NOT pass silently — a
+# strict gate the developer believes is protecting them but isn't is the worst
+# outcome (it was). Warn loudly and skip; set SCREENCOMP_GUARD_REQUIRE=1 to make a
+# missing CLI a hard failure instead (the safest default once everyone has it).
 if ! command -v screencomp >/dev/null 2>&1; then
-  echo "pre-push: screencomp not on PATH; skipping the visual guard" >&2
+  {
+    echo "pre-push: screencomp is NOT on PATH — the visual guard cannot run."
+    echo "          Install it: https://github.com/nickderobertis/screencomp#install"
+    echo "          then enable the hook: git config core.hooksPath .githooks"
+    echo "          CI still gates this. Set SCREENCOMP_GUARD_REQUIRE=1 to fail here instead."
+  } >&2
+  [ -n "${SCREENCOMP_GUARD_REQUIRE:-}" ] && exit 1
   exit 0
 fi
 
@@ -136,11 +145,28 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+# Pass the host's extra CA bundle into the capture container so a TLS-intercepting
+# egress proxy (corporate networks, Codespaces, some remote/hosted dev envs) does
+# not break `npm ci` with SELF_SIGNED_CERT_IN_CHAIN — which npm surfaces only as
+# the cryptic `Exit handler never called!` until you re-run with --loglevel
+# verbose. No-op when no such bundle is configured, so it is safe everywhere.
+ca_args=()
+host_ca="${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-}}"
+if [ -n "$host_ca" ] && [ -f "$host_ca" ]; then
+  ca_args+=(-v "$host_ca:/host-ca.crt:ro" \
+    -e NODE_EXTRA_CA_CERTS=/host-ca.crt -e SSL_CERT_FILE=/host-ca.crt)
+fi
+
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
 # Capture into $CURRENT/$ARCH/<project>/<name>.png using the SAME pinned container
-# and flags as examples/visual-docs.yml, so local bytes match CI.
+# and flags as examples/visual-docs.yml, so local bytes match CI. The anonymous
+# `-v /work/node_modules` volume masks the bind-mounted host tree so `npm ci`
+# installs into the container cleanly — matching CI's fresh checkout instead of
+# churning (or colliding with) your host node_modules. The CA mounts above (if
+# any) ride along via "${ca_args[@]}" (the +-guard keeps it safe under `set -u`).
 docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
-  -v "$PWD:/work" -w /work \
+  -v "$PWD:/work" -v /work/node_modules -w /work \
+  ${ca_args[@]+"${ca_args[@]}"} \
   mcr.microsoft.com/playwright:v1.60.0-noble \
   bash -lc "npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test"
 # ------------------------------------------------------------------------------

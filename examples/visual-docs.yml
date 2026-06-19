@@ -201,8 +201,14 @@ jobs:
 # Rosetta ("Use Rosetta for x86_64/amd64 emulation"); the swiftshader render path
 # can crash Chromium under the QEMU fallback (`qemu: uncaught target signal`).
 #
+# The anonymous -v /work/node_modules volume keeps `npm ci` inside the container
+# (matching CI's clean checkout). Behind a TLS-intercepting proxy, also mount your
+# host CA so `npm ci` doesn't die with SELF_SIGNED_CERT_IN_CHAIN — add, when
+# "$NODE_EXTRA_CA_CERTS" is set:  -v "$NODE_EXTRA_CA_CERTS:/host-ca.crt:ro"
+# -e NODE_EXTRA_CA_CERTS=/host-ca.crt   (examples/pre-push does this automatically).
+#
 #   docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
-#     -v "$PWD:/work" -w /work \
+#     -v "$PWD:/work" -v /work/node_modules -w /work \
 #     mcr.microsoft.com/playwright:v1.60.0-noble \
 #     bash -lc 'npm ci && SHOTS_OUT=shots/current/x86_64 npx playwright test'
 #   screencomp classify --baseline-manifest shots/baseline/x86_64.sha256 \

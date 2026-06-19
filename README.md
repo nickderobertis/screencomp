@@ -28,7 +28,8 @@ each `<project>` is a Playwright project/variant. From two such trees,
   moment they diverge.
 - **`doctor`** — a [preflight](#preflight-doctor) that prints the resolved
   arch subtree and sanity-checks the `<project>/<name>.png` layout before you
-  classify.
+  classify; `doctor --env` instead checks the *setup* (is the pre-push guard
+  enabled, does the workflow pin match this CLI, is Docker present).
 - **`arches`** — prints the project's configured `[capture].arches` (one per
   line, or a JSON array); the CI matrix reads it to fan out one capture lane per
   arch.
@@ -65,8 +66,10 @@ curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scri
 
 It covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
 (Git Bash / MSYS / WSL), and aborts rather than install a binary it cannot
-checksum-verify. Set `GITHUB_TOKEN` if the GitHub API rate-limits the `latest`
-lookup.
+checksum-verify. Resolving `latest` calls the unauthenticated GitHub API, which
+rate-limits per IP and returns **403 on shared or proxied egress** (CI,
+Codespaces, corporate networks); set `GITHUB_TOKEN` to lift the limit, or skip the
+lookup entirely by pinning `--version vX.Y.Z`.
 
 ### From release binaries
 
@@ -301,7 +304,12 @@ scaffold matches the machine it is generated on. This scaffolds the
   `[capture].arches`.
 - `.githooks/pre-push` — the local guard, executable; it detects your host arch at
   runtime, so the one committed hook is correct on every developer's machine. Enable
-  it once per clone with `git config core.hooksPath .githooks`.
+  it once per clone with `git config core.hooksPath .githooks` — or pass
+  `screencomp init --enable-hook` to have `init` run that for you (it otherwise just
+  prints the command, and a scaffolded-but-unenabled guard runs nothing). The hook
+  passes your host CA bundle into the capture container and masks `node_modules`
+  with an anonymous volume, so it survives TLS-intercepting proxies and matches CI's
+  clean install.
 - the `.gitignore` lines that commit the tiny digest baselines while ignoring
   generated PNGs and galleries.
 
@@ -540,6 +548,36 @@ different arch than the host, not a real diff. It catches it two ways: an
 `<arch>.sha256` filename naming an arch other than the capture's, and
 shared shots with zero unchanged. Both are advisory and never fail the gate.
 
+#### `doctor --env`: is the setup actually wired?
+
+The layout preflight above checks the *capture*; `doctor --env` checks the
+*environment* — the class of gap where a repo looks protected but isn't:
+
+```sh
+$ screencomp doctor --env
+pre-push guard: PRESENT BUT NOT ENABLED — .githooks/pre-push exists but core.hooksPath is unset; run: git config core.hooksPath .githooks
+cli version: 0.3.0
+workflow pin: v0.3.0 (matches this CLI)
+docker: available
+problems found: the strict gate's local guard is not active
+```
+
+It reports three things and, with `--exit-code`, fails (`3`) on the two that
+silently lie:
+
+- **pre-push guard** — a scaffolded `.githooks/pre-push` that was never enabled
+  (`core.hooksPath` unset) is the inert-guard trap: the strict gate's local half
+  runs nothing. A **problem**. (Run `screencomp init --enable-hook`, or
+  `git config core.hooksPath .githooks`.)
+- **workflow pin vs CLI** — the scaffolded workflow pins the reusable workflow to
+  the version that wrote it; an installed CLI that has since drifted can classify
+  differently locally than in CI. A **problem**.
+- **docker** — capture needs it; absence is advisory (you may capture elsewhere).
+
+Use `--dir <repo>` to point it at a checkout other than the current directory,
+and `--format json` for a machine-readable report. Run it after cloning a repo
+that already uses screencomp, or in CI as a setup gate.
+
 ## Capturing an interactive app
 
 The [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
@@ -664,6 +702,70 @@ git diff --name-only "$range" | screencomp scope --changed-from - --exit-code
 See [`examples/hooks/README.md`](examples/hooks/README.md) for behavior details
 and ready-to-paste wiring for lefthook, husky, simple-git-hooks, and a raw
 `.git/hooks/pre-push`.
+
+## Troubleshooting
+
+### Capturing in a containerized, remote, or proxied environment
+
+The scaffolded `docker run` assumes a local Docker daemon and a clean TLS path.
+In Claude Code on the web, Codespaces, devcontainers, and corporate networks
+neither holds. Run `screencomp doctor --env` first — it tells you whether the
+guard is enabled and Docker is reachable. Then:
+
+- **No Docker daemon.** The pre-push guard refuses to run a relevant-change
+  capture without one (a green push with no capture would be false assurance).
+  Start the daemon, or capture on another machine and let CI gate.
+- **TLS-intercepting egress proxy.** A proxy that re-signs HTTPS makes the
+  capture container distrust the host's CA, so `npm ci` fails. npm hides this
+  behind the cryptic `npm error Exit handler never called!` — re-run with
+  `--loglevel verbose` and you'll see `SELF_SIGNED_CERT_IN_CHAIN`. The scaffolded
+  hook and [`examples/pre-push`](examples/pre-push) already fix this: they mount
+  the host CA bundle (`$NODE_EXTRA_CA_CERTS` / `$SSL_CERT_FILE`) into the
+  container and re-export it, a no-op when no such bundle is set. If you hand-roll
+  the `docker run`, add `-v "$NODE_EXTRA_CA_CERTS:/host-ca.crt:ro" -e
+  NODE_EXTRA_CA_CERTS=/host-ca.crt`.
+- **`node_modules` churn.** The hook mounts an anonymous volume at
+  `/work/node_modules` so `npm ci` installs cleanly inside the container, matching
+  CI's fresh checkout instead of colliding with a host `node_modules` built for a
+  different platform.
+- **`install.sh` 403.** Resolving `latest` hits the unauthenticated GitHub API,
+  which 403s on shared/proxied IPs. Set `GITHUB_TOKEN`, or pin `--version vX.Y.Z`.
+
+### "4 changed" in the PR comment but the gate still passes
+
+There are **two independent comparisons**, and conflating them is a common
+first-PR confusion:
+
+- **The committed digest manifest is the pass/fail gate.** `classify --exit-code`
+  compares the capture against `shots/baseline/<arch>.sha256`. Under the
+  [strict gate](#pick-your-gate) you regenerate and commit that manifest locally
+  (the pre-push guard), so by the time CI runs it already matches — the gate is
+  green.
+- **The gallery comment is informational before/after.** It diffs against the PR
+  *base branch's* gallery/manifest to show what your PR changes. So a PR that
+  legitimately changes 4 screenshots shows "4 changed" in the comment *and* a
+  green gate — the manifest you committed accounts for those 4, while the comment
+  still renders them against `main` for review.
+
+### Bootstrapping the first baseline (or a wholesale UI change)
+
+When you introduce screencomp, or rewrite the UI so every shot changes, there is
+no committed baseline to pass the gate yet. Seed it once, in the **same arch
+container CI uses**, then commit:
+
+```sh
+# 1. Capture into shots/current/<arch>/… (your real capture, in the pinned container).
+# 2. Confirm the capture is deterministic before you trust it as a baseline:
+screencomp verify --first shots/current --second shots/verify --arch auto
+# 3. Record the digests as the committed baseline and commit the .sha256 file:
+screencomp manifest --input shots/current --arch auto \
+  --output shots/baseline/$(screencomp arches | head -1).sha256
+```
+
+`verify` is the determinism check that makes an image-free baseline safe — it
+captures-twice-and-asserts-byte-identical, so you don't have to take a single
+capture on faith. After committing the manifest, the strict gate has something to
+compare against and subsequent PRs gate normally.
 
 ## Exit codes
 
