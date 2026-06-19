@@ -51,11 +51,17 @@ jobs:
       # will read. On a pre-release `push` this is the OLD CLI and the reseed bails
       # gracefully; the `release` trigger re-runs us once the NEW CLI is published.
       - name: Install the released screencomp
-        if: ${{ secrets.SCREENCOMP_DEMO_PAT != '' }}
         env:
+          # The `secrets` context is not allowed in a step `if:`, so gate on the
+          # token inside the script (matches the sync step's no-op-without-secret).
+          HAVE_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ -z "${HAVE_TOKEN:-}" ]; then
+            echo "no SCREENCOMP_DEMO_PAT configured; skipping screencomp install"
+            exit 0
+          fi
           scripts/install.sh --to "$HOME/.local/bin"
           echo "$HOME/.local/bin" >>"$GITHUB_PATH"
 
