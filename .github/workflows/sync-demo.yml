@@ -18,6 +18,12 @@ on:
       - demo/**
       - examples/pre-push # reused verbatim as the demo's .githooks/pre-push
       - .github/workflows/sync-demo.yml
+  # A published release is when screencomp's capture format can change, which is
+  # exactly when the demo's committed baseline may become unreadable by the
+  # now-released CLI its @v0 workflow resolves to. Re-run so the baseline reseed
+  # below can regenerate it, closing the breaking-change loop without a human.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -40,11 +46,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Commit managed files to screencomp-demo main
+      # Install the SAME released CLI the demo's `@v0` workflow resolves to, so the
+      # reseed below reads/writes the baseline in exactly the format the demo's CI
+      # will read. On a pre-release `push` this is the OLD CLI and the reseed bails
+      # gracefully; the `release` trigger re-runs us once the NEW CLI is published.
+      - name: Install the released screencomp
+        env:
+          # The `secrets` context is not allowed in a step `if:`, so gate on the
+          # token inside the script (matches the sync step's no-op-without-secret).
+          HAVE_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HAVE_TOKEN:-}" ]; then
+            echo "no SCREENCOMP_DEMO_PAT configured; skipping screencomp install"
+            exit 0
+          fi
+          scripts/install.sh --to "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+
+      - name: Commit managed files (and reseed a stale baseline) to screencomp-demo main
         id: sync
         env:
           GH_TOKEN: ${{ secrets.SCREENCOMP_DEMO_PAT }}
           DEMO: nickderobertis/screencomp-demo
+          # Keep in lockstep with the reusable workflow's `container` default and
+          # the pre-push guard: the reseed must capture in the SAME image the demo's
+          # CI uses, so the digests are byte-reproducible across the two.
+          CAPTURE_IMAGE: mcr.microsoft.com/playwright:v1.60.0-noble
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -59,11 +88,11 @@ jobs:
 
           # ---- mirror the managed demo source onto the demo ---------------------
           # `demo/` IS the demo's source tree (app pages, Playwright config + spec,
-          # screencomp.toml, the caller workflow under demo/.github/). Mirror it
-          # wholesale so the demo can't drift and can be fixed entirely from here.
-          # Preserve what the demo owns or that lives outside the mirror: its .git,
-          # its committed baselines (shots/), the hook (installed below), and this
-          # internal README.
+          # screencomp.toml, capture.sh, the caller workflow under demo/.github/).
+          # Mirror it wholesale so the demo can't drift and can be fixed entirely
+          # from here. Preserve what the demo owns or that lives outside the mirror:
+          # its .git, its committed baselines (shots/), the hook (installed below),
+          # and this internal README.
           rsync -a --delete \
             --exclude='.git/' --exclude='shots/' --exclude='.githooks/' --exclude='README.md' \
             "$srcroot/demo/" ./
@@ -71,8 +100,72 @@ jobs:
           install -D -m755 "$srcroot/examples/pre-push" ".githooks/pre-push"
           # ----------------------------------------------------------------------
 
-          # Idempotent: if the demo already matches, there is nothing to push.
-          if git diff --quiet; then
+          # ---- reseed the baseline when a screencomp release made it unreadable --
+          # A breaking change to screencomp's capture index (filename or schema)
+          # leaves the demo's committed baseline unreadable by the now-released CLI,
+          # so the demo can only seed-not-gate. Regenerate it from a fresh,
+          # deterministic capture in the SAME container CI uses — exactly what the
+          # pre-push guard does locally, and sound for the same reason (byte
+          # reproducibility within one arch + image). A baseline that merely DRIFTED
+          # (still readable) is left untouched: that is the developer's to own, which
+          # is the whole point of the strict gate.
+          reseed_baseline() {
+            command -v screencomp >/dev/null 2>&1 || { echo "screencomp not installed; skip reseed"; return 0; }
+            command -v docker     >/dev/null 2>&1 || { echo "docker unavailable; skip reseed"; return 0; }
+            local arches
+            arches="$(screencomp --config screencomp.toml arches --format json 2>/dev/null)" || {
+              echo "the released screencomp cannot read this screencomp.toml yet (pre-release CLI); skip reseed"
+              return 0
+            }
+            local host
+            host="$(uname -m)"
+            if [ "$host" = "aarch64" ]; then host="arm64"; fi
+            local probe
+            probe="$(mktemp -d)"
+            printf '{"schema":1,"shots":[]}' >"$probe/captures.json"
+            local arch manifest stale rc platform
+            while IFS= read -r arch; do
+              if [ "$arch" != "$host" ]; then
+                echo "::warning::cannot reseed shots/baseline/${arch}.json on a ${host} runner; reseed it from a matching-arch runner"
+                continue
+              fi
+              manifest="shots/baseline/${arch}.json"
+              stale=0
+              if [ ! -f "$manifest" ]; then
+                stale=1
+              else
+                set +e
+                screencomp classify --baseline-manifest "$manifest" --current "$probe" --exit-code --quiet >/dev/null 2>&1
+                rc=$?
+                set -e
+                # exit 1 = baseline unreadable (stale format) -> reseed; 0/3 =
+                # readable (3 is just drift vs the empty probe) -> leave it alone.
+                if [ "$rc" -eq 1 ]; then stale=1; fi
+              fi
+              if [ "$stale" -eq 0 ]; then
+                echo "shots/baseline/${arch}.json is readable; not reseeding"
+                continue
+              fi
+              echo "reseeding shots/baseline/${arch}.json from a fresh ${arch} capture…"
+              rm -f shots/baseline/*.sha256   # drop the obsolete pre-JSON baseline
+              platform="linux/amd64"
+              if [ "$arch" = "arm64" ]; then platform="linux/arm64"; fi
+              docker run --rm --platform="$platform" --ipc=host --shm-size=2g \
+                -v "$PWD:/work" -v /work/node_modules -w /work \
+                "$CAPTURE_IMAGE" \
+                bash -lc "SHOTS_OUT=shots/current/${arch} bash capture.sh"
+              screencomp manifest --input shots/current --arch "$arch" --output "$manifest"
+              echo "reseeded $manifest"
+            done < <(echo "$arches" | jq -r '.[]')
+          }
+          reseed_baseline
+          # ----------------------------------------------------------------------
+
+          # Idempotent: nothing to push when the demo already matches. `git status
+          # --porcelain` (not `git diff`) so a freshly reseeded, not-yet-tracked
+          # baseline counts; capture artifacts (node_modules, shots/current) are
+          # gitignored, so they never show here.
+          if [ -z "$(git status --porcelain)" ]; then
             echo "screencomp-demo already in sync; nothing to commit"
             exit 0
           fi

@@ -34,8 +34,7 @@ jobs:
       gh-pages-history-versions: 20
       # The demo's capture. It MUST write $SHOTS_OUT/captures.json (each shot's
       # name, toggles, hash, and image path) plus the PNGs it references
-      # ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
+      # ($SHOTS_OUT is exported as shots/current/<arch> for each lane). The script
+      # is the single source of truth, shared with sync-demo's baseline reseed.
       capture-command: |
-        npm ci
-        npx playwright install --with-deps chromium
-        npx playwright test
+        bash capture.sh
