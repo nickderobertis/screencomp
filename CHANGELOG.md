@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/nickderobertis/screencomp/compare/v0.3.0...v0.3.1) - 2026-06-19
+
+### Added
+
+- close scaffold gaps — proxy-ready hook, guard enablement, doctor --env ([#66](https://github.com/nickderobertis/screencomp/pull/66))
+
 ## [0.3.0](https://github.com/nickderobertis/screencomp/compare/v0.2.4...v0.3.0) - 2026-06-16
 
 ### Added
