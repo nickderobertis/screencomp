@@ -50,7 +50,14 @@ jobs:
       # Install the SAME released CLI the demo's `@v0` workflow resolves to, so the
       # reseed below reads/writes the baseline in exactly the format the demo's CI
       # will read. On a pre-release `push` this is the OLD CLI and the reseed bails
-      # gracefully; the `release` trigger re-runs us once the NEW CLI is published.
+      # gracefully.
+      #
+      # On a `release` we RACE release.yml: this workflow fires on `release:
+      # published`, but the release assets `install.sh` downloads are uploaded a
+      # minute or two LATER, so an immediate install 404s. Retry with backoff to
+      # wait the assets out, and never let a failed install abort the job — the
+      # reseed already skips without the CLI, and the demo refresh below must still
+      # run so the gallery picks up the new release.
       - name: Install the released screencomp
         env:
           # The `secrets` context is not allowed in a step `if:`, so gate on the
@@ -63,8 +70,21 @@ jobs:
             echo "no SCREENCOMP_DEMO_PAT configured; skipping screencomp install"
             exit 0
           fi
-          scripts/install.sh --to "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+          attempt=1 max=8 delay=15
+          while :; do
+            if scripts/install.sh --to "$HOME/.local/bin"; then
+              echo "$HOME/.local/bin" >>"$GITHUB_PATH"
+              break
+            fi
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::warning::could not install the released screencomp after ${attempt} attempts (release assets may still be uploading); continuing without it — the baseline reseed is skipped"
+              break
+            fi
+            echo "install attempt ${attempt} failed; the release assets may still be uploading — retrying in ${delay}s…"
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            delay=$(( delay * 2 > 60 ? 60 : delay * 2 ))
+          done
 
       - name: Commit managed files (and reseed a stale baseline) to screencomp-demo main
         id: sync

@@ -96,4 +96,9 @@
   to force the demo's `Visual docs` to re-run and regenerate its deployed gallery
   against the just-released `@v0` (the demo's only canonical-gallery trigger is
   `push: main`). This is what keeps the deployed demo gallery auto-updating to the
-  latest screencomp state, not just to managed-file changes.
+  latest screencomp state, not just to managed-file changes. On `release` this
+  workflow RACES `release.yml`: it fires on `release: published` but the assets
+  `install.sh` pulls are uploaded a minute or two later, so the install step
+  retries with backoff and is non-fatal (the reseed skips without the CLI) — never
+  let it `set -e`-abort before the refresh push, or the demo silently never
+  updates on release.
