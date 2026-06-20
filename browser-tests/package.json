@@ -1,0 +1,12 @@
+{
+  "name": "screencomp-browser-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser-driven tests for screencomp's generated gallery. Run from screencomp's CI (test-visual-docs.yml), never published.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0"
+  }
+}

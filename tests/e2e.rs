@@ -315,6 +315,72 @@ fn gallery_renders_toggle_controls_from_declared_dimensions() {
 }
 
 #[test]
+fn gallery_has_one_toggle_bar_that_filters_cards() {
+    // The page carries a single page-wide toggle bar (not one per card), and the
+    // default selection filters the cards: a name with only the non-default value
+    // is hidden server-side so the gallery is usable without JavaScript.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nlabel = \"Viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+    let input = dir.path().join("shots");
+    write_capture(
+        &input,
+        &[
+            (
+                "home",
+                &[("viewport", "desktop")],
+                &"a".repeat(64),
+                "home-d.png",
+                b"d",
+            ),
+            (
+                "home",
+                &[("viewport", "mobile")],
+                &"b".repeat(64),
+                "home-m.png",
+                b"m",
+            ),
+            (
+                "legacy",
+                &[("viewport", "mobile")],
+                &"c".repeat(64),
+                "legacy-m.png",
+                b"l",
+            ),
+        ],
+    );
+    let out = dir.path().join("site");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["gallery", "--input"])
+        .arg(&input)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(out.join("index.html")).expect("index.html");
+    // Exactly one toggle bar for the whole page, not one repeated per card.
+    assert_eq!(html.matches("class=\"toggles\"").count(), 1, "{html}");
+    // Default selection is `desktop`; `legacy` only has `mobile`, so its card is
+    // filtered out (hidden) while `home` (which has a desktop variant) stays.
+    assert!(
+        html.contains("<section class=\"shot\" hidden><h2>legacy</h2>"),
+        "{html}"
+    );
+    assert!(
+        html.contains("<section class=\"shot\"><h2>home</h2>"),
+        "{html}"
+    );
+}
+
+#[test]
 fn gallery_diff_mode_renders_before_after() {
     let dir = TempDir::new().unwrap();
 

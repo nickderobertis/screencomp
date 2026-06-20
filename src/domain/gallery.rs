@@ -1,13 +1,16 @@
 //! Deterministic static-HTML gallery rendering.
 //!
-//! The plain gallery renders one card per screenshot *name*, with a control group
-//! per declared toggle dimension (theme, viewport, …). Selecting a toggle swaps
-//! which captured image is shown, so a screen that varies across several settings
-//! is one focused card you toggle through rather than a wall of near-duplicate
-//! thumbnails. The page is a single self-contained file: inline CSS, a tiny inline
-//! script, and `src` paths relative to the page so it deploys as-is. The default
-//! variant is marked visible server-side, so the gallery still shows something
-//! without JavaScript.
+//! The plain gallery renders one *toggle bar* at the top of the page — one control
+//! group per declared dimension (theme, viewport, …) that distinguishes the
+//! capture's shots — and below it one card per screenshot *name*. The bar is the
+//! single, page-wide selection: changing it filters every card at once, showing
+//! the one image per name that matches the selection and hiding names that have no
+//! matching shot. So a capture that varies across several settings is one set of
+//! controls over a focused, filtered list rather than a wall of near-duplicate
+//! thumbnails or a control group repeated on every card. The page is a single
+//! self-contained file: inline CSS, a tiny inline script, and `src` paths relative
+//! to the page so it deploys as-is. The default selection is applied server-side,
+//! so the gallery still shows something without JavaScript.
 
 use super::classify::{Classification, Status};
 use super::snapshot::{Shot, ShotKey, Snapshot};
@@ -15,8 +18,9 @@ use super::toggle::ToggleDim;
 
 /// Inline stylesheet kept tiny so the gallery is a single self-contained file.
 const STYLE: &str = "body{font-family:system-ui,sans-serif;margin:2rem;color:#222}\
-section.shot{margin-bottom:2.5rem}h2{margin-bottom:.5rem}\
-.toggles{display:flex;flex-wrap:wrap;gap:1rem;margin:.25rem 0 .75rem}\
+section.shot{margin-bottom:2.5rem}section.shot[hidden]{display:none}h2{margin-bottom:.5rem}\
+.toggles{display:flex;flex-wrap:wrap;gap:1rem;margin:0 0 1.5rem;position:sticky;top:0;\
+background:#fff;padding:.75rem 0;z-index:1}\
 .toggle{display:flex;align-items:center;gap:.4rem}\
 .dim-label{font-size:.8rem;color:#555}\
 .toggle button{font:inherit;font-size:.8rem;padding:.15rem .6rem;border:1px solid #bbb;\
@@ -25,20 +29,29 @@ background:#f6f6f6;border-radius:999px;cursor:pointer}\
 .variants img{max-width:100%;height:auto;border:1px solid #ddd;border-radius:4px}\
 .variant[hidden]{display:none}";
 
-/// Inline script: per card, track the selected value of each toggle dimension and
-/// show the one image whose `data-variant` matches. Kept dependency-free and
-/// deterministic (a static string).
-const SCRIPT: &str = "for(const card of document.querySelectorAll('.shot')){\
-const sel={};\
-for(const t of card.querySelectorAll('.toggle')){\
+/// Inline script: read the page-wide selection from the top toggle bar, then show
+/// the one image per card whose toggles match it and hide cards with no match.
+/// An image matches when every toggle it carries equals the selected value for
+/// that dimension; dimensions the image lacks are wildcards. Cards with no images
+/// (digest-only names) are left untouched. Kept dependency-free and deterministic
+/// (a static string).
+const SCRIPT: &str = "const bar=document.querySelector('.toggles');\
+if(bar){const sel={};\
+for(const t of bar.querySelectorAll('.toggle')){\
 const a=t.querySelector('button.active')||t.querySelector('button');\
 if(a)sel[t.dataset.dim]=a.dataset.val;}\
-const key=()=>Object.keys(sel).sort().map(k=>k+'='+sel[k]).join(';');\
-const apply=()=>{const want=key();\
-for(const img of card.querySelectorAll('.variant'))img.hidden=img.dataset.variant!==want;\
-for(const b of card.querySelectorAll('.toggle button'))\
+const parse=s=>{const o={};if(s)for(const p of s.split(';')){\
+const i=p.indexOf('=');o[p.slice(0,i)]=p.slice(i+1);}return o;};\
+const match=v=>{for(const k in v)if(sel[k]!==v[k])return false;return true;};\
+const apply=()=>{\
+for(const sec of document.querySelectorAll('.shot')){\
+const imgs=sec.querySelectorAll('.variant');if(!imgs.length)continue;\
+let any=false;\
+for(const img of imgs){const ok=match(parse(img.dataset.variant));img.hidden=!ok;if(ok)any=true;}\
+sec.hidden=!any;}\
+for(const b of bar.querySelectorAll('.toggle button'))\
 b.classList.toggle('active',sel[b.parentElement.dataset.dim]===b.dataset.val);};\
-for(const b of card.querySelectorAll('.toggle button'))\
+for(const b of bar.querySelectorAll('.toggle button'))\
 b.addEventListener('click',()=>{sel[b.parentElement.dataset.dim]=b.dataset.val;apply();});\
 apply();}";
 
@@ -49,8 +62,13 @@ pub(crate) fn render_html(snapshot: &Snapshot, dims: &[ToggleDim], title: &str) 
     if snapshot.is_empty() {
         body.push_str("<p class=\"empty\">No screenshots.</p>\n");
     } else {
+        // One page-wide control bar over every dimension that distinguishes the
+        // capture's shots, plus the default selection it starts on.
+        let controls = controls_for(snapshot, dims);
+        let default = default_selection(&controls);
+        push_toggle_bar(&mut body, &controls, &default);
         for group in group_by_name(snapshot) {
-            push_card(&mut body, &group, dims);
+            push_card(&mut body, &group, &controls, &default);
         }
     }
 
@@ -94,9 +112,10 @@ struct Control<'a> {
     values: Vec<&'a str>,
 }
 
-/// The control dimensions for `group`: declared dimensions (in config order) whose
-/// key appears with two or more distinct values across the group's shots.
-fn controls_for<'a>(group: &Group<'a>, dims: &'a [ToggleDim]) -> Vec<Control<'a>> {
+/// The page-wide control dimensions: declared dimensions (in config order) whose
+/// key appears with two or more distinct values across *all* of the capture's
+/// shots. These drive the single top toggle bar that filters every card.
+fn controls_for<'a>(snapshot: &'a Snapshot, dims: &'a [ToggleDim]) -> Vec<Control<'a>> {
     dims.iter()
         .filter_map(|dim| {
             let present: Vec<&str> = dim
@@ -104,7 +123,7 @@ fn controls_for<'a>(group: &Group<'a>, dims: &'a [ToggleDim]) -> Vec<Control<'a>
                 .iter()
                 .map(String::as_str)
                 .filter(|v| {
-                    group.shots.iter().any(|(k, _)| {
+                    snapshot.iter().any(|(k, _)| {
                         k.toggles.get(dim.key.as_str()).map(String::as_str) == Some(*v)
                     })
                 })
@@ -118,78 +137,118 @@ fn controls_for<'a>(group: &Group<'a>, dims: &'a [ToggleDim]) -> Vec<Control<'a>
         .collect()
 }
 
-/// The `data-variant`/selection key for a shot over `controls`: `key=value` pairs
-/// in control-key order (sorted, matching the inline script's `Object.keys().sort()`).
-/// A control dimension absent from the shot contributes an empty value.
-fn variant_key(toggles: &super::snapshot::Toggles, controls: &[Control<'_>]) -> String {
-    let mut keys: Vec<&str> = controls.iter().map(|c| c.key).collect();
-    keys.sort_unstable();
-    keys.iter()
-        .map(|k| format!("{k}={}", toggles.get(*k).map(String::as_str).unwrap_or("")))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-/// Append one screenshot card: heading, toggle controls, and the image variants.
-fn push_card(body: &mut String, group: &Group<'_>, dims: &[ToggleDim]) {
-    let controls = controls_for(group, dims);
-
-    body.push_str(&format!(
-        "<section class=\"shot\"><h2>{}</h2>\n",
-        escape(group.name)
-    ));
-
-    // Default selection: the first present value of each control (declared order),
-    // which fixes which variant is visible without JavaScript.
+/// The default page selection: the first present value of each control (declared
+/// order), which fixes which images are visible without JavaScript.
+fn default_selection(controls: &[Control<'_>]) -> super::snapshot::Toggles {
     let mut default = super::snapshot::Toggles::new();
-    for c in &controls {
+    for c in controls {
         if let Some(first) = c.values.first() {
             default.insert(c.key.to_owned(), (*first).to_owned());
         }
     }
-    let default_key = variant_key(&default, &controls);
+    default
+}
 
-    if !controls.is_empty() {
-        body.push_str("<div class=\"toggles\">");
-        for c in &controls {
-            body.push_str(&format!(
-                "<div class=\"toggle\" data-dim=\"{}\"><span class=\"dim-label\">{}</span>",
-                escape(c.key),
-                escape(c.label)
-            ));
-            for v in &c.values {
-                let active = default.get(c.key).map(String::as_str) == Some(*v);
-                body.push_str(&format!(
-                    "<button type=\"button\" data-val=\"{}\"{}>{}</button>",
-                    escape(v),
-                    if active { " class=\"active\"" } else { "" },
-                    escape(v),
-                ));
-            }
-            body.push_str("</div>");
-        }
-        body.push_str("</div>\n");
+/// The `data-variant` key for a shot over `controls`: `key=value` pairs for only
+/// the control dimensions the shot *carries*, in sorted key order. Dimensions the
+/// shot lacks are omitted, so they act as wildcards when matched against the
+/// selection (matching the inline script's `match`).
+fn variant_key(toggles: &super::snapshot::Toggles, controls: &[Control<'_>]) -> String {
+    let mut pairs: Vec<(&str, &str)> = controls
+        .iter()
+        .filter_map(|c| toggles.get(c.key).map(|v| (c.key, v.as_str())))
+        .collect();
+    pairs.sort_unstable_by_key(|(k, _)| *k);
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+/// Whether a shot is visible under `selection`: every control dimension it carries
+/// must equal the selected value. Dimensions it lacks are wildcards. Mirrors the
+/// inline script so server-side default visibility matches client-side filtering.
+fn matches(
+    toggles: &super::snapshot::Toggles,
+    controls: &[Control<'_>],
+    selection: &super::snapshot::Toggles,
+) -> bool {
+    controls
+        .iter()
+        .filter_map(|c| toggles.get(c.key).map(|v| (c.key, v)))
+        .all(|(k, v)| selection.get(k) == Some(v))
+}
+
+/// Append the single page-wide toggle bar with the default value of each control
+/// marked active. Nothing is emitted when there are no controls.
+fn push_toggle_bar(
+    body: &mut String,
+    controls: &[Control<'_>],
+    default: &super::snapshot::Toggles,
+) {
+    if controls.is_empty() {
+        return;
     }
+    body.push_str("<div class=\"toggles\">");
+    for c in controls {
+        body.push_str(&format!(
+            "<div class=\"toggle\" data-dim=\"{}\"><span class=\"dim-label\">{}</span>",
+            escape(c.key),
+            escape(c.label)
+        ));
+        for v in &c.values {
+            let active = default.get(c.key).map(String::as_str) == Some(*v);
+            body.push_str(&format!(
+                "<button type=\"button\" data-val=\"{}\"{}>{}</button>",
+                escape(v),
+                if active { " class=\"active\"" } else { "" },
+                escape(v),
+            ));
+        }
+        body.push_str("</div>");
+    }
+    body.push_str("</div>\n");
+}
 
-    body.push_str("<div class=\"variants\">");
+/// Append one screenshot card: a heading and the name's image variants, each keyed
+/// by its toggles so the top bar can filter them. The card is hidden server-side
+/// when it has images but none match the default selection; a digest-only name
+/// (no images) is always shown.
+fn push_card(
+    body: &mut String,
+    group: &Group<'_>,
+    controls: &[Control<'_>],
+    default: &super::snapshot::Toggles,
+) {
+    let mut variants = String::new();
+    let mut has_image = false;
+    let mut any_visible = false;
     for (key, shot) in &group.shots {
         let Some(image) = shot.image.as_deref() else {
             continue; // a digest-only shot has no image to show
         };
-        let variant = variant_key(&key.toggles, &controls);
-        let hidden = if variant == default_key {
-            ""
-        } else {
-            " hidden"
-        };
-        let src = escape(image);
-        body.push_str(&format!(
-            "<img class=\"variant\" data-variant=\"{}\" loading=\"lazy\" src=\"{src}\" alt=\"{}\"{hidden}>",
-            escape(&variant),
+        has_image = true;
+        let visible = matches(&key.toggles, controls, default);
+        any_visible |= visible;
+        variants.push_str(&format!(
+            "<img class=\"variant\" data-variant=\"{}\" loading=\"lazy\" src=\"{}\" alt=\"{}\"{}>",
+            escape(&variant_key(&key.toggles, controls)),
+            escape(image),
             escape(&key.label()),
+            if visible { "" } else { " hidden" },
         ));
     }
-    body.push_str("</div></section>\n");
+
+    let hidden = if has_image && !any_visible {
+        " hidden"
+    } else {
+        ""
+    };
+    body.push_str(&format!(
+        "<section class=\"shot\"{hidden}><h2>{}</h2>\n<div class=\"variants\">{variants}</div></section>\n",
+        escape(group.name),
+    ));
 }
 
 /// Inline stylesheet for the before/after diff gallery.
@@ -411,6 +470,31 @@ mod tests {
     }
 
     #[test]
+    fn digest_only_name_renders_and_is_never_filtered_out() {
+        // A name whose only shot has no image (a digest-only/manifest shot) still
+        // gets a card with its heading, and is not hidden even though it has no
+        // image to match the selection.
+        let mut s = Snapshot::new();
+        s.insert(
+            ShotKey::with("home", &[("theme", "light")]),
+            Shot::new("aa", Some("home-light.png".to_owned())),
+        );
+        s.insert(
+            ShotKey::with("home", &[("theme", "dark")]),
+            Shot::new("bb", Some("home-dark.png".to_owned())),
+        );
+        s.insert(ShotKey::bare("digest"), Shot::new("cc", None));
+        let html = render_html(&s, &dims(), "Demo");
+        // The digest-only card is present and not hidden, with no image variant.
+        assert!(
+            html.contains(
+                "<section class=\"shot\"><h2>digest</h2>\n<div class=\"variants\"></div>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn single_shot_name_has_no_controls() {
         let mut s = Snapshot::new();
         s.insert(
@@ -420,6 +504,65 @@ mod tests {
         let html = render_html(&s, &dims(), "Solo");
         assert!(!html.contains("class=\"toggles\""));
         assert!(html.contains("data-variant=\"\" loading=\"lazy\" src=\"home.png\""));
+    }
+
+    #[test]
+    fn one_toggle_bar_filters_every_card() {
+        let mut s = Snapshot::new();
+        for (name, theme) in [("home", "light"), ("home", "dark"), ("nightly", "dark")] {
+            s.insert(
+                ShotKey::with(name, &[("theme", theme)]),
+                Shot::new("aa", Some(format!("{name}-{theme}.png"))),
+            );
+        }
+        let html = render_html(&s, &dims(), "Demo");
+        // Exactly one page-wide toggle bar, not one repeated per card.
+        assert_eq!(html.matches("class=\"toggles\"").count(), 1, "{html}");
+        assert!(html.contains("data-dim=\"theme\""));
+        // `nightly` only carries the non-default `dark`, so under the default
+        // `light` selection its card is filtered out (hidden) server-side.
+        assert!(
+            html.contains("<section class=\"shot\" hidden><h2>nightly</h2>"),
+            "{html}"
+        );
+        // `home` has a matching default variant, so its card stays visible.
+        assert!(
+            html.contains("<section class=\"shot\"><h2>home</h2>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn card_missing_a_dimension_is_a_wildcard() {
+        let mut s = Snapshot::new();
+        // Both theme and viewport vary across the capture, so both are controls.
+        s.insert(
+            ShotKey::with("home", &[("theme", "light"), ("viewport", "desktop")]),
+            Shot::new("a", Some("h-ld.png".to_owned())),
+        );
+        s.insert(
+            ShotKey::with("home", &[("theme", "dark"), ("viewport", "mobile")]),
+            Shot::new("a", Some("h-dm.png".to_owned())),
+        );
+        // `about` carries only theme; the absent viewport acts as a wildcard.
+        s.insert(
+            ShotKey::with("about", &[("theme", "light")]),
+            Shot::new("a", Some("about.png".to_owned())),
+        );
+        let html = render_html(&s, &dims(), "Demo");
+        assert!(html.contains("data-dim=\"theme\""));
+        assert!(html.contains("data-dim=\"viewport\""));
+        // about's variant key omits the dimension it lacks.
+        assert!(
+            html.contains("data-variant=\"theme=light\" loading=\"lazy\" src=\"about.png\""),
+            "{html}"
+        );
+        // Default selection is theme=light, viewport=desktop; about matches on
+        // theme and wildcards viewport, so its card is visible.
+        assert!(
+            html.contains("<section class=\"shot\"><h2>about</h2>"),
+            "{html}"
+        );
     }
 
     #[test]

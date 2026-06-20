@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "shots": [
+    {
+      "name": "home",
+      "toggles": {
+        "theme": "light"
+      },
+      "hash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "image": "home/light.png"
+    },
+    {
+      "name": "home",
+      "toggles": {
+        "theme": "dark"
+      },
+      "hash": "2222222222222222222222222222222222222222222222222222222222222222",
+      "image": "home/dark.png"
+    },
+    {
+      "name": "legacy",
+      "toggles": {
+        "theme": "light",
+        "viewport": "desktop"
+      },
+      "hash": "7777777777777777777777777777777777777777777777777777777777777777",
+      "image": "legacy/light-desktop.png"
+    },
+    {
+      "name": "settings",
+      "toggles": {
+        "theme": "light",
+        "viewport": "desktop"
+      },
+      "hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "image": "settings/light-desktop.png"
+    },
+    {
+      "name": "settings",
+      "toggles": {
+        "theme": "light",
+        "viewport": "mobile"
+      },
+      "hash": "4444444444444444444444444444444444444444444444444444444444444444",
+      "image": "settings/light-mobile.png"
+    },
+    {
+      "name": "settings",
+      "toggles": {
+        "theme": "dark",
+        "viewport": "desktop"
+      },
+      "hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "image": "settings/dark-desktop.png"
+    },
+    {
+      "name": "settings",
+      "toggles": {
+        "theme": "dark",
+        "viewport": "mobile"
+      },
+      "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "image": "settings/dark-mobile.png"
+    }
+  ]
+}
