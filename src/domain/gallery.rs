@@ -470,6 +470,31 @@ mod tests {
     }
 
     #[test]
+    fn digest_only_name_renders_and_is_never_filtered_out() {
+        // A name whose only shot has no image (a digest-only/manifest shot) still
+        // gets a card with its heading, and is not hidden even though it has no
+        // image to match the selection.
+        let mut s = Snapshot::new();
+        s.insert(
+            ShotKey::with("home", &[("theme", "light")]),
+            Shot::new("aa", Some("home-light.png".to_owned())),
+        );
+        s.insert(
+            ShotKey::with("home", &[("theme", "dark")]),
+            Shot::new("bb", Some("home-dark.png".to_owned())),
+        );
+        s.insert(ShotKey::bare("digest"), Shot::new("cc", None));
+        let html = render_html(&s, &dims(), "Demo");
+        // The digest-only card is present and not hidden, with no image variant.
+        assert!(
+            html.contains(
+                "<section class=\"shot\"><h2>digest</h2>\n<div class=\"variants\"></div>"
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn single_shot_name_has_no_controls() {
         let mut s = Snapshot::new();
         s.insert(
