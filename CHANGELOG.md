@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/nickderobertis/screencomp/compare/v0.4.1...v0.4.2) - 2026-06-20
+
+### Added
+
+- single top toggle bar that filters the gallery ([#76](https://github.com/nickderobertis/screencomp/pull/76))
+
 ## [0.4.1](https://github.com/nickderobertis/screencomp/compare/v0.4.0...v0.4.1) - 2026-06-20
 
 ### Added
