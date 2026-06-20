@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/nickderobertis/screencomp/compare/v0.4.0...v0.4.1) - 2026-06-20
+
+### Added
+
+- surface cross-CPU anti-aliasing drift as a first-class diagnosis ([#72](https://github.com/nickderobertis/screencomp/pull/72))
+
 ## [0.4.0](https://github.com/nickderobertis/screencomp/compare/v0.3.1...v0.4.0) - 2026-06-19
 
 ### Added
