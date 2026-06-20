@@ -39,6 +39,18 @@
   `$GITHUB_ACTION_PATH` (the script ships beside the action), so the shipped and
   tested logic cannot diverge. The script is shellcheck-linted in CI since
   actionlint only covers shell embedded in workflows.
+- `test-visual-docs.yml` is the PR-time observability for the CLI's
+  consumer-facing output contract (classify/comment/gallery/manifest) — the real
+  browser capture (`verify-demo`) only runs post-release, too late to block a
+  shipped regression. So it triggers on `src/**` + the Cargo manifests (not just
+  the workflow/action files), and its `action-smoke` job builds the CLI from the
+  PR (`method: source`) and drives the composite action through BOTH an unchanged
+  and a drifted capture. Two non-obvious invariants keep it honest: the seeded
+  baseline must be `.json` (the format the action looks for — the obsolete
+  `.sha256` makes `has_baseline` false and silently skips classify while still
+  going green), and the drift step must keep exercising the changed-shot branch
+  (classify exit 3 + the gate/comment render), which the unchanged path never
+  touches.
 - `test-gh-pages-maintenance.yml` exercises that script against a *disposable*
   branch on `screencomp-demo` (never its real gh-pages) via the
   `SCREENCOMP_DEMO_PAT` secret (a token with `contents: write` on the demo repo;

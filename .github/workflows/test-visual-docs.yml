@@ -8,6 +8,16 @@
 # It catches the bug class that bit us repeatedly: a step that needs a tool its
 # environment lacks (gh in the capture container, pipefail under dash, …).
 #
+# It is ALSO the PR-time observability for the CLI's consumer-facing output
+# contract. The real browser capture (`verify-demo` in sync-demo.yml) only runs
+# post-release, so a change to classify/comment/gallery/manifest output would
+# otherwise ship before anyone could see it break the pipeline. `action-smoke`
+# builds the CLI from THIS checkout (`method: source`) and drives it through the
+# composite action's gate + comment render on both an UNCHANGED and a CHANGED
+# capture — so an output regression surfaces here, on the PR. That is why `src/**`
+# (and the Cargo manifests) trigger this workflow, not just the workflow/action
+# files.
+#
 # `publish: false` runs every step but performs no external side effects (no PR
 # comment, no manifest push, no Pages deploy), so the test is safe to run here.
 name: Test reusable workflow
@@ -18,12 +28,20 @@ on:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
       - visual-docs/action.yml
+      - action.yml
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
   push:
     branches: [main]
     paths:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
       - visual-docs/action.yml
+      - action.yml
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
   workflow_dispatch:
 
 permissions:
@@ -99,20 +117,25 @@ jobs:
           # fail on the new flags.
           method: source
       # Seed a baseline from the capture so the classify + comment-render paths
-      # (has_baseline == true) are actually exercised, not just the seed path.
+      # (has_baseline == true) are actually exercised, not just the seed path. The
+      # baseline MUST be `.json` (the format the action looks for); the obsolete
+      # `.sha256` name makes has_baseline false, silently skipping classify — the
+      # whole point of this job — while still going green.
       - name: Seed baseline
         env:
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           if [ -n "$ARCH" ]; then
-            arch_arg="--arch $ARCH"; manifest="shots/baseline/$ARCH.sha256"
+            arch_arg="--arch $ARCH"; manifest="shots/baseline/$ARCH.json"
           else
-            arch_arg=""; manifest="shots/baseline.sha256"
+            arch_arg=""; manifest="shots/baseline.json"
           fi
           mkdir -p "$(dirname "$manifest")"
           # shellcheck disable=SC2086
           screencomp manifest --input shots/current $arch_arg --output "$manifest"
+      # Unchanged path: capture matches the baseline -> classify clean (exit 0),
+      # plus the reproducibility gate (verify-second) and manifest regeneration.
       - uses: ./visual-docs
         with:
           arch: ${{ matrix.arch }}
@@ -120,4 +143,26 @@ jobs:
           pages: false
           publish: false
           update-manifest: true
+      # Changed path: flip one shot so the capture drifts from the baseline the
+      # step above seeded, then re-run with fail-on-drift:false (auto-accept) so the
+      # CHANGED-shot branch of classify — exit 3, the drift warning, the diagnostic
+      # note, and the comment render — actually executes in the real action
+      # environment. This is the path output-contract regressions hide in; the
+      # unchanged path alone never touches it.
+      - name: Introduce drift
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          dir="shots/current${ARCH:+/$ARCH}"
+          printf 'drifted-home-shot' > "$dir/home.png"
+          cat > "$dir/captures.json" <<'JSON'
+          {"schema":1,"shots":[{"name":"home","toggles":{"viewport":"desktop"},"hash":"3333333333333333333333333333333333333333333333333333333333333333","image":"home.png"}]}
+          JSON
+      - uses: ./visual-docs
+        with:
+          arch: ${{ matrix.arch }}
+          pages: false
+          publish: false
+          fail-on-drift: false
 
