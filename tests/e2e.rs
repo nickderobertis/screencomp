@@ -127,6 +127,9 @@ fn classify_happy_path_separates_streams() {
         .stdout(predicate::str::contains(
             "added 1 changed 1 removed 0 unchanged 2",
         ))
+        // A `changed` shot earns the cross-CPU-drift hint on stdout (human
+        // output), never stderr — the stream split must hold.
+        .stdout(predicate::str::contains("cross-CPU anti-aliasing drift"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -142,7 +145,10 @@ fn classify_json_contract() {
         .stdout(predicate::str::contains(r#""changed":true"#))
         .stdout(predicate::str::contains(r#""status":"added""#))
         // The toggle map is part of each entry now, not a `project` field.
-        .stdout(predicate::str::contains(r#""toggles":{"viewport":"desktop"}"#));
+        .stdout(predicate::str::contains(r#""toggles":{"viewport":"desktop"}"#))
+        // The JSON contract stays a clean single machine line: the human-only
+        // cross-CPU hint must never leak into it.
+        .stdout(predicate::str::contains("cross-CPU").not());
 }
 
 #[test]

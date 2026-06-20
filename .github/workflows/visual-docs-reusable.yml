@@ -227,6 +227,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Record the runner's CPU. ubuntu-latest hands out heterogeneous CPUs (Intel
+      # vs AMD), and Blink lays text out in floating point, so the last bit of an
+      # anti-aliased glyph edge can differ across CPUs — flipping a dense-text shot
+      # between re-runs even when `verify` is byte-clean on one machine. Logging the
+      # CPU turns "same commit, passes then fails" from a multi-hour spelunk into a
+      # diff you can see. See the screencomp README "Cross-CPU" troubleshooting.
+      - name: Log runner CPU (cross-CPU anti-aliasing drift diagnostics)
+        run: |
+          echo "::group::Runner CPU ($(uname -m))"
+          grep -E -m1 'model name' /proc/cpuinfo \
+            || grep -E 'Model|CPU implementer|CPU part' /proc/cpuinfo | sort -u \
+            || true
+          echo "::endgroup::"
+
       # Your capture writes $SHOTS_OUT/captures.json plus its PNGs. No host tools are
       # used here, so the container needs only your capture toolchain.
       - name: Capture screenshots
