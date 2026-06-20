@@ -89,4 +89,11 @@
   the just-synced workflow definition, and the `verify-demo` job waits for that
   exact commit's run, mirrors its pass/fail back into this repo's Actions, and on
   failure dumps the demo's failing logs here — so whether the consumer actually
-  works is fully visible from screencomp's CI.
+  works is fully visible from screencomp's CI. `sync-demo` also runs
+  `on: release: published`, and a release can change how the CLI *renders* the
+  gallery/comment with no `demo/` or baseline change — so when there is nothing to
+  commit, the sync step pushes an *empty* commit on a `release`/`workflow_dispatch`
+  to force the demo's `Visual docs` to re-run and regenerate its deployed gallery
+  against the just-released `@v0` (the demo's only canonical-gallery trigger is
+  `push: main`). This is what keeps the deployed demo gallery auto-updating to the
+  latest screencomp state, not just to managed-file changes.
