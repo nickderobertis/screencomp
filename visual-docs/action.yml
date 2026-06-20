@@ -174,9 +174,13 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
+        # `shell: bash` forces -e, so capture classify's exit EXPLICITLY: a bare
+        # `cmd; status=$?` aborts on --exit-code's 3 before the assignment, which
+        # would defeat fail-on-drift:false (the job would fail on any drift instead
+        # of auto-accepting). `|| status=$?` is the -e-safe capture.
+        status=0
         screencomp classify --baseline-manifest '${{ steps.cfg.outputs.manifest }}' \
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} --exit-code
-        status=$?
+          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} --exit-code || status=$?
         if [ "$status" -eq 3 ]; then
           if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
             echo "::error::Screenshots drifted from the committed baseline (${{ steps.cfg.outputs.manifest }}). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
