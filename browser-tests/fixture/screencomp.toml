@@ -1,0 +1,14 @@
+# Fixture config for the gallery browser tests. Two toggle dimensions so the
+# single top bar renders more than one control group, exercising multi-dimension
+# filtering and the wildcard case (a card that lacks a dimension). No
+# [capture].arches, so the gallery uses the project-level (no arch subtree) layout.
+
+[[toggle]]
+key = "theme"
+label = "Theme"
+values = ["light", "dark"]
+
+[[toggle]]
+key = "viewport"
+label = "Viewport"
+values = ["desktop", "mobile"]

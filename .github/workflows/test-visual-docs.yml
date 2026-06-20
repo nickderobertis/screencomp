@@ -32,6 +32,7 @@ on:
       - src/**
       - Cargo.toml
       - Cargo.lock
+      - browser-tests/**
   push:
     branches: [main]
     paths:
@@ -42,6 +43,7 @@ on:
       - src/**
       - Cargo.toml
       - Cargo.lock
+      - browser-tests/**
   workflow_dispatch:
 
 permissions:
@@ -165,4 +167,31 @@ jobs:
           pages: false
           publish: false
           fail-on-drift: false
+
+  # The gallery ships its interactive toggle filtering as an inline <script>; the
+  # Rust suite asserts only the static HTML and never runs a browser, so a
+  # regression in that script would pass it. This builds the CLI from THIS checkout
+  # (`method: source`, like action-smoke), renders a gallery from a two-dimension
+  # fixture, and drives the real script in chromium — the one place the gallery's
+  # client-side behavior is exercised pre-release.
+  gallery-browser:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./ # build + install the screencomp CLI on the host (PATH)
+        with:
+          method: source
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install Playwright chromium
+        working-directory: browser-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Drive the gallery's inline filtering in a real browser
+        working-directory: browser-tests
+        run: npx playwright test
 
