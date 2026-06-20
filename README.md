@@ -525,6 +525,12 @@ developer's machine and CI. See [`examples/visual-docs.yml`](examples/visual-doc
 for the full standard configuration, the deterministic-rendering flags, and a
 reproducibility gate.
 
+One caveat sits *below* the arch split: anti-aliased text is byte-reproducible
+per machine but not across the different CPUs (Intel vs AMD — both `x86_64`) a
+shared runner pool hands out, so on heterogeneous CI a dense-text shot can flip
+across re-runs even with a clean `verify`. If your gate flakes that way, see
+[Gate flakes across re-runs](#gate-flakes-across-re-runs-cross-cpu-anti-aliasing-drift).
+
 For a complete, continuously tested consumer of this standard, see
 [**screencomp-demo**](https://github.com/nickderobertis/screencomp-demo): it
 captures real Playwright screenshots in the pinned container and exercises the
@@ -796,6 +802,49 @@ first-PR confusion:
   legitimately changes 4 screenshots shows "4 changed" in the comment *and* a
   green gate — the manifest you committed accounts for those 4, while the comment
   still renders them against `main` for review.
+
+### Gate flakes across re-runs (cross-CPU anti-aliasing drift)
+
+**Symptom.** The same commit's gate passes, then fails on a re-run, with no code
+change. [`verify`](#reproducibility-gate-verify) is clean — the capture is
+byte-identical when captured twice on one machine — yet `classify` flips
+pass/fail across CI re-runs, hitting your **densest-text shots first**.
+
+That signature is the diagnosis:
+
+| `verify` (one machine) | `classify` across re-runs | Cause                          |
+| ---------------------- | ------------------------- | ------------------------------ |
+| clean (byte-identical) | **flips** pass/fail       | **cross-CPU AA drift** (below) |
+| **fails** (diverges)   | flips                     | nondeterministic capture — see [`verify`](#reproducibility-gate-verify) |
+
+**Why.** screencomp's determinism model is **byte-reproducible _per machine_, not
+across CPUs for anti-aliased text.** Byte-exact hashing assumes per-pixel
+determinism; that holds within one CPU but not across the heterogeneous CPUs a
+shared runner pool hands out. `ubuntu-latest` schedules onto Intel *and* AMD;
+Blink lays text out in floating point, the two differ in the last bit, and that
+occasionally flips an anti-aliased glyph edge by one quantization step (1/255).
+Dense text accumulates the most sub-pixel edges, so it drifts first. This is not
+font-hinting, coverage, or a capture bug — it is positional float layout, and no
+amount of disabling AA fixes it. (The reusable workflow logs the runner CPU on
+every capture so "passes then fails" shows up as a visible CPU diff, not a
+mystery.)
+
+**The fix ladder** (each step trades cost for robustness; stop at the first that
+holds):
+
+1. **Supersample the affected lane** — raise `deviceScaleFactor` to `2` (in your
+   Playwright config) on text-dense screens. At higher resolution a sub-pixel
+   shift spreads across more AA gradations, so most device pixels stay under the
+   1/255 step instead of one flipping. This is an empirical mitigation, not a
+   theorem: it held at 2× here (and mobile at 2.625× never drifted), but a
+   pathological case — very long lines, more accumulated layout error — can need
+   3×. Cost: ~4× the bytes (storage, artifact size, encode/compare time), so
+   apply it per-lane, not to pure-graphical UIs that never drift.
+2. **Pin the runner CPU** — schedule the capture lane onto a single CPU vendor
+   (e.g. a larger/dedicated runner) so the hardware lottery is removed entirely.
+
+Start at step 1; if drift persists, raise the factor or pin the runner. The docs
+do **not** promise cross-CPU determinism — they give you the ladder.
 
 ### Bootstrapping the first baseline (or a wholesale UI change)
 

@@ -69,7 +69,8 @@ fn write_json(classification: &Classification, out: &mut dyn Write) -> Result<()
     writeln!(out, "{json}").map_err(write_err)
 }
 
-/// One line per changed shot, then a single summary line.
+/// One line per changed shot, then a single summary line, then — when shots
+/// *changed* — a one-line cross-CPU-drift hint.
 fn write_human(classification: &Classification, out: &mut dyn Write) -> Result<(), AppError> {
     for entry in &classification.entries {
         if entry.status != Status::Unchanged {
@@ -83,5 +84,24 @@ fn write_human(classification: &Classification, out: &mut dyn Write) -> Result<(
         "added {} changed {} removed {} unchanged {}",
         c.added, c.changed, c.removed, c.unchanged
     )
-    .map_err(write_err)
+    .map_err(write_err)?;
+
+    // Cross-CPU anti-aliasing drift only ever surfaces as *changed* (the same
+    // shot, byte-different) — never added/removed — so volunteer the one fact
+    // that tells "different CPU" apart from "real change" exactly when that is
+    // the open question. Heterogeneous CI runners (Intel vs AMD on
+    // ubuntu-latest) lay text out in floating point and can differ in the last
+    // bit of an anti-aliased glyph edge, flipping a dense-text shot across
+    // otherwise-identical re-runs while `verify` stays clean on one machine.
+    if c.changed > 0 {
+        writeln!(
+            out,
+            "note: a 'changed' shot that re-captures byte-identical is usually cross-CPU \
+             anti-aliasing drift on heterogeneous CI runners, not a real change. Raise \
+             deviceScaleFactor to >=2 on text-dense lanes, or pin the runner CPU; see the \
+             screencomp README \"Cross-CPU\" troubleshooting."
+        )
+        .map_err(write_err)?;
+    }
+    Ok(())
 }

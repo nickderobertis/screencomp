@@ -102,6 +102,45 @@ fn classify_human_reports_changes_and_summary() {
         out.contains("added 1 changed 1 removed 0 unchanged 2"),
         "{out}"
     );
+    // A `changed` shot earns the cross-CPU-drift hint so a flaky gate points the
+    // reader at the diagnosis instead of a multi-hour spelunk.
+    assert!(
+        out.contains("cross-CPU anti-aliasing drift") && out.contains("deviceScaleFactor"),
+        "{out}"
+    );
+}
+
+#[test]
+fn classify_hint_only_fires_on_changed_shots() {
+    // Added/removed (but nothing `changed`) is not how cross-CPU AA drift shows
+    // up, so the hint must stay quiet — it only fires on a byte-different shot.
+    let dir = TempDir::new().unwrap();
+    let base = dir.path().join("baseline");
+    let cur = dir.path().join("current");
+    let vp: &[(&str, &str)] = &[("viewport", "desktop")];
+    write_capture(&base, &[("home", vp, &digest("aa"), "home.png", b"home")]);
+    write_capture(
+        &cur,
+        &[
+            ("home", vp, &digest("aa"), "home.png", b"home"), // unchanged
+            ("pricing", vp, &digest("dd"), "pricing.png", b"new"), // added only
+        ],
+    );
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "classify",
+        "--baseline",
+        base.to_str().unwrap(),
+        "--current",
+        cur.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("added 1 changed 0 removed 0 unchanged 1"),
+        "{out}"
+    );
+    assert!(!out.contains("cross-CPU"), "hint must not fire: {out}");
 }
 
 #[test]

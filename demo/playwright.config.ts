@@ -17,6 +17,12 @@ export default defineConfig({
   use: {
     browserName: 'chromium',
     viewport: { width: 1280, height: 800 },
+    // 1x keeps these (graphical, low-text) demo pages small and is byte-stable
+    // here. For TEXT-DENSE real apps prefer deviceScaleFactor: 2 on the affected
+    // lane: anti-aliased glyph edges can differ in the last bit across
+    // heterogeneous CI CPUs (Intel vs AMD), and supersampling spreads each
+    // sub-pixel shift across more gradations so most pixels stay under the 1/255
+    // step instead of flipping. ~4x the bytes — see the README "Cross-CPU".
     deviceScaleFactor: 1,
     launchOptions: {
       args: [

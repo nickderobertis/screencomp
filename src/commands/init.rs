@@ -319,6 +319,14 @@ jobs:
       # intact; older history is collapsed into one base commit. Default 20; set 0
       # to collapse to a single commit.
       gh-pages-history-versions: 20
+      # Text-dense screens? Anti-aliased glyph edges can differ in the last bit
+      # across heterogeneous CI CPUs (Intel vs AMD on ubuntu-latest), flipping a
+      # dense-text shot between otherwise-identical re-runs. Capturing at
+      # deviceScaleFactor >= 2 (set in your Playwright config) spreads each
+      # sub-pixel shift across more anti-aliasing gradations, so most device pixels
+      # stay under the 1/255 quantization step instead of flipping — the usual fix.
+      # It is ~4x the bytes, so apply it to text-dense lanes, not pure-graphical
+      # UIs. See the screencomp README \"Cross-CPU\" troubleshooting.
       # Replace with your real capture. It MUST write $SHOTS_OUT/captures.json
       # (each shot's name, toggles, hash, and image path) plus the PNGs it
       # references ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
