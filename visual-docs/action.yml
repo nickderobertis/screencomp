@@ -170,6 +170,7 @@ runs:
         screencomp verify --first '${{ inputs.current }}' --second '${{ inputs.verify-second }}' ${{ steps.cfg.outputs.arch_arg }}
 
     - name: Classify against the baseline manifest
+      id: classify
       if: ${{ steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
       run: |
@@ -183,10 +184,15 @@ runs:
           --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} --exit-code || status=$?
         if [ "$status" -eq 3 ]; then
           if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
-            echo "::error::Screenshots drifted from the committed baseline (${{ steps.cfg.outputs.manifest }}). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
-            exit 3
+            # Strict gate: RECORD the drift but do not fail here. The gallery and
+            # the before/after PR comment below still need to render — a red check
+            # a reviewer can't see the diff on is the worst outcome. The "Enforce
+            # the strict drift gate" step at the very end turns this into the
+            # failure, after the comment is posted.
+            echo "drifted=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::Baseline drifted and was auto-accepted (fail-on-drift:false); changes can slip through unnoticed. Set fail-on-drift:true plus the pre-push guard for a hard gate." >&2
           fi
-          echo "::warning::Baseline drifted and was auto-accepted (fail-on-drift:false); changes can slip through unnoticed. Set fail-on-drift:true plus the pre-push guard for a hard gate." >&2
         elif [ "$status" -ne 0 ]; then
           exit "$status"
         fi
@@ -328,3 +334,14 @@ runs:
           git commit -m "chore: update screenshot baseline manifest"
           git push
         fi
+
+    # Strict gate, enforced LAST. A drift under fail-on-drift:true is recorded by
+    # the classify step above but deferred to here, so the gallery and the sticky
+    # before/after PR comment render and post first — the failing check still
+    # carries the diff a reviewer needs to act on it. Only this step fails the run.
+    - name: Enforce the strict drift gate
+      if: ${{ steps.classify.outputs.drifted == 'true' }}
+      shell: bash
+      run: |
+        echo "::error::Screenshots drifted from the committed baseline (${{ steps.cfg.outputs.manifest }}). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
+        exit 1
