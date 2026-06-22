@@ -167,6 +167,32 @@ jobs:
           pages: false
           publish: false
           fail-on-drift: false
+      # Strict gate (fail-on-drift:true, the default) on the SAME drift: the step
+      # must FAIL — but only AFTER the before/after comment renders, so a reviewer
+      # sees the diff on the red check. Regression test for the comment-before-fail
+      # ordering; `continue-on-error` lets us assert the failure, not abort on it.
+      - name: Drop the rendered comment so the strict run must re-create it
+        run: rm -f comment.md
+      - id: strict
+        continue-on-error: true
+        uses: ./visual-docs
+        with:
+          arch: ${{ matrix.arch }}
+          pages: false
+          publish: false
+          fail-on-drift: true
+      - name: Assert the strict drift gate failed
+        run: |
+          test '${{ steps.strict.outcome }}' = 'failure' \
+            || { echo "expected the strict drift gate to fail"; exit 1; }
+      # The comment only renders on pull_request events (the Render step is gated on
+      # it); on push there is nothing to assert, so scope this check to PRs.
+      - name: Assert the comment rendered before the gate failed
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          test -f comment.md \
+            || { echo "comment.md was not rendered before the strict gate failed"; exit 1; }
+          echo "ok: strict drift rendered the comment, then failed the gate"
 
   # The gallery ships its interactive toggle filtering as an inline <script>; the
   # Rust suite asserts only the static HTML and never runs a browser, so a
