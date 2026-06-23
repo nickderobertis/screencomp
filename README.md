@@ -227,6 +227,27 @@ screencomp's composable actions, so you own only the capture steps;
 [`examples/visual-docs.yml`](examples/visual-docs.yml) is the **raw-CLI** one that
 calls the binary step by step and deploys via the Actions Pages source.
 
+#### Link to the gallery: the Visual Docs badge
+
+Once the canonical gallery is live on Pages, drop a badge in your README so
+reviewers can reach it in one click. Paste this Markdown — it renders on GitHub
+and links straight to the gallery:
+
+```markdown
+[![Visual Docs](https://img.shields.io/badge/Visual%20Docs-gallery-8A2BE2)](https://OWNER.github.io/REPO/ARCH/)
+```
+
+The link target follows the [published gallery layout](#per-arch-comparison): a
+per-arch setup deploys each arch under its own subpath, so point the badge at one
+of them — `https://OWNER.github.io/REPO/x86_64/` (or `arm64`). A project-level
+layout (no `[capture].arches`) has no arch segment, so drop `/ARCH/` and link to
+`https://OWNER.github.io/REPO/` instead.
+
+Rendered, it links to the live [`screencomp-demo`](https://github.com/nickderobertis/screencomp-demo)
+gallery (captured on `x86_64`):
+
+[![Visual Docs](https://img.shields.io/badge/Visual%20Docs-gallery-8A2BE2)](https://nickderobertis.github.io/screencomp-demo/x86_64/)
+
 #### When your capture needs custom steps: the composite actions
 
 A reusable workflow takes a `capture-command` *string*, so it can't host capture
