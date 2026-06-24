@@ -12,6 +12,15 @@
 # same hook at .githooks/pre-push; it detects the host arch at runtime, so the one
 # committed hook is correct on every developer's machine.
 #
+# The whole loop when you change something visual: edit, then `git push`. This
+# hook captures (only if [guard].paths changed) and, on drift, regenerates the
+# baseline + builds a review gallery and BLOCKS — then you review the gallery,
+# `git add` the baseline, commit, and push again. That is the entire workflow,
+# local-first by design: you own the baseline, so don't wait for CI to handle
+# drift. Don't pre-check your environment either — your CPU arch is auto-detected
+# below (CI gates its own arch lane; local and CI never need to match) and Docker
+# is checked before capture and fails loudly if missing. Just run the loop.
+#
 # What it does on a push:
 #   1. Compute the push range from git's stdin (new branches fall back to the
 #      merge-base with origin/HEAD).

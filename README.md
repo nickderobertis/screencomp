@@ -756,6 +756,18 @@ changes and goes red only on ones you missed. `screencomp init` scaffolds it at
 template. (Without it — or under CI auto-accept — you can change UI, pass your
 whole local gate, and push without ever learning the visual baseline moved.)
 
+**The whole loop, when you change something visual:** edit, then `git push`. If
+nothing screenshot-relevant changed the hook is a no-op; if it did, the hook
+captures and, on drift, regenerates the baseline, builds a review gallery, and
+blocks — so you **review the gallery, `git add` the baseline, commit, and `git
+push` again**. That is the entire workflow, and it is local-first by design:
+under the strict gate **you** own the baseline, so don't wait for CI to "handle"
+a visual change. You also don't need to pre-check your environment first. In
+particular: you never pick or verify your CPU arch (the hook auto-detects the
+host arch, and CI gates its own arch lane independently — local and CI never need
+to match), and you never pre-flight Docker (the hook checks for it and fails
+loudly with instructions if it's missing). Just run the loop.
+
 The hook fires **only when a pushed change matches the `[guard].paths` globs** in
 `screencomp.toml`, so the common push pays nothing — no capture, no Docker. When
 a relevant file changes it is deliberately slow: it captures in the same pinned
