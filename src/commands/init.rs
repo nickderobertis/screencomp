@@ -151,7 +151,15 @@ fn write_human(
          The gate is strict by default: CI fails on unexpected drift, and you\n\
          regenerate the baseline locally (the pre-push guard) and commit it. To\n\
          switch to CI auto-accept instead, set fail-on-drift:false and\n\
-         update-manifest:true in the workflow."
+         update-manifest:true in the workflow.\n\
+         \n\
+         Day-to-day, once set up: change something visual, then `git push`. The\n\
+         pre-push guard re-captures and, on drift, regenerates the baseline,\n\
+         builds a review gallery, and blocks — review it, `git add` the baseline,\n\
+         commit, and push again. That is the whole loop. You never verify your\n\
+         CPU arch (it is auto-detected; CI gates its own lane) or pre-flight\n\
+         Docker (the guard checks it and fails loudly). It is local-first: you\n\
+         own the baseline, so don't wait for CI to handle a visual change."
     )
     .map_err(write_err)
 }
@@ -358,6 +366,15 @@ fn render_hook() -> String {
 # re-captures only when screenshot-relevant files change ([guard].paths in
 # screencomp.toml) and blocks the push on drift. Capture and git stay in your
 # hands; the marked capture block below is yours to adapt.
+#
+# The whole loop when you change something visual: edit, then `git push`. This
+# hook captures (only if [guard].paths changed) and, on drift, regenerates the
+# baseline + builds a review gallery and BLOCKS — then you review the gallery,
+# `git add` the baseline, commit, and push again. That is the entire workflow,
+# local-first by design: you own the baseline, so don't wait for CI to handle
+# drift. Don't pre-check your environment either — your CPU arch is auto-detected
+# just below (CI gates its own arch lane; local and CI never need to match) and
+# Docker is checked further down and fails loudly if missing. Just run the loop.
 #
 # Enable once per clone:  git config core.hooksPath .githooks
 # Bypass intentionally:   git push --no-verify
