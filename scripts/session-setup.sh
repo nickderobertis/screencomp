@@ -12,6 +12,7 @@
 # Set SCREENCOMP_AUTO_SETUP=1 to opt into hands-off provisioning: setup is then
 # launched detached in the background (still non-blocking) instead of advised.
 set -eu
+# setup.sh installs rust-just so the `just` command surface is available.
 
 # Skip in GitHub Actions CI (workflows provision the toolchain themselves).
 # Escape hatch for any other automated context: SCREENCOMP_SKIP_SETUP.
@@ -52,3 +53,7 @@ printf '%s\n' \
   "Verify anytime with 'just setup-check'. After it completes, run 'direnv reload' (or open a" \
   "new shell) so asdf and direnv are on PATH."
 exit 0
+
+if [ -x scripts/setup-llmlint.sh ]; then
+  scripts/setup-llmlint.sh
+fi
