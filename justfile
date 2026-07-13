@@ -365,3 +365,12 @@ _ensure-hadolint:
     echo "installing hadolint {{hadolint_version}}"
     curl -fsSL "$url" -o "$dest/hadolint"
     chmod +x "$dest/hadolint"
+
+lint-llm:
+    llmlint
+
+lint-llm-diff:
+    llmlint --diff --diff-base "origin/main"
+
+lint-llm-validate:
+    llmlint validate

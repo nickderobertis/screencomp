@@ -1,0 +1,35 @@
+name: llmlint
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llmlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  llmlint:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+      - name: Install just
+        run: uv tool install rust-just
+      - name: Install llmlint
+        run: scripts/setup-llmlint.sh
+      - name: Validate llmlint config
+        run: just lint-llm-validate
+      - name: Lint changed lines
+        if: ${{ env.OPENAI_API_KEY != '' || env.ANTHROPIC_API_KEY != '' }}
+        run: just lint-llm-diff
+      - name: Skip model-backed llmlint without harness secret
+        if: ${{ env.OPENAI_API_KEY == '' && env.ANTHROPIC_API_KEY == '' }}
+        run: echo "No llmlint harness secret configured; validate completed, skipping model-backed diff."
