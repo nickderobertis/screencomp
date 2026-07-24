@@ -213,7 +213,7 @@ jobs:
         shell: bash
         env:
           ARCHES_OVERRIDE: ${{ inputs.arches }}
-          PROJECTS: ${{ inputs.projects }}
+          PROJECTS_INPUT: ${{ inputs.projects }}
           DEFAULT_TITLE: ${{ inputs.gallery-title }}
         run: |
           set -euo pipefail
@@ -226,7 +226,7 @@ jobs:
             echo "::error::no [capture].arches configured in screencomp.toml; add e.g. arches = [\"x86_64\"], or pass the workflow's 'arches' input" >&2
             exit 1
           fi
-          projects="$PROJECTS"
+          projects="$PROJECTS_INPUT"
           if [ -z "$projects" ] || [ "$projects" = "[]" ]; then
             projects='[{"id":"","current":"shots/current","verify":"shots/verify"}]'
           else

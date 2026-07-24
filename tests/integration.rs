@@ -1932,7 +1932,9 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
 
     // Execute the workflow's exact jq validation block, not a reimplementation,
     // so malformed runtime matrices fail at the same boundary the action uses.
-    let validation_start = reusable.find("          projects=\"$PROJECTS\"").unwrap();
+    let validation_start = reusable
+        .find("          projects=\"$PROJECTS_INPUT\"")
+        .unwrap();
     let validation_end = reusable[validation_start..]
         .find("          combined=")
         .map(|offset| validation_start + offset)
@@ -1942,13 +1944,11 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
         .map(|line| line.strip_prefix("          ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n");
+    // Feed the snippet to bash as source (`-c`), never as a filesystem path:
+    // a temp-file path handed to `bash` is a Windows backslash path the runner's
+    // bash cannot resolve, so the script would silently fail for every input.
+    let validation_script = format!("set -euo pipefail\n{validation}");
     let dir = TempDir::new().unwrap();
-    let script = dir.path().join("validate-projects.sh");
-    std::fs::write(
-        &script,
-        format!("#!/usr/bin/env bash\nset -euo pipefail\n{validation}"),
-    )
-    .unwrap();
 
     for projects in [
         r#"[{"id":"shop","current":"/tmp/shots"}]"#,
@@ -1961,8 +1961,9 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     ] {
         assert!(
             !std::process::Command::new("bash")
-                .arg(&script)
-                .env("PROJECTS", projects)
+                .arg("-c")
+                .arg(&validation_script)
+                .env("PROJECTS_INPUT", projects)
                 .status()
                 .unwrap()
                 .success(),
@@ -1971,9 +1972,10 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     }
     assert!(
         std::process::Command::new("bash")
-            .arg(&script)
+            .arg("-c")
+            .arg(&validation_script)
             .env(
-                "PROJECTS",
+                "PROJECTS_INPUT",
                 r#"[{"id":"shop","current":"shots/current/shop's","manifest":"baselines/shop's/x86_64.json","gallery-title":"Shop's screenshots"}]"#,
             )
             .status()
@@ -1990,15 +1992,10 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     let custom = capture.join("shots/custom/shop/x86_64");
     std::fs::create_dir_all(&custom).unwrap();
     std::fs::write(custom.join("captures.json"), b"{\"schema\":1,\"shots\":[]}").unwrap();
-    std::fs::create_dir_all(report.join("shots")).unwrap();
-    assert!(
-        std::process::Command::new("cp")
-            .args(["-R", "shots/.", report.join("shots").to_str().unwrap()])
-            .current_dir(&capture)
-            .status()
-            .unwrap()
-            .success()
-    );
+    // Mirror upload-artifact(path: shots) -> download-artifact(path: shots) with a
+    // cross-platform recursive copy; a `cp` shell-out is not on the Windows PATH
+    // and its `\`-separated destination is not a POSIX path.
+    copy_tree(&capture.join("shots"), &report.join("shots"));
     assert_eq!(
         std::fs::read(report.join("shots/custom/shop/x86_64/captures.json")).unwrap(),
         b"{\"schema\":1,\"shots\":[]}"
@@ -2039,6 +2036,21 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     let args = std::fs::read_to_string(calls).unwrap();
     assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
     assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
+}
+
+/// Recursively copy `src` into `dst` (creating `dst`), using only path APIs so
+/// the artifact round-trip behaves identically on Windows and Unix.
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
 }
 
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.
