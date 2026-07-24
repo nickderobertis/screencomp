@@ -33,7 +33,7 @@ pub(crate) fn run(args: &GalleryArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
         Some(baseline_dir) => {
             let baseline_root = arch::scope(baseline_dir, plat);
             let baseline = discover_scoped(baseline_dir, plat)?;
-            let classification = classify(&baseline, &current);
+            let classification = classify(&baseline, &current, &[]);
             let html = render_diff_html(&classification, &args.title);
             fs::write_string(&index, &html)?;
             // Both captures are referenced by the diff page (before and after).

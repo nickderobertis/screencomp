@@ -20,7 +20,7 @@ pub(crate) fn run(args: &ClassifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result
         arch,
     )?;
     let current = discover_scoped(&args.current, arch)?;
-    let classification = classify(&baseline, &current);
+    let classification = classify(&baseline, &current, &args.include);
 
     match args.format {
         OutputFormat::Json => write_json(&classification, out)?,

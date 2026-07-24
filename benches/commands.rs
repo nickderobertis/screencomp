@@ -177,6 +177,7 @@ fn classify_cli(t: &Trees, format: OutputFormat) -> Cli {
             baseline: Some(t.baseline.clone()),
             baseline_manifest: None,
             current: t.current.clone(),
+            include: Vec::new(),
             arch: None,
             format,
             exit_code: false,

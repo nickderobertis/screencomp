@@ -96,6 +96,12 @@ pub struct ClassifyArgs {
     #[arg(long, value_name = "DIR")]
     pub current: Utf8PathBuf,
 
+    /// Include only shots whose toggle map contains this `KEY=VALUE` pair.
+    /// Repeat to include multiple scopes (a shot matching any pair is included).
+    /// When omitted, all shots are compared.
+    #[arg(long, value_name = "KEY=VALUE", value_parser = parse_include)]
+    pub include: Vec<(String, String)>,
+
     /// Restrict the comparison to one CPU-arch subtree
     /// (`<root>/<arch>/captures.json`), since identical UI rendered on a
     /// different architecture differs byte-for-byte. `auto` detects the host arch
@@ -111,6 +117,22 @@ pub struct ClassifyArgs {
     /// Exit with code 3 when any difference is detected (default: always 0 on success).
     #[arg(long)]
     pub exit_code: bool,
+}
+
+fn parse_include(value: &str) -> Result<(String, String), String> {
+    let Some((key, value)) = value.split_once('=') else {
+        return Err("include must be KEY=VALUE".to_owned());
+    };
+    if key.is_empty() || value.is_empty() {
+        return Err("include key and value must not be empty".to_owned());
+    }
+    if !key
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("include key must match [A-Za-z0-9_-]".to_owned());
+    }
+    Ok((key.to_owned(), value.to_owned()))
 }
 
 /// Arguments for [`Command::Gallery`].

@@ -22,7 +22,7 @@ pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<
         plat,
     )?;
     let current = discover_scoped(&args.current, plat)?;
-    let classification = classify(&baseline, &current);
+    let classification = classify(&baseline, &current, &[]);
 
     // CLI flags override the configured values when present.
     let embed_limit = args.embed_limit.unwrap_or(cfg.comment.embed_limit);
