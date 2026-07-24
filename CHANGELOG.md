@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3](https://github.com/nickderobertis/screencomp/compare/v0.4.2...v0.4.3) - 2026-07-24
+
+### Added
+
+- affected-only scoped-capture support ([#84](https://github.com/nickderobertis/screencomp/pull/84))
+
+### Documentation
+
+- make local-first screenshot loop discoverable to agents ([#82](https://github.com/nickderobertis/screencomp/pull/82))
+- add a Visual Docs gallery badge for consumer READMEs ([#81](https://github.com/nickderobertis/screencomp/pull/81))
+
 ## [0.4.2](https://github.com/nickderobertis/screencomp/compare/v0.4.1...v0.4.2) - 2026-06-20
 
 ### Added
