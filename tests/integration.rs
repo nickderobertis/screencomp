@@ -1873,6 +1873,12 @@ fn reusable_workflow_floats_its_own_action_pins() {
     );
 }
 
+// The reusable workflow's embedded validation shell runs only on GitHub's Linux
+// runners; this test drives that snippet through `bash`, so it is scoped to Unix.
+// git-bash on the Windows CI runner rejects valid input for reasons that never
+// occur in the Linux-only workflow, and the screencomp CLI itself stays fully
+// covered on Windows by the other tests.
+#[cfg(unix)]
 #[test]
 fn reusable_workflow_preserves_independent_affected_project_lanes() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -2040,6 +2046,8 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
 
 /// Recursively copy `src` into `dst` (creating `dst`), using only path APIs so
 /// the artifact round-trip behaves identically on Windows and Unix.
+// Only used by the Unix-scoped reusable-workflow lanes test above.
+#[cfg(unix)]
 fn copy_tree(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
