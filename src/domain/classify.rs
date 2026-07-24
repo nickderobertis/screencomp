@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::cli::IncludeSelector;
+
 use super::snapshot::{ShotKey, Snapshot};
 
 /// Per-shot comparison result.
@@ -72,13 +74,26 @@ impl Classification {
 }
 
 /// Classify `current` against `baseline` by comparing content digests.
-pub(crate) fn classify(baseline: &Snapshot, current: &Snapshot) -> Classification {
+pub(crate) fn classify(
+    baseline: &Snapshot,
+    current: &Snapshot,
+    include: &[IncludeSelector],
+) -> Classification {
     let keys: BTreeSet<&ShotKey> = baseline.keys().chain(current.keys()).collect();
 
     let mut entries = Vec::with_capacity(keys.len());
     let mut counts = Counts::default();
 
     for key in keys {
+        if !include.is_empty()
+            && !include.iter().any(|selector| {
+                key.toggles
+                    .iter()
+                    .any(|(name, value)| selector.matches(name, value))
+            })
+        {
+            continue;
+        }
         let base = baseline.get(key);
         let cur = current.get(key);
         let status = match (base, cur) {
@@ -137,7 +152,7 @@ mod tests {
                                                                   // home[theme=dark] removed
         ]);
 
-        let c = classify(&baseline, &current);
+        let c = classify(&baseline, &current, &[]);
         assert_eq!(c.counts.added, 1);
         assert_eq!(c.counts.changed, 1);
         assert_eq!(c.counts.removed, 1);
@@ -165,7 +180,7 @@ mod tests {
     fn carries_both_image_sides() {
         let baseline = snap(&[(ShotKey::bare("home"), "aa")]);
         let current = snap(&[(ShotKey::bare("home"), "bb")]);
-        let c = classify(&baseline, &current);
+        let c = classify(&baseline, &current, &[]);
         let e = &c.entries[0];
         assert_eq!(e.status, Status::Changed);
         assert_eq!(e.baseline_image.as_deref(), Some("home.png"));
@@ -175,8 +190,23 @@ mod tests {
     #[test]
     fn identical_snapshots_have_no_changes() {
         let s = snap(&[(ShotKey::bare("home"), "aa")]);
-        let c = classify(&s, &s);
+        let c = classify(&s, &s, &[]);
         assert!(!c.has_changes());
         assert_eq!(c.counts.unchanged, 1);
+    }
+
+    #[test]
+    fn include_set_ignores_other_scopes_but_keeps_in_scope_removals() {
+        let baseline = snap(&[
+            (ShotKey::with("home", &[("project", "a")]), "aa"),
+            (ShotKey::with("gone", &[("project", "a")]), "bb"),
+            (ShotKey::with("home", &[("project", "b")]), "cc"),
+        ]);
+        let current = snap(&[(ShotKey::with("home", &[("project", "a")]), "aa")]);
+
+        let c = classify(&baseline, &current, &["project=a".parse().unwrap()]);
+        assert_eq!(c.counts.removed, 1);
+        assert_eq!(c.counts.unchanged, 1);
+        assert_eq!(c.entries.len(), 2);
     }
 }

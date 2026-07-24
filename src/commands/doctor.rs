@@ -120,7 +120,7 @@ fn baseline_warnings(
 
     // Shared shot names but nothing identical: the byte-for-byte mismatch a
     // wrong-arch baseline produces.
-    let c = classify(&baseline, &current).counts;
+    let c = classify(&baseline, &current, &[]).counts;
     if c.unchanged == 0 && c.changed > 0 {
         warnings.push(format!(
             "every shared shot differs from the baseline ({} changed, 0 unchanged) — usually an \

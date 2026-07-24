@@ -28,7 +28,7 @@ pub(crate) fn run(args: &VerifyArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i
     let second = discover_scoped(&args.second, plat)?;
     // `first` plays the baseline role: a shot only in `first` is `Removed`
     // (only-in-first), one only in `second` is `Added` (only-in-second).
-    let result = classify(&first, &second);
+    let result = classify(&first, &second, &[]);
 
     match args.format {
         OutputFormat::Json => write_json(&result, out)?,

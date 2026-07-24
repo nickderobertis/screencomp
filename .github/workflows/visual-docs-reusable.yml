@@ -17,6 +17,16 @@
 #       secrets:
 #         push-token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN }}   # optional
 #
+# Affected-only monorepos pass a runtime JSON array from an upstream job:
+#
+#   projects: ${{ needs.affected.outputs.projects }}
+#
+# Each object has a unique non-empty `id` and may override `current`, `verify`,
+# `manifest`, and `gallery-title`; capture roots must remain beneath the uploaded
+# `shots/` tree. The shared capture command receives SCREENCOMP_PROJECT and
+# SHOTS_OUT for that project/arch lane. Each project keeps its own manifest,
+# gallery subpath, and sticky comment. See the README for the complete shape.
+#
 # Architecture matrix: which CPU arch(es) to capture is the single committed list
 # `[capture].arches` in screencomp.toml — never a workflow input. Captures run in
 # a Linux container, so only the arch varies. The `arches` job reads that list and
@@ -67,6 +77,14 @@ on:
         description: Shell that writes $SHOTS_OUT/captures.json plus its PNGs.
         type: string
         required: true
+      projects:
+        description: >-
+          Dynamic affected-project JSON array. Each object requires a stable `id`
+          and may set `current`, `verify`, `manifest`, and `gallery-title`.
+          Capture roots must remain beneath shots/. Empty preserves the existing
+          single-capture workflow.
+        type: string
+        default: '[]'
       container:
         description: Container image the capture runs in (pin to your Playwright version).
         type: string
@@ -195,6 +213,8 @@ jobs:
         shell: bash
         env:
           ARCHES_OVERRIDE: ${{ inputs.arches }}
+          PROJECTS_INPUT: ${{ inputs.projects }}
+          DEFAULT_TITLE: ${{ inputs.gallery-title }}
         run: |
           set -euo pipefail
           if [ -n "$ARCHES_OVERRIDE" ]; then
@@ -206,7 +226,49 @@ jobs:
             echo "::error::no [capture].arches configured in screencomp.toml; add e.g. arches = [\"x86_64\"], or pass the workflow's 'arches' input" >&2
             exit 1
           fi
-          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+          projects="$PROJECTS_INPUT"
+          if [ -z "$projects" ] || [ "$projects" = "[]" ]; then
+            projects='[{"id":"","current":"shots/current","verify":"shots/verify"}]'
+          else
+            if ! jq -e '
+              def safe_capture_path:
+                type == "string" and length > 0 and
+                startswith("shots/") and
+                (contains("\\") | not) and
+                (split("/") | all(. != "" and . != "." and . != ".."));
+              def safe_relative_path:
+                type == "string" and length > 0 and
+                (startswith("/") | not) and
+                (contains("\\") | not) and
+                (split("/") | all(. != "" and . != "." and . != ".."));
+              type == "array" and length > 0 and
+              all(.[];
+                type == "object" and
+                (.id | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+                ((has("current") | not) or (.current | safe_capture_path)) and
+                ((has("verify") | not) or (.verify | safe_capture_path)) and
+                ((has("manifest") | not) or (.manifest | safe_relative_path)) and
+                ((has("gallery-title") | not) or
+                  (."gallery-title" | type == "string" and length > 0))) and
+              ([.[].id] | length == (unique | length))
+            ' <<<"$projects" >/dev/null; then
+              echo "::error::projects needs unique non-empty IDs, capture roots under shots/, safe relative manifests, and non-empty gallery titles" >&2
+              exit 1
+            fi
+          fi
+          combined="$(jq -cn --argjson arches "$matrix" --argjson projects "$projects" --arg title "$DEFAULT_TITLE" '
+            {include: [
+              $arches[] as $arch | $projects[] |
+              {
+                arch: $arch,
+                project: .id,
+                current: (.current // ("shots/current/" + .id)),
+                verify: (.verify // ("shots/verify/" + .id)),
+                manifest: (.manifest // (if .id == "" then "" else "shots/baseline/" + .id + "/" + $arch + ".json" end)),
+                gallery_title: (."gallery-title" // $title)
+              }
+            ]}')"
+          echo "matrix=$combined" >>"$GITHUB_OUTPUT"
 
   # ---- Capture: the ONLY job that runs inside your container ----------------
   # One lane per configured arch, each on a runner of that arch so the pixels
@@ -217,13 +279,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON(needs.arches.outputs.matrix) }}
+        include: ${{ fromJSON(needs.arches.outputs.matrix).include }}
     runs-on: ${{ (matrix.arch == 'arm64' || matrix.arch == 'aarch64') && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     container: ${{ inputs.container }}
     permissions:
       contents: read
     env:
-      SHOTS_OUT: shots/current/${{ matrix.arch }}
+      SCREENCOMP_PROJECT: ${{ matrix.project }}
+      SHOTS_OUT: ${{ matrix.current }}/${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
 
@@ -251,13 +314,13 @@ jobs:
       - name: Capture again for the reproducibility gate
         if: ${{ inputs.verify }}
         env:
-          SHOTS_OUT: shots/verify/${{ matrix.arch }}
+          SHOTS_OUT: ${{ matrix.verify }}/${{ matrix.arch }}
         run: ${{ inputs.capture-command }}
 
       # Hand this arch's screenshots to the host-side `report` job.
       - uses: actions/upload-artifact@v4
         with:
-          name: screencomp-shots-${{ matrix.arch }}
+          name: ${{ matrix.project && format('screencomp-shots-{0}-{1}', matrix.project, matrix.arch) || format('screencomp-shots-{0}', matrix.arch) }}
           path: shots
           if-no-files-found: error
           retention-days: 1
@@ -277,9 +340,12 @@ jobs:
     needs: [arches, capture]
     runs-on: ubuntu-latest
     strategy:
+      # Report lanes write the shared PR and gh-pages branches. max-parallel: 1
+      # keeps those checkouts/pushes ordered while capture remains fully parallel.
       fail-fast: false
+      max-parallel: 1
       matrix:
-        arch: ${{ fromJSON(needs.arches.outputs.matrix) }}
+        include: ${{ fromJSON(needs.arches.outputs.matrix).include }}
     permissions:
       contents: write # push the regenerated manifest + the gh-pages gallery
       pull-requests: write # post the diff comment
@@ -295,15 +361,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: screencomp-shots-${{ matrix.arch }}
+          name: ${{ matrix.project && format('screencomp-shots-{0}-{1}', matrix.project, matrix.arch) || format('screencomp-shots-{0}', matrix.arch) }}
           path: shots
 
       - uses: nickderobertis/screencomp/visual-docs@v0
         with:
+          project: ${{ matrix.project }}
           arch: ${{ matrix.arch }}
-          gallery-title: ${{ inputs.gallery-title }}
+          current: ${{ matrix.current }}
+          manifest: ${{ matrix.manifest }}
+          gallery-title: ${{ matrix.gallery_title }}
           # verify (half 1) re-captured into shots/verify; point the gate at it.
-          verify-second: ${{ inputs.verify && 'shots/verify' || '' }}
+          verify-second: ${{ inputs.verify && matrix.verify || '' }}
           pages: ${{ inputs.pages }}
           publish: ${{ inputs.publish }}
           fail-on-drift: ${{ inputs.fail-on-drift }}

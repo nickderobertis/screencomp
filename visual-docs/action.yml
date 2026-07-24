@@ -37,6 +37,10 @@ branding:
   color: purple
 
 inputs:
+  project:
+    description: 'Stable project ID for an affected-only lane. Empty preserves the single-project layout.'
+    required: false
+    default: ''
   arch:
     description: 'CPU arch (e.g. x86_64, arm64). Empty means a project-level layout with no arch subtree.'
     required: false
@@ -107,9 +111,26 @@ runs:
     - name: Resolve config
       id: cfg
       shell: bash
+      env:
+        INPUT_ARCH: ${{ inputs.arch }}
+        INPUT_PROJECT: ${{ inputs.project }}
+        INPUT_MANIFEST: ${{ inputs.manifest }}
+        INPUT_GALLERY_URL: ${{ inputs.gallery-url }}
+        INPUT_BASELINE_URL: ${{ inputs.baseline-url }}
+        INPUT_PAGES: ${{ inputs.pages }}
+        INPUT_PUBLISH: ${{ inputs.publish }}
       run: |
         set -euo pipefail
-        arch='${{ inputs.arch }}'
+        arch="$INPUT_ARCH"
+        project="$INPUT_PROJECT"
+        if [[ -n "$arch" && ! "$arch" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::arch must match [A-Za-z0-9_-]" >&2
+          exit 1
+        fi
+        if [[ -n "$project" && ! "$project" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::project must match [A-Za-z0-9_-]" >&2
+          exit 1
+        fi
         # Each arch lives in its own subtree, baseline, gallery subpath, and
         # sticky comment, so multiple arch lanes never clobber one another.
         if [ -n "$arch" ]; then
@@ -125,9 +146,19 @@ runs:
           subpath=""
           dest=""
         fi
+        if [ -n "$project" ]; then
+          echo "marker_arg=--marker screencomp-${project}${arch:+-${arch}}" >>"$GITHUB_OUTPUT"
+          subpath="/${project}${subpath}"
+          dest="${project}${dest:+/${dest}}"
+          if [ -n "$arch" ]; then
+            default_manifest="shots/baseline/${project}/${arch}.json"
+          else
+            default_manifest="shots/baseline/${project}.json"
+          fi
+        fi
         echo "dest=$dest" >>"$GITHUB_OUTPUT"
         echo "subpath=$subpath" >>"$GITHUB_OUTPUT"
-        manifest='${{ inputs.manifest }}'
+        manifest="$INPUT_MANIFEST"
         [ -n "$manifest" ] || manifest="$default_manifest"
         echo "manifest=$manifest" >>"$GITHUB_OUTPUT"
         if [ -f "$manifest" ]; then
@@ -140,11 +171,11 @@ runs:
         # Comment image URLs: derive from the Pages deployment unless overridden.
         # Each arch deploys to its own subpath so its preview/canonical URL is
         # arch-specific.
-        gallery_url='${{ inputs.gallery-url }}'
-        baseline_url='${{ inputs.baseline-url }}'
+        gallery_url="$INPUT_GALLERY_URL"
+        baseline_url="$INPUT_BASELINE_URL"
         main_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
         preview_url="${main_url}/pr-${{ github.event.pull_request.number }}${subpath}"
-        if [ "${{ inputs.pages }}" = "true" ] && [ "${{ inputs.publish }}" = "true" ]; then
+        if [ "$INPUT_PAGES" = "true" ] && [ "$INPUT_PUBLISH" = "true" ]; then
           [ -n "$gallery_url" ] || gallery_url="$preview_url"
           [ -n "$baseline_url" ] || baseline_url="${main_url}${subpath}"
         fi
@@ -165,14 +196,25 @@ runs:
     - name: Verify capture is reproducible
       if: ${{ inputs.verify-second != '' }}
       shell: bash
+      env:
+        CURRENT: ${{ inputs.current }}
+        VERIFY_SECOND: ${{ inputs.verify-second }}
+        ARCH: ${{ inputs.arch }}
       run: |
         set -euo pipefail
-        screencomp verify --first '${{ inputs.current }}' --second '${{ inputs.verify-second }}' ${{ steps.cfg.outputs.arch_arg }}
+        args=(--first "$CURRENT" --second "$VERIFY_SECOND")
+        [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        screencomp verify "${args[@]}"
 
     - name: Classify against the baseline manifest
       id: classify
       if: ${{ steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
+      env:
+        MANIFEST: ${{ steps.cfg.outputs.manifest }}
+        CURRENT: ${{ inputs.current }}
+        ARCH: ${{ inputs.arch }}
+        FAIL_ON_DRIFT: ${{ inputs.fail-on-drift }}
       run: |
         set -uo pipefail
         # `shell: bash` forces -e, so capture classify's exit EXPLICITLY: a bare
@@ -180,10 +222,11 @@ runs:
         # would defeat fail-on-drift:false (the job would fail on any drift instead
         # of auto-accepting). `|| status=$?` is the -e-safe capture.
         status=0
-        screencomp classify --baseline-manifest '${{ steps.cfg.outputs.manifest }}' \
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} --exit-code || status=$?
+        args=(--baseline-manifest "$MANIFEST" --current "$CURRENT" --exit-code)
+        [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        screencomp classify "${args[@]}" || status=$?
         if [ "$status" -eq 3 ]; then
-          if [ "${{ inputs.fail-on-drift }}" = "true" ]; then
+          if [ "$FAIL_ON_DRIFT" = "true" ]; then
             # Strict gate: RECORD the drift but do not fail here. The gallery and
             # the before/after PR comment below still need to render — a red check
             # a reviewer can't see the diff on is the worst outcome. The "Enforce
@@ -200,10 +243,15 @@ runs:
     - name: Build gallery
       if: ${{ inputs.pages == 'true' }}
       shell: bash
+      env:
+        CURRENT: ${{ inputs.current }}
+        ARCH: ${{ inputs.arch }}
+        GALLERY_TITLE: ${{ inputs.gallery-title }}
       run: |
         set -euo pipefail
-        screencomp gallery --input '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} \
-          --output site --title '${{ inputs.gallery-title }}'
+        args=(--input "$CURRENT" --output site --title "$GALLERY_TITLE")
+        [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        screencomp gallery "${args[@]}"
 
     - name: Deploy canonical gallery
       if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'push' }}
@@ -228,9 +276,11 @@ runs:
     - name: Wait for the PR preview to go live
       if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
       shell: bash
+      env:
+        PREVIEW_URL: ${{ steps.cfg.outputs.preview_url }}
       run: |
         set -euo pipefail
-        url='${{ steps.cfg.outputs.preview_url }}'
+        url="$PREVIEW_URL"
         for _ in $(seq 1 30); do
           if curl -fsSL -o /dev/null "${url}/index.html"; then
             echo "preview live at ${url}"
@@ -249,10 +299,13 @@ runs:
       id: cbase
       if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
+      env:
+        MANIFEST: ${{ steps.cfg.outputs.manifest }}
+        COMMENT_BASE_REF: ${{ inputs.comment-base-ref }}
       run: |
         set -euo pipefail
-        manifest='${{ steps.cfg.outputs.manifest }}'
-        base_ref='${{ inputs.comment-base-ref }}'
+        manifest="$MANIFEST"
+        base_ref="$COMMENT_BASE_REF"
         [ -n "$base_ref" ] || base_ref='${{ github.base_ref }}'
         comment_manifest="$manifest"
         if [ -n "${base_ref// }" ]; then
@@ -269,18 +322,30 @@ runs:
     - name: Render PR comment
       if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
       shell: bash
+      env:
+        COMMENT_MANIFEST: ${{ steps.cbase.outputs.manifest }}
+        CURRENT: ${{ inputs.current }}
+        ARCH: ${{ inputs.arch }}
+        PROJECT_ID: ${{ inputs.project }}
+        GALLERY_URL: ${{ steps.cfg.outputs.gallery_url }}
+        BASELINE_URL: ${{ steps.cfg.outputs.baseline_url }}
       run: |
         set -euo pipefail
-        args=(--baseline-manifest '${{ steps.cbase.outputs.manifest }}'
-          --current '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }}
-          ${{ steps.cfg.outputs.marker_arg }} --output comment.md)
+        args=(--baseline-manifest "$COMMENT_MANIFEST" --current "$CURRENT" --output comment.md)
+        [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        if [ -n "$PROJECT_ID" ]; then
+          marker="screencomp-${PROJECT_ID}${ARCH:+-${ARCH}}"
+          args+=(--marker "$marker")
+        elif [ -n "$ARCH" ]; then
+          args+=(--marker "screencomp-${ARCH}")
+        fi
         # Explicit `if`, not `cond && cmd`: the latter trips `set -e` when the
         # condition is false.
-        if [ -n '${{ steps.cfg.outputs.gallery_url }}' ]; then
-          args+=(--gallery-url '${{ steps.cfg.outputs.gallery_url }}')
+        if [ -n "$GALLERY_URL" ]; then
+          args+=(--gallery-url "$GALLERY_URL")
         fi
-        if [ -n '${{ steps.cfg.outputs.baseline_url }}' ]; then
-          args+=(--baseline-url '${{ steps.cfg.outputs.baseline_url }}')
+        if [ -n "$BASELINE_URL" ]; then
+          args+=(--baseline-url "$BASELINE_URL")
         fi
         screencomp comment "${args[@]}"
 
@@ -316,17 +381,24 @@ runs:
     - name: Update the baseline manifest
       if: ${{ inputs.update-manifest == 'true' }}
       shell: bash
+      env:
+        CURRENT: ${{ inputs.current }}
+        ARCH: ${{ inputs.arch }}
+        MANIFEST: ${{ steps.cfg.outputs.manifest }}
       run: |
         set -euo pipefail
-        screencomp manifest --input '${{ inputs.current }}' ${{ steps.cfg.outputs.arch_arg }} \
-          --output '${{ steps.cfg.outputs.manifest }}'
+        args=(--input "$CURRENT" --output "$MANIFEST")
+        [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        screencomp manifest "${args[@]}"
 
     - name: Push the baseline manifest
       if: ${{ inputs.update-manifest == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
       shell: bash
+      env:
+        MANIFEST: ${{ steps.cfg.outputs.manifest }}
       run: |
         set -euo pipefail
-        manifest='${{ steps.cfg.outputs.manifest }}'
+        manifest="$MANIFEST"
         if [ -n "$(git status --porcelain "$manifest")" ]; then
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -342,6 +414,8 @@ runs:
     - name: Enforce the strict drift gate
       if: ${{ steps.classify.outputs.drifted == 'true' }}
       shell: bash
+      env:
+        MANIFEST: ${{ steps.cfg.outputs.manifest }}
       run: |
-        echo "::error::Screenshots drifted from the committed baseline (${{ steps.cfg.outputs.manifest }}). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
+        echo "::error::Screenshots drifted from the committed baseline ($MANIFEST). Regenerate it locally with the pre-push guard and commit it, or set fail-on-drift:false to auto-accept." >&2
         exit 1

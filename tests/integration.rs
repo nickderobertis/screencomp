@@ -1873,6 +1873,194 @@ fn reusable_workflow_floats_its_own_action_pins() {
     );
 }
 
+// The reusable workflow's embedded validation shell runs only on GitHub's Linux
+// runners; this test drives that snippet through `bash`, so it is scoped to Unix.
+// git-bash on the Windows CI runner rejects valid input for reasons that never
+// occur in the Linux-only workflow, and the screencomp CLI itself stays fully
+// covered on Windows by the other tests.
+#[cfg(unix)]
+#[test]
+fn reusable_workflow_preserves_independent_affected_project_lanes() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+
+    for contract in [
+        "projects: ${{ needs.affected.outputs.projects }}",
+        "SCREENCOMP_PROJECT: ${{ matrix.project }}",
+        "current: ${{ matrix.current }}",
+        "manifest: ${{ matrix.manifest }}",
+        "project: ${{ matrix.project }}",
+    ] {
+        assert!(
+            reusable.contains(contract),
+            "affected-project workflow contract missing `{contract}`"
+        );
+    }
+    assert!(
+        reusable.contains(
+            "matrix.project && format('screencomp-shots-{0}-{1}', matrix.project, matrix.arch)"
+        ),
+        "project artifacts must be independently addressed"
+    );
+    assert!(
+        reusable.contains("format('screencomp-shots-{0}', matrix.arch)"),
+        "the single-capture artifact name must remain backward compatible"
+    );
+    assert!(
+        reusable.contains("path: shots") && reusable.contains("max-parallel: 1"),
+        "artifact transfer must preserve shots/ roots and report writes must be serialized"
+    );
+    assert!(
+        action.contains("screencomp-${project}${arch:+-${arch}}")
+            && action.contains("subpath=\"/${project}${subpath}\"")
+            && action.contains("shots/baseline/${project}/${arch}.json"),
+        "composite action must isolate each project's comment, gallery, and baseline"
+    );
+    for unsafe_interpolation in [
+        "manifest='${{ inputs.manifest }}'",
+        "--title '${{ inputs.gallery-title }}'",
+        "--current '${{ inputs.current }}'",
+        "base_ref='${{ inputs.comment-base-ref }}'",
+    ] {
+        assert!(
+            !action.contains(unsafe_interpolation),
+            "dynamic action input remains interpolated into shell source: {unsafe_interpolation}"
+        );
+    }
+    assert!(
+        action.contains("GALLERY_TITLE: ${{ inputs.gallery-title }}")
+            && action
+                .contains("args=(--input \"$CURRENT\" --output site --title \"$GALLERY_TITLE\")"),
+        "dynamic action fields must cross into shell through env and quoted argv"
+    );
+
+    // Execute the workflow's exact jq validation block, not a reimplementation,
+    // so malformed runtime matrices fail at the same boundary the action uses.
+    let validation_start = reusable
+        .find("          projects=\"$PROJECTS_INPUT\"")
+        .unwrap();
+    let validation_end = reusable[validation_start..]
+        .find("          combined=")
+        .map(|offset| validation_start + offset)
+        .unwrap();
+    let validation = reusable[validation_start..validation_end]
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Feed the snippet to bash as source (`-c`), never as a filesystem path:
+    // a temp-file path handed to `bash` is a Windows backslash path the runner's
+    // bash cannot resolve, so the script would silently fail for every input.
+    let validation_script = format!("set -euo pipefail\n{validation}");
+    let dir = TempDir::new().unwrap();
+
+    for projects in [
+        r#"[{"id":"shop","current":"/tmp/shots"}]"#,
+        r#"[{"id":"shop","current":"captures/shop"}]"#,
+        r#"[{"id":"shop","verify":"shots/../secrets"}]"#,
+        r#"[{"id":"shop","manifest":""}]"#,
+        r#"[{"id":"bad/id"}]"#,
+        r#"[{"id":""}]"#,
+        r#"[{"id":"shop"},{"id":"shop"}]"#,
+    ] {
+        assert!(
+            !std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&validation_script)
+                .env("PROJECTS_INPUT", projects)
+                .status()
+                .unwrap()
+                .success(),
+            "workflow accepted invalid projects: {projects}"
+        );
+    }
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&validation_script)
+            .env(
+                "PROJECTS_INPUT",
+                r#"[{"id":"shop","current":"shots/current/shop's","manifest":"baselines/shop's/x86_64.json","gallery-title":"Shop's screenshots"}]"#,
+            )
+            .status()
+            .unwrap()
+            .success(),
+        "workflow rejected a valid affected project"
+    );
+
+    // upload-artifact stores the contents of `path: shots`; download-artifact
+    // restores those contents at `path: shots`. Exercise that boundary with a
+    // non-default per-project root and verify report sees the same file.
+    let capture = dir.path().join("capture");
+    let report = dir.path().join("report");
+    let custom = capture.join("shots/custom/shop/x86_64");
+    std::fs::create_dir_all(&custom).unwrap();
+    std::fs::write(custom.join("captures.json"), b"{\"schema\":1,\"shots\":[]}").unwrap();
+    // Mirror upload-artifact(path: shots) -> download-artifact(path: shots) with a
+    // cross-platform recursive copy; a `cp` shell-out is not on the Windows PATH
+    // and its `\`-separated destination is not a POSIX path.
+    copy_tree(&capture.join("shots"), &report.join("shots"));
+    assert_eq!(
+        std::fs::read(report.join("shots/custom/shop/x86_64/captures.json")).unwrap(),
+        b"{\"schema\":1,\"shots\":[]}"
+    );
+
+    // Execute the composite action's exact gallery shell with hostile apostrophes.
+    // Values arrive through env and remain single argv values instead of becoming
+    // shell source.
+    let gallery_step = action.find("    - name: Build gallery").unwrap();
+    let gallery_run = action[gallery_step..].find("      run: |\n").unwrap()
+        + gallery_step
+        + "      run: |\n".len();
+    let gallery_end = action[gallery_run..]
+        .find("\n    - name:")
+        .map(|offset| gallery_run + offset)
+        .unwrap();
+    let gallery_script = action[gallery_run..gallery_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let calls = dir.path().join("gallery-args");
+    let executable = format!(
+        "#!/usr/bin/env bash\nscreencomp() {{ printf '%s\\n' \"$@\" >\"$CALLS\"; }}\n{gallery_script}"
+    );
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(executable)
+            .env("CALLS", &calls)
+            .env("CURRENT", "shots/current/shop's")
+            .env("ARCH", "x86_64")
+            .env("GALLERY_TITLE", "Shop's screenshots")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let args = std::fs::read_to_string(calls).unwrap();
+    assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
+    assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
+}
+
+/// Recursively copy `src` into `dst` (creating `dst`), using only path APIs so
+/// the artifact round-trip behaves identically on Windows and Unix.
+// Only used by the Unix-scoped reusable-workflow lanes test above.
+#[cfg(unix)]
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.
 fn git_available() -> bool {
     std::process::Command::new("git")

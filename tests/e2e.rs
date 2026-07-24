@@ -746,6 +746,124 @@ fn manifest_baseline_journey_replaces_committed_images() {
 }
 
 #[test]
+fn classify_include_scopes_an_affected_only_capture_without_hiding_real_drift() {
+    let dir = TempDir::new().unwrap();
+    let baseline = dir.path().join("baseline");
+    let current = dir.path().join("current");
+    let manifest = dir.path().join("baseline.json");
+    write_capture(
+        &baseline,
+        &[
+            (
+                "home",
+                &[("project", "a")],
+                &digest("aa"),
+                "a-home.png",
+                b"a-home",
+            ),
+            (
+                "settings",
+                &[("project", "a")],
+                &digest("bb"),
+                "a-settings.png",
+                b"a-settings",
+            ),
+            (
+                "home",
+                &[("project", "b")],
+                &digest("cc"),
+                "b-home.png",
+                b"b-home",
+            ),
+        ],
+    );
+    bin()
+        .args(["manifest", "--input"])
+        .arg(&baseline)
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+
+    write_capture(
+        &current,
+        &[
+            (
+                "home",
+                &[("project", "a")],
+                &digest("aa"),
+                "a-home.png",
+                b"a-home",
+            ),
+            (
+                "settings",
+                &[("project", "a")],
+                &digest("bb"),
+                "a-settings.png",
+                b"a-settings",
+            ),
+        ],
+    );
+    bin()
+        .args(["classify", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(&current)
+        .args(["--include", "project=a", "--exit-code"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "added 0 changed 0 removed 0 unchanged 2",
+        ));
+
+    write_capture(
+        &current,
+        &[(
+            "home",
+            &[("project", "a")],
+            &digest("dd"),
+            "a-home.png",
+            b"changed",
+        )],
+    );
+    bin()
+        .args(["classify", "--baseline-manifest"])
+        .arg(&manifest)
+        .arg("--current")
+        .arg(&current)
+        .args(["--include", "project=a", "--exit-code"])
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("changed home [project=a]"))
+        .stdout(predicate::str::contains("removed settings [project=a]"))
+        .stdout(predicate::str::contains(
+            "added 0 changed 1 removed 1 unchanged 0",
+        ))
+        .stdout(predicate::str::contains("project=b").not());
+}
+
+#[test]
+fn classify_include_rejects_malformed_selectors() {
+    for (selector, message) in [
+        ("project", "include must be KEY=VALUE"),
+        ("=a", "include key and value must not be empty"),
+        ("project=", "include key and value must not be empty"),
+        ("project.name=a", "include key must match [A-Za-z0-9_-]"),
+    ] {
+        bin()
+            .args(["classify", "--baseline"])
+            .arg(baseline())
+            .arg("--current")
+            .arg(current())
+            .args(["--include", selector])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains(message));
+    }
+}
+
+#[test]
 fn manifest_writes_pretty_json_index_to_stdout() {
     // The written baseline is a pretty-printed captures.json index: schema +
     // digests, with the image paths stripped (a baseline commits no PNGs).
