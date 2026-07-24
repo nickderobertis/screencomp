@@ -192,13 +192,17 @@ jobs:
       capture-command: ./scripts/capture-project "$SCREENCOMP_PROJECT"
 ```
 
-Each project object requires a stable `[A-Za-z0-9_-]` `id` and may set
+Each project object requires a unique, non-empty `[A-Za-z0-9_-]` `id` and may set
 `current`, `verify`, `manifest`, and `gallery-title`. Defaults are
 `shots/current/<id>`, `shots/verify/<id>`, and
-`shots/baseline/<id>/<arch>.json`. The capture command receives
+`shots/baseline/<id>/<arch>.json`. Custom `current` and `verify` roots must stay
+beneath `shots/`, which is the tree transferred from capture to report; manifests
+may use any traversal-free relative path. The capture command receives
 `SCREENCOMP_PROJECT` and a project/arch-specific `SHOTS_OUT`. Every affected
 project gets its own reproducibility lane, baseline, gallery path, and sticky
-comment; projects absent from the runtime array are not captured or classified.
+comment. Capture lanes run in parallel, while report lanes are serialized because
+they write shared PR and `gh-pages` branches. Projects absent from the runtime
+array are not captured or classified.
 An empty `projects` array preserves the original single-capture behavior.
 
 It runs the reproducibility gate, classifies against the committed digest

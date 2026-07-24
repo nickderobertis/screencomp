@@ -21,8 +21,9 @@
 #
 #   projects: ${{ needs.affected.outputs.projects }}
 #
-# Each object has a stable `id` and may override `current`, `verify`, `manifest`,
-# and `gallery-title`. The shared capture command receives SCREENCOMP_PROJECT and
+# Each object has a unique non-empty `id` and may override `current`, `verify`,
+# `manifest`, and `gallery-title`; capture roots must remain beneath the uploaded
+# `shots/` tree. The shared capture command receives SCREENCOMP_PROJECT and
 # SHOTS_OUT for that project/arch lane. Each project keeps its own manifest,
 # gallery subpath, and sticky comment. See the README for the complete shape.
 #
@@ -79,8 +80,9 @@ on:
       projects:
         description: >-
           Dynamic affected-project JSON array. Each object requires a stable `id`
-          and may set `current`, `verify`, `manifest`, and `gallery-title`. Empty
-          preserves the existing single-capture workflow.
+          and may set `current`, `verify`, `manifest`, and `gallery-title`.
+          Capture roots must remain beneath shots/. Empty preserves the existing
+          single-capture workflow.
         type: string
         default: '[]'
       container:
@@ -227,25 +229,32 @@ jobs:
           projects="$PROJECTS"
           if [ -z "$projects" ] || [ "$projects" = "[]" ]; then
             projects='[{"id":"","current":"shots/current","verify":"shots/verify"}]'
-          fi
-          if ! jq -e '
-            def safe_path:
-              type == "string" and length > 0 and
-              (startswith("/") | not) and
-              (contains("\\") | not) and
-              (split("/") | all(. != "" and . != "." and . != ".."));
-            type == "array" and length > 0 and
-            all(.[];
-              type == "object" and
-              (.id | type == "string" and test("^[A-Za-z0-9_-]*$")) and
-              ((has("current") | not) or (.current | safe_path)) and
-              ((has("verify") | not) or (.verify | safe_path)) and
-              ((has("manifest") | not) or (.manifest | safe_path)) and
-              ((has("gallery-title") | not) or
-                (."gallery-title" | type == "string" and length > 0)))
-          ' <<<"$projects" >/dev/null; then
-            echo "::error::projects must be a non-empty JSON array with a safe id, non-empty relative paths without traversal, and a non-empty gallery title" >&2
-            exit 1
+          else
+            if ! jq -e '
+              def safe_capture_path:
+                type == "string" and length > 0 and
+                startswith("shots/") and
+                (contains("\\") | not) and
+                (split("/") | all(. != "" and . != "." and . != ".."));
+              def safe_relative_path:
+                type == "string" and length > 0 and
+                (startswith("/") | not) and
+                (contains("\\") | not) and
+                (split("/") | all(. != "" and . != "." and . != ".."));
+              type == "array" and length > 0 and
+              all(.[];
+                type == "object" and
+                (.id | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+                ((has("current") | not) or (.current | safe_capture_path)) and
+                ((has("verify") | not) or (.verify | safe_capture_path)) and
+                ((has("manifest") | not) or (.manifest | safe_relative_path)) and
+                ((has("gallery-title") | not) or
+                  (."gallery-title" | type == "string" and length > 0))) and
+              ([.[].id] | length == (unique | length))
+            ' <<<"$projects" >/dev/null; then
+              echo "::error::projects needs unique non-empty IDs, capture roots under shots/, safe relative manifests, and non-empty gallery titles" >&2
+              exit 1
+            fi
           fi
           combined="$(jq -cn --argjson arches "$matrix" --argjson projects "$projects" --arg title "$DEFAULT_TITLE" '
             {include: [
@@ -331,7 +340,10 @@ jobs:
     needs: [arches, capture]
     runs-on: ubuntu-latest
     strategy:
+      # Report lanes write the shared PR and gh-pages branches. max-parallel: 1
+      # keeps those checkouts/pushes ordered while capture remains fully parallel.
       fail-fast: false
+      max-parallel: 1
       matrix:
         include: ${{ fromJSON(needs.arches.outputs.matrix).include }}
     permissions:
