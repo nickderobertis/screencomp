@@ -86,9 +86,11 @@ pub(crate) fn classify(
 
     for key in keys {
         if !include.is_empty()
-            && !include
-                .iter()
-                .any(|selector| key.toggles.get(&selector.key) == Some(&selector.value))
+            && !include.iter().any(|selector| {
+                key.toggles
+                    .iter()
+                    .any(|(name, value)| selector.matches(name, value))
+            })
         {
             continue;
         }
@@ -202,14 +204,7 @@ mod tests {
         ]);
         let current = snap(&[(ShotKey::with("home", &[("project", "a")]), "aa")]);
 
-        let c = classify(
-            &baseline,
-            &current,
-            &[IncludeSelector {
-                key: "project".to_owned(),
-                value: "a".to_owned(),
-            }],
-        );
+        let c = classify(&baseline, &current, &["project=a".parse().unwrap()]);
         assert_eq!(c.counts.removed, 1);
         assert_eq!(c.counts.unchanged, 1);
         assert_eq!(c.entries.len(), 2);

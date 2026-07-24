@@ -155,7 +155,7 @@ the capture; it owns everything downstream:
 ```yaml
 jobs:
   visual-docs:
-    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v0
     with:
       capture-command: |        # MUST write $SHOTS_OUT/captures.json + the PNGs it references
         npm ci
@@ -186,7 +186,7 @@ jobs:
         run: echo 'projects=[{"id":"shop","manifest":"shots/baseline/shop/x86_64.json","gallery-title":"Shop"}]' >>"$GITHUB_OUTPUT"
   visual-docs:
     needs: affected
-    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v0
     with:
       projects: ${{ needs.affected.outputs.projects }}
       capture-command: ./scripts/capture-project "$SCREENCOMP_PROJECT"

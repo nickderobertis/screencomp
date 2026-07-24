@@ -123,8 +123,14 @@ pub struct ClassifyArgs {
 /// A validated toggle selector used to scope `classify`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludeSelector {
-    pub(crate) key: String,
-    pub(crate) value: String,
+    key: String,
+    value: String,
+}
+
+impl IncludeSelector {
+    pub(crate) fn matches(&self, key: &str, value: &str) -> bool {
+        self.key == key && self.value == value
+    }
 }
 
 impl FromStr for IncludeSelector {
