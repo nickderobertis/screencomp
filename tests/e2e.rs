@@ -844,16 +844,23 @@ fn classify_include_scopes_an_affected_only_capture_without_hiding_real_drift() 
 
 #[test]
 fn classify_include_rejects_malformed_selectors() {
-    bin()
-        .args(["classify", "--baseline"])
-        .arg(baseline())
-        .arg("--current")
-        .arg(current())
-        .args(["--include", "project"])
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("include must be KEY=VALUE"));
+    for (selector, message) in [
+        ("project", "include must be KEY=VALUE"),
+        ("=a", "include key and value must not be empty"),
+        ("project=", "include key and value must not be empty"),
+        ("project.name=a", "include key must match [A-Za-z0-9_-]"),
+    ] {
+        bin()
+            .args(["classify", "--baseline"])
+            .arg(baseline())
+            .arg("--current")
+            .arg(current())
+            .args(["--include", selector])
+            .assert()
+            .failure()
+            .code(2)
+            .stderr(predicate::str::contains(message));
+    }
 }
 
 #[test]

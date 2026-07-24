@@ -229,16 +229,22 @@ jobs:
             projects='[{"id":"","current":"shots/current","verify":"shots/verify"}]'
           fi
           if ! jq -e '
+            def safe_path:
+              type == "string" and length > 0 and
+              (startswith("/") | not) and
+              (contains("\\") | not) and
+              (split("/") | all(. != "" and . != "." and . != ".."));
             type == "array" and length > 0 and
             all(.[];
               type == "object" and
               (.id | type == "string" and test("^[A-Za-z0-9_-]*$")) and
-              ((.current // "") | type == "string") and
-              ((.verify // "") | type == "string") and
-              ((.manifest // "") | type == "string") and
-              ((."gallery-title" // "") | type == "string"))
+              ((has("current") | not) or (.current | safe_path)) and
+              ((has("verify") | not) or (.verify | safe_path)) and
+              ((has("manifest") | not) or (.manifest | safe_path)) and
+              ((has("gallery-title") | not) or
+                (."gallery-title" | type == "string" and length > 0)))
           ' <<<"$projects" >/dev/null; then
-            echo "::error::projects must be a non-empty JSON array of objects with a safe id and string path/title fields" >&2
+            echo "::error::projects must be a non-empty JSON array with a safe id, non-empty relative paths without traversal, and a non-empty gallery title" >&2
             exit 1
           fi
           combined="$(jq -cn --argjson arches "$matrix" --argjson projects "$projects" --arg title "$DEFAULT_TITLE" '

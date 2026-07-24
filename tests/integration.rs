@@ -1908,6 +1908,55 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
             && action.contains("shots/baseline/${project}/${arch}.json"),
         "composite action must isolate each project's comment, gallery, and baseline"
     );
+
+    // Execute the workflow's exact jq validation block, not a reimplementation,
+    // so malformed runtime matrices fail at the same boundary the action uses.
+    let validation_start = reusable.find("          if ! jq -e '").unwrap();
+    let validation_end = reusable[validation_start..]
+        .find("          combined=")
+        .map(|offset| validation_start + offset)
+        .unwrap();
+    let validation = reusable[validation_start..validation_end]
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("validate-projects.sh");
+    std::fs::write(
+        &script,
+        format!("#!/usr/bin/env bash\nset -euo pipefail\nprojects=\"$PROJECTS\"\n{validation}"),
+    )
+    .unwrap();
+
+    for projects in [
+        r#"[{"id":"shop","current":"/tmp/shots"}]"#,
+        r#"[{"id":"shop","verify":"shots/../secrets"}]"#,
+        r#"[{"id":"shop","manifest":""}]"#,
+        r#"[{"id":"bad/id"}]"#,
+    ] {
+        assert!(
+            !std::process::Command::new("bash")
+                .arg(&script)
+                .env("PROJECTS", projects)
+                .status()
+                .unwrap()
+                .success(),
+            "workflow accepted invalid projects: {projects}"
+        );
+    }
+    assert!(
+        std::process::Command::new("bash")
+            .arg(&script)
+            .env(
+                "PROJECTS",
+                r#"[{"id":"shop","current":"shots/current/shop","manifest":"shots/baseline/shop/x86_64.json"}]"#,
+            )
+            .status()
+            .unwrap()
+            .success(),
+        "workflow rejected a valid affected project"
+    );
 }
 
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.

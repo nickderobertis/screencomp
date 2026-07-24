@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use crate::cli::IncludeSelector;
+
 use super::snapshot::{ShotKey, Snapshot};
 
 /// Per-shot comparison result.
@@ -75,7 +77,7 @@ impl Classification {
 pub(crate) fn classify(
     baseline: &Snapshot,
     current: &Snapshot,
-    include: &[(String, String)],
+    include: &[IncludeSelector],
 ) -> Classification {
     let keys: BTreeSet<&ShotKey> = baseline.keys().chain(current.keys()).collect();
 
@@ -86,7 +88,7 @@ pub(crate) fn classify(
         if !include.is_empty()
             && !include
                 .iter()
-                .any(|(name, value)| key.toggles.get(name) == Some(value))
+                .any(|selector| key.toggles.get(&selector.key) == Some(&selector.value))
         {
             continue;
         }
@@ -203,7 +205,10 @@ mod tests {
         let c = classify(
             &baseline,
             &current,
-            &[("project".to_owned(), "a".to_owned())],
+            &[IncludeSelector {
+                key: "project".to_owned(),
+                value: "a".to_owned(),
+            }],
         );
         assert_eq!(c.counts.removed, 1);
         assert_eq!(c.counts.unchanged, 1);

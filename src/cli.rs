@@ -5,6 +5,7 @@
 
 use camino::Utf8PathBuf;
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use std::str::FromStr;
 
 /// `screencomp` — byte-reproducible screenshot classification, gallery, and
 /// pull-request comment rendering.
@@ -99,8 +100,8 @@ pub struct ClassifyArgs {
     /// Include only shots whose toggle map contains this `KEY=VALUE` pair.
     /// Repeat to include multiple scopes (a shot matching any pair is included).
     /// When omitted, all shots are compared.
-    #[arg(long, value_name = "KEY=VALUE", value_parser = parse_include)]
-    pub include: Vec<(String, String)>,
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub include: Vec<IncludeSelector>,
 
     /// Restrict the comparison to one CPU-arch subtree
     /// (`<root>/<arch>/captures.json`), since identical UI rendered on a
@@ -119,20 +120,34 @@ pub struct ClassifyArgs {
     pub exit_code: bool,
 }
 
-fn parse_include(value: &str) -> Result<(String, String), String> {
-    let Some((key, value)) = value.split_once('=') else {
-        return Err("include must be KEY=VALUE".to_owned());
-    };
-    if key.is_empty() || value.is_empty() {
-        return Err("include key and value must not be empty".to_owned());
+/// A validated toggle selector used to scope `classify`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeSelector {
+    pub(crate) key: String,
+    pub(crate) value: String,
+}
+
+impl FromStr for IncludeSelector {
+    type Err = String;
+
+    fn from_str(selector: &str) -> Result<Self, Self::Err> {
+        let Some((key, value)) = selector.split_once('=') else {
+            return Err("include must be KEY=VALUE".to_owned());
+        };
+        if key.is_empty() || value.is_empty() {
+            return Err("include key and value must not be empty".to_owned());
+        }
+        if !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err("include key must match [A-Za-z0-9_-]".to_owned());
+        }
+        Ok(Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+        })
     }
-    if !key
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("include key must match [A-Za-z0-9_-]".to_owned());
-    }
-    Ok((key.to_owned(), value.to_owned()))
 }
 
 /// Arguments for [`Command::Gallery`].
