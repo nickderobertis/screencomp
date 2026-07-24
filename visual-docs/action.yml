@@ -37,6 +37,10 @@ branding:
   color: purple
 
 inputs:
+  project:
+    description: 'Stable project ID for an affected-only lane. Empty preserves the single-project layout.'
+    required: false
+    default: ''
   arch:
     description: 'CPU arch (e.g. x86_64, arm64). Empty means a project-level layout with no arch subtree.'
     required: false
@@ -110,6 +114,11 @@ runs:
       run: |
         set -euo pipefail
         arch='${{ inputs.arch }}'
+        project='${{ inputs.project }}'
+        if [[ -n "$project" && ! "$project" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "::error::project must match [A-Za-z0-9_-]" >&2
+          exit 1
+        fi
         # Each arch lives in its own subtree, baseline, gallery subpath, and
         # sticky comment, so multiple arch lanes never clobber one another.
         if [ -n "$arch" ]; then
@@ -124,6 +133,16 @@ runs:
           default_manifest="shots/baseline.json"
           subpath=""
           dest=""
+        fi
+        if [ -n "$project" ]; then
+          echo "marker_arg=--marker screencomp-${project}${arch:+-${arch}}" >>"$GITHUB_OUTPUT"
+          subpath="/${project}${subpath}"
+          dest="${project}${dest:+/${dest}}"
+          if [ -n "$arch" ]; then
+            default_manifest="shots/baseline/${project}/${arch}.json"
+          else
+            default_manifest="shots/baseline/${project}.json"
+          fi
         fi
         echo "dest=$dest" >>"$GITHUB_OUTPUT"
         echo "subpath=$subpath" >>"$GITHUB_OUTPUT"

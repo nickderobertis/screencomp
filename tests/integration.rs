@@ -1873,6 +1873,43 @@ fn reusable_workflow_floats_its_own_action_pins() {
     );
 }
 
+#[test]
+fn reusable_workflow_preserves_independent_affected_project_lanes() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+
+    for contract in [
+        "projects: ${{ needs.affected.outputs.projects }}",
+        "SCREENCOMP_PROJECT: ${{ matrix.project }}",
+        "current: ${{ matrix.current }}",
+        "manifest: ${{ matrix.manifest }}",
+        "project: ${{ matrix.project }}",
+    ] {
+        assert!(
+            reusable.contains(contract),
+            "affected-project workflow contract missing `{contract}`"
+        );
+    }
+    assert!(
+        reusable.contains(
+            "matrix.project && format('screencomp-shots-{0}-{1}', matrix.project, matrix.arch)"
+        ),
+        "project artifacts must be independently addressed"
+    );
+    assert!(
+        reusable.contains("format('screencomp-shots-{0}', matrix.arch)"),
+        "the single-capture artifact name must remain backward compatible"
+    );
+    assert!(
+        action.contains("screencomp-${project}${arch:+-${arch}}")
+            && action.contains("subpath=\"/${project}${subpath}\"")
+            && action.contains("shots/baseline/${project}/${arch}.json"),
+        "composite action must isolate each project's comment, gallery, and baseline"
+    );
+}
+
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.
 fn git_available() -> bool {
     std::process::Command::new("git")

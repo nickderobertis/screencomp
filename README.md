@@ -170,6 +170,37 @@ The workflow takes no arch input: it reads `[capture].arches` from the committed
 lane per arch, each on a matching runner (`arm64` → `ubuntu-24.04-arm`). Add an
 arch to that list to gain a lane.
 
+Affected-only monorepos can feed a dynamic project matrix from an upstream job.
+The array is computed at runtime (for example, from `nx affected`), so no static
+project list is required:
+
+```yaml
+jobs:
+  affected:
+    runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.projects.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: projects
+        run: echo 'projects=[{"id":"shop","manifest":"shots/baseline/shop/x86_64.json","gallery-title":"Shop"}]' >>"$GITHUB_OUTPUT"
+  visual-docs:
+    needs: affected
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v1
+    with:
+      projects: ${{ needs.affected.outputs.projects }}
+      capture-command: ./scripts/capture-project "$SCREENCOMP_PROJECT"
+```
+
+Each project object requires a stable `[A-Za-z0-9_-]` `id` and may set
+`current`, `verify`, `manifest`, and `gallery-title`. Defaults are
+`shots/current/<id>`, `shots/verify/<id>`, and
+`shots/baseline/<id>/<arch>.json`. The capture command receives
+`SCREENCOMP_PROJECT` and a project/arch-specific `SHOTS_OUT`. Every affected
+project gets its own reproducibility lane, baseline, gallery path, and sticky
+comment; projects absent from the runtime array are not captured or classified.
+An empty `projects` array preserves the original single-capture behavior.
+
 It runs the reproducibility gate, classifies against the committed digest
 manifest (failing the job on drift under the default strict gate), builds the
 gallery, deploys a canonical gallery from the default branch and a per-PR
@@ -457,6 +488,21 @@ screencomp classify --baseline baseline --current current --exit-code || echo "c
 
 `--quiet` suppresses human output (machine-readable `--format json` is
 unaffected).
+
+For a subset capture compared with a shared full baseline, scope classification
+by a project toggle. Repeat `--include` to form an include-set; a shot matching
+any selector is in scope:
+
+```sh
+screencomp classify --baseline-manifest shots/baseline/x86_64.json \
+  --current shots/current --include project=shop --include project=checkout
+```
+
+Baseline-only shots in the included projects are still `removed`; baseline-only
+shots in other projects are ignored because they were deliberately not captured.
+Added, changed, and unchanged shots are likewise reported only inside the
+include-set. Without `--include`, classification is unchanged and compares the
+full union.
 
 ### Image-free baselines (digest manifest)
 
