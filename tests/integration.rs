@@ -831,6 +831,146 @@ fn comment_manifest_mode_sources_before_from_a_separate_baseline_url() {
     );
 }
 
+/// Build a two-project affected set under `root` and return the path to a
+/// `--projects` spec that aggregates them. `app-web` uses a digest-manifest
+/// baseline (home changed, pricing added); `app-admin` uses an image-tree baseline
+/// (about removed, home unchanged) and overrides its display label.
+fn write_aggregate_spec(root: &Path) -> String {
+    let vp: &[(&str, &str)] = &[("viewport", "desktop")];
+
+    // app-web: manifest baseline vs a current with a changed + an added shot.
+    write_capture(
+        &root.join("app-web/current"),
+        &[
+            ("home", vp, &digest("11"), "home.png", b"new"),
+            ("pricing", vp, &digest("22"), "pricing.png", b"add"),
+        ],
+    );
+    let web_manifest = root.join("app-web/baseline.json");
+    std::fs::write(
+        &web_manifest,
+        format!(
+            r#"{{"schema":1,"shots":[{{"name":"home","toggles":{{"viewport":"desktop"}},"hash":"{}"}}]}}"#,
+            digest("33")
+        ),
+    )
+    .unwrap();
+
+    // app-admin: image-tree baseline (home + about) vs a current missing `about`.
+    write_capture(
+        &root.join("app-admin/baseline"),
+        &[
+            ("home", vp, &digest("aa"), "home.png", b"h"),
+            ("about", vp, &digest("bb"), "about.png", b"a"),
+        ],
+    );
+    write_capture(
+        &root.join("app-admin/current"),
+        &[("home", vp, &digest("aa"), "home.png", b"h")],
+    );
+
+    let spec = root.join("projects.json");
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{
+              "schema": 1,
+              "projects": [
+                {{
+                  "id": "app-web",
+                  "current": {web_current:?},
+                  "baseline_manifest": {web_manifest:?},
+                  "gallery_url": "https://example.test/pr-1/app-web"
+                }},
+                {{
+                  "id": "app-admin",
+                  "label": "Admin console",
+                  "baseline": {admin_baseline:?},
+                  "current": {admin_current:?},
+                  "gallery_url": "https://example.test/pr-1/app-admin"
+                }}
+              ]
+            }}"#,
+            web_current = path_str(&root.join("app-web/current")),
+            web_manifest = path_str(&web_manifest),
+            admin_baseline = path_str(&root.join("app-admin/baseline")),
+            admin_current = path_str(&root.join("app-admin/current")),
+        ),
+    )
+    .unwrap();
+    path_str(&spec)
+}
+
+#[test]
+fn comment_aggregated_renders_one_comment_for_many_projects() {
+    let dir = TempDir::new().unwrap();
+    let spec = write_aggregate_spec(dir.path());
+
+    let (code, out) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    assert_eq!(code.unwrap(), 0);
+
+    // ONE comment, one stable aggregate marker (not a per-project marker).
+    assert!(out.starts_with("<!-- screencomp-aggregate -->"), "{out}");
+    assert_eq!(out.matches("<!--").count(), 1, "exactly one marker: {out}");
+    // Combined summary totals every project (app-web: +1 ~1; app-admin: -1).
+    assert!(
+        out.contains("**2 projects affected · 1 added · 1 changed · 1 removed**"),
+        "{out}"
+    );
+    // One row per project, each with its own counts and gallery link; the label
+    // override wins and rows are label-ordered (Admin console before app-web).
+    let admin = out.find("| Admin console |").expect("admin row");
+    let web = out.find("| app-web |").expect("web row");
+    assert!(admin < web, "rows are label-ordered: {out}");
+    assert!(
+        out.contains(
+            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "| Admin console | 0 | 0 | 1 | 1 | [View gallery](https://example.test/pr-1/app-admin) |"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn comment_aggregated_rejects_a_project_without_a_baseline() {
+    let dir = TempDir::new().unwrap();
+    write_capture(
+        &dir.path().join("app/current"),
+        &[("home", &[], &digest("aa"), "home.png", b"h")],
+    );
+    let spec = path_str(&dir.path().join("bad.json"));
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":1,"projects":[{{"id":"app","current":{:?}}}]}}"#,
+            path_str(&dir.path().join("app/current"))
+        ),
+    )
+    .unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err();
+    assert!(matches!(err, AppError::InvalidLayout { .. }), "{err:?}");
+    assert!(err.to_string().contains("baseline"), "{err}");
+}
+
+#[test]
+fn comment_aggregated_rejects_an_unknown_schema() {
+    let dir = TempDir::new().unwrap();
+    let spec = path_str(&dir.path().join("v9.json"));
+    std::fs::write(&spec, r#"{"schema":9,"projects":[]}"#).unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err();
+    assert!(matches!(err, AppError::InvalidLayout { .. }), "{err:?}");
+    assert!(err.to_string().contains("schema"), "{err}");
+}
+
 #[test]
 fn manifest_and_classify_are_arch_scoped() {
     let dir = TempDir::new().unwrap();

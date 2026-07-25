@@ -262,6 +262,99 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
 }
 
 #[test]
+fn comment_aggregated_upserts_one_comment_across_projects() {
+    // A many-project monorepo: two affected projects folded into ONE comment,
+    // keyed by a single stable marker, driven through the compiled binary.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let vp: &[(&str, &str)] = &[("viewport", "desktop")];
+
+    // app-web: an image-tree baseline vs a current with a changed + an added shot.
+    write_capture(
+        &root.join("app-web/baseline"),
+        &[("home", vp, &digest("33"), "home.png", b"old")],
+    );
+    write_capture(
+        &root.join("app-web/current"),
+        &[
+            ("home", vp, &digest("11"), "home.png", b"new"),
+            ("pricing", vp, &digest("22"), "pricing.png", b"add"),
+        ],
+    );
+    // app-admin: unchanged capture (affected by a path change, but no visual diff).
+    write_capture(
+        &root.join("app-admin/baseline"),
+        &[("home", vp, &digest("aa"), "home.png", b"h")],
+    );
+    write_capture(
+        &root.join("app-admin/current"),
+        &[("home", vp, &digest("aa"), "home.png", b"h")],
+    );
+
+    let spec = root.join("projects.json");
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{
+              "schema": 1,
+              "projects": [
+                {{"id":"app-web","baseline":{web_b:?},"current":{web_c:?},
+                  "gallery_url":"https://example.test/pr-1/app-web"}},
+                {{"id":"app-admin","baseline":{adm_b:?},"current":{adm_c:?},
+                  "gallery_url":"https://example.test/pr-1/app-admin"}}
+              ]
+            }}"#,
+            web_b = root.join("app-web/baseline").to_str().unwrap(),
+            web_c = root.join("app-web/current").to_str().unwrap(),
+            adm_b = root.join("app-admin/baseline").to_str().unwrap(),
+            adm_c = root.join("app-admin/current").to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    let out = root.join("comment.md");
+    bin()
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .arg("--output")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    let md = std::fs::read_to_string(&out).expect("comment file");
+    assert!(md.starts_with("<!-- screencomp-aggregate -->"), "{md}");
+    assert_eq!(md.matches("<!--").count(), 1, "exactly one marker: {md}");
+    assert!(
+        md.contains("**2 projects affected · 1 added · 1 changed · 0 removed**"),
+        "{md}"
+    );
+    // An affected-but-unchanged project still appears (all zero counts), never
+    // omitted and never mislabeled as removed.
+    assert!(md.contains("| app-admin | 0 | 0 | 0 | 1 |"), "{md}");
+    assert!(
+        md.contains(
+            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+        ),
+        "{md}"
+    );
+}
+
+#[test]
+fn comment_projects_conflicts_with_single_project_inputs() {
+    // `--projects` and the single-project inputs are mutually exclusive; clap
+    // rejects the combination as a usage error (exit 2) before any work.
+    bin()
+        .args(["comment", "--projects", "spec.json", "--baseline"])
+        .arg(baseline())
+        .arg("--current")
+        .arg(current())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
 fn gallery_creates_index_html() {
     let dir = TempDir::new().unwrap();
 

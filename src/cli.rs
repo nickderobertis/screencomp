@@ -186,8 +186,14 @@ pub struct GalleryArgs {
 }
 
 /// Arguments for [`Command::Comment`].
+///
+/// Two mutually exclusive modes: the default per-project mode (one comment for a
+/// single capture, keyed by `--baseline`/`--baseline-manifest` + `--current`), and
+/// the aggregated mode (`--projects`), which renders ONE combined comment covering
+/// every project named in a spec file. Exactly one of `--baseline`,
+/// `--baseline-manifest`, or `--projects` is required.
 #[derive(Debug, clap::Args)]
-#[command(group(ArgGroup::new("comment_baseline").required(true).args(["baseline", "baseline_manifest"])))]
+#[command(group(ArgGroup::new("comment_source").required(true).args(["baseline", "baseline_manifest", "projects"])))]
 pub struct CommentArgs {
     /// Baseline screenshot root. Mutually exclusive with `--baseline-manifest`.
     #[arg(long, value_name = "DIR")]
@@ -198,9 +204,22 @@ pub struct CommentArgs {
     #[arg(long, value_name = "FILE")]
     pub baseline_manifest: Option<Utf8PathBuf>,
 
-    /// Current screenshot root.
-    #[arg(long, value_name = "DIR")]
-    pub current: Utf8PathBuf,
+    /// Aggregated mode: a JSON spec listing many projects (each with its own
+    /// baseline, current capture, arch, and gallery URL) rendered into ONE combined
+    /// comment for a multi-project monorepo, instead of one comment per project.
+    /// Keyed by a single stable `--marker` (default `screencomp-aggregate`) so it
+    /// upserts in place. Mutually exclusive with the single-project inputs; only the
+    /// projects listed appear (unaffected projects are simply absent).
+    #[arg(
+        long,
+        value_name = "FILE",
+        conflicts_with_all = ["current", "arch", "gallery_url", "baseline_url", "current_url", "embed_limit"]
+    )]
+    pub projects: Option<Utf8PathBuf>,
+
+    /// Current screenshot root. Required unless `--projects` is given.
+    #[arg(long, value_name = "DIR", required_unless_present = "projects")]
+    pub current: Option<Utf8PathBuf>,
 
     /// Restrict the comparison to one CPU-arch subtree
     /// (`<root>/<arch>/captures.json`). `auto` detects the host arch
