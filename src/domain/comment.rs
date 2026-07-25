@@ -3,7 +3,7 @@
 //! The output is deterministic Markdown that begins with an HTML marker comment
 //! so a publishing step can find and upsert the same comment across pushes.
 
-use super::classify::{Classification, Entry, Status};
+use super::classify::{Classification, Counts, Entry, Status};
 
 /// Width, in pixels, of inline preview images embedded in the comment.
 const EMBED_WIDTH: u32 = 380;
@@ -88,6 +88,79 @@ pub(crate) fn render_markdown(
 
     if let Some(url) = gallery_link {
         md.push_str(&format!("\n[View full gallery]({url})\n"));
+    }
+
+    md
+}
+
+/// One affected project's line in an aggregated comment: its display `label`, its
+/// classified `counts`, and an optional link to its own gallery.
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectSummary<'a> {
+    /// Human-facing project name (defaults to the project ID).
+    pub(crate) label: &'a str,
+    /// Added/changed/removed/unchanged counts for this project.
+    pub(crate) counts: Counts,
+    /// Per-project gallery URL, linked from the row when present.
+    pub(crate) gallery_url: Option<&'a str>,
+}
+
+/// Render ONE aggregated pull-request comment covering every affected `project`.
+///
+/// Where [`render_markdown`] renders a single project's comment (a monorepo with
+/// N projects gets N sticky comments), this consolidates them into one: a combined
+/// summary line plus a table with one row per project — its
+/// added/changed/removed/unchanged counts and a link to its own gallery. Only the
+/// projects passed in appear; a monorepo's unaffected projects are simply absent
+/// (never listed as removed). Rows are ordered by label so the output is
+/// byte-stable regardless of the caller's order. `marker` is embedded as
+/// `<!-- marker -->` so the single comment upserts in place across runs.
+pub(crate) fn render_aggregated_markdown(
+    projects: &[ProjectSummary<'_>],
+    title: &str,
+    marker: &str,
+) -> String {
+    let mut md = String::new();
+    md.push_str(&format!("<!-- {marker} -->\n"));
+    md.push_str(&format!("## {title}\n\n"));
+
+    if projects.is_empty() {
+        md.push_str("_No affected projects._\n");
+        return md;
+    }
+
+    let mut total = Counts::default();
+    for p in projects {
+        total.added += p.counts.added;
+        total.changed += p.counts.changed;
+        total.removed += p.counts.removed;
+        total.unchanged += p.counts.unchanged;
+    }
+    let n = projects.len();
+    let noun = if n == 1 { "project" } else { "projects" };
+    md.push_str(&format!(
+        "**{n} {noun} affected · {} added · {} changed · {} removed**\n\n",
+        total.added, total.changed, total.removed
+    ));
+
+    md.push_str("| Project | Added | Changed | Removed | Unchanged | Gallery |\n");
+    md.push_str("|:--------|------:|--------:|--------:|----------:|:--------|\n");
+    let mut ordered: Vec<&ProjectSummary<'_>> = projects.iter().collect();
+    ordered.sort_by(|a, b| a.label.cmp(b.label));
+    for p in ordered {
+        let gallery = match p.gallery_url {
+            Some(url) => format!("[View gallery]({url})"),
+            None => "—".to_owned(),
+        };
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} |\n",
+            p.label,
+            p.counts.added,
+            p.counts.changed,
+            p.counts.removed,
+            p.counts.unchanged,
+            gallery,
+        ));
     }
 
     md
@@ -432,6 +505,83 @@ mod tests {
             md.contains("src=\"https://example.test/pr/7/home-dark.png\""),
             "{md}"
         );
+    }
+
+    fn summary<'a>(label: &'a str, counts: Counts, url: Option<&'a str>) -> ProjectSummary<'a> {
+        ProjectSummary {
+            label,
+            counts,
+            gallery_url: url,
+        }
+    }
+
+    #[test]
+    fn aggregated_lists_one_row_per_project_with_a_combined_summary() {
+        let projects = [
+            summary(
+                "app-web",
+                Counts {
+                    added: 1,
+                    changed: 2,
+                    removed: 0,
+                    unchanged: 10,
+                },
+                Some("https://example.test/pr-7/app-web"),
+            ),
+            summary(
+                "app-admin",
+                Counts {
+                    added: 0,
+                    changed: 0,
+                    removed: 1,
+                    unchanged: 5,
+                },
+                Some("https://example.test/pr-7/app-admin"),
+            ),
+        ];
+        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate");
+
+        assert!(md.starts_with("<!-- screencomp-aggregate -->\n"), "{md}");
+        assert!(md.contains("## Visual changes"), "{md}");
+        // Combined summary line totals every project.
+        assert!(
+            md.contains("**2 projects affected · 1 added · 2 changed · 1 removed**"),
+            "{md}"
+        );
+        // Rows are ordered by label (app-admin before app-web) and carry each
+        // project's own counts and gallery link.
+        let admin = md.find("| app-admin |").expect("admin row");
+        let web = md.find("| app-web |").expect("web row");
+        assert!(admin < web, "rows should be label-ordered: {md}");
+        assert!(
+            md.contains(
+                "| app-web | 1 | 2 | 0 | 10 | [View gallery](https://example.test/pr-7/app-web) |"
+            ),
+            "{md}"
+        );
+        assert!(
+            md.contains(
+                "| app-admin | 0 | 0 | 1 | 5 | [View gallery](https://example.test/pr-7/app-admin) |"
+            ),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn aggregated_singular_noun_and_missing_gallery() {
+        let projects = [summary("solo", Counts::default(), None)];
+        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate");
+        assert!(md.contains("**1 project affected · 0 added"), "{md}");
+        // No gallery URL renders an em-dash placeholder, never a broken link.
+        assert!(md.contains("| solo | 0 | 0 | 0 | 0 | — |"), "{md}");
+    }
+
+    #[test]
+    fn aggregated_empty_reports_no_affected_projects() {
+        let md = render_aggregated_markdown(&[], "Visual changes", "screencomp-aggregate");
+        assert!(md.starts_with("<!-- screencomp-aggregate -->\n"), "{md}");
+        assert!(md.contains("_No affected projects._"), "{md}");
+        assert!(!md.contains("| Project |"), "{md}");
     }
 
     #[test]

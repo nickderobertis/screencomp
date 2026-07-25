@@ -169,6 +169,17 @@ on:
           the committed manifest.
         type: string
         default: ''
+      comment-mode:
+        description: >-
+          `per-project` (default) posts one sticky before/after comment per project
+          lane — correct, but a monorepo with N affected projects gets N comments per
+          PR. `aggregated` instead posts a SINGLE comment covering every affected
+          project (one row each with its counts and its own gallery link, plus a
+          combined summary), upserted in place by one stable marker. The per-project
+          galleries and Pages output are identical either way; only the PR-comment
+          surface consolidates. Recommended for many-project monorepos.
+        type: string
+        default: per-project
     secrets:
       push-token:
         description: >-
@@ -378,6 +389,50 @@ jobs:
           fail-on-drift: ${{ inputs.fail-on-drift }}
           update-manifest: ${{ inputs.update-manifest }}
           comment-base-ref: ${{ inputs.comment-base-ref }}
+          # In aggregated mode the per-lane comment is suppressed here; the
+          # aggregate-comment job posts the single combined comment instead.
+          comment-mode: ${{ inputs.comment-mode }}
+          github-token: ${{ secrets.push-token || github.token }}
+
+  # ---- Aggregate comment: ONE combined comment for a many-project monorepo ---
+  # Runs only in aggregated mode (comment-mode: aggregated), on a PR, after every
+  # report lane has suppressed its own per-project comment. It pulls ALL lanes'
+  # capture artifacts, then hands the matrix to the `visual-docs-aggregate`
+  # composite action, which composes `screencomp comment --projects` over every
+  # affected project and upserts a SINGLE comment (one row per project + a combined
+  # summary) keyed by one stable marker. Comment-only: galleries, Pages, and
+  # baselines are the report job's, untouched here. A custom caller composes the
+  # SAME action after its own report lanes, so the two paths can't diverge.
+  aggregate-comment:
+    needs: [arches, report]
+    if: ${{ inputs.comment-mode == 'aggregated' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # fetch the base-ref manifests that source each row's "Before"
+      pull-requests: write # post the single combined comment
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }} # PR branch, for the base-ref manifest diff
+          token: ${{ secrets.push-token || github.token }}
+
+      - uses: nickderobertis/screencomp@v0 # install the CLI on the host
+        with:
+          version: ${{ inputs.screencomp-version }}
+
+      # Every lane's capture, merged back into one shots/ tree so each project's
+      # <current>/<arch>/captures.json is on disk for classification.
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screencomp-shots-*
+          merge-multiple: true
+          path: shots
+
+      - uses: nickderobertis/screencomp/visual-docs-aggregate@v0
+        with:
+          matrix: ${{ toJSON(fromJSON(needs.arches.outputs.matrix).include) }}
+          comment-base-ref: ${{ inputs.comment-base-ref }}
+          publish: ${{ inputs.publish }}
           github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Cleanup: drop a closed PR's preview from gh-pages ---------------------

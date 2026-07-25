@@ -1,0 +1,175 @@
+# screencomp "aggregate comment" composite action — post ONE combined
+# pull-request comment covering every affected project in a many-project
+# monorepo, instead of one sticky comment per project.
+#
+# Compose it in a HOST job that runs AFTER your per-project report lanes (run
+# those with the visual-docs action's `comment-mode: aggregated`, so each lane
+# skips its own comment). This action needs the CLI installed
+# (nickderobertis/screencomp first), a real git checkout (to source each row's
+# "Before" from the PR base branch), and every lane's capture on disk under
+# shots/ (download all `screencomp-shots-*` artifacts with merge-multiple).
+#
+#   jobs:
+#     aggregate:
+#       needs: [arches, report]
+#       runs-on: ubuntu-latest
+#       permissions: { contents: read, pull-requests: write }
+#       steps:
+#         - uses: actions/checkout@v4
+#           with: { ref: ${{ github.head_ref }} }
+#         - uses: nickderobertis/screencomp@vX.Y.Z
+#         - uses: actions/download-artifact@v4
+#           with: { pattern: screencomp-shots-*, merge-multiple: true, path: shots }
+#         - uses: nickderobertis/screencomp/visual-docs-aggregate@vX.Y.Z
+#           with:
+#             matrix: ${{ toJSON(fromJSON(needs.arches.outputs.matrix).include) }}
+#
+# Comment-only: it never builds a gallery, deploys Pages, or moves a baseline —
+# those stay the per-project report job's, unchanged. One aggregated comment is
+# posted per arch (marker `screencomp-aggregate[-<arch>]`), so multi-arch repos
+# keep one sticky combined comment each, exactly like the per-project surface.
+name: screencomp aggregate comment
+description: >-
+  Post ONE aggregated pull-request comment covering every affected project — a
+  combined summary plus one row per project (its added/changed/removed/unchanged
+  counts and a link to its own gallery), upserted in place by a single stable
+  marker. Compose it after the per-project report lanes.
+author: screencomp contributors
+branding:
+  icon: message-square
+  color: purple
+
+inputs:
+  matrix:
+    description: >-
+      The capture matrix as JSON: one object per project/arch lane, each with
+      `project`, `arch`, `current`, and `manifest` (the arches job's `include`
+      array). Determines which projects the combined comment covers.
+    required: true
+  comment-base-ref:
+    description: >-
+      Git ref whose committed per-project manifest sources each row's "Before".
+      Defaults to the PR base branch, so counts reflect the intended diff even
+      though the committed baseline was already moved to match the capture under
+      the strict gate. Empty/unknown falls back to the committed manifest.
+    required: false
+    default: ''
+  publish:
+    description: >-
+      Post/upsert the comment. Set false for a dry run that renders the combined
+      comment (visible in the logs) but posts nothing.
+    required: false
+    default: 'true'
+  github-token:
+    description: 'Token for posting the pull-request comment.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    # Fail loudly if a needed host tool is missing — the usual symptom of running
+    # this inside a capture container instead of a host job.
+    - name: Check tooling
+      shell: bash
+      run: |
+        set -euo pipefail
+        screencomp --version
+        git --version
+        gh --version
+
+    - name: Render and upsert the aggregated comment
+      shell: bash
+      env:
+        MATRIX: ${{ inputs.matrix }}
+        COMMENT_BASE_REF: ${{ inputs.comment-base-ref }}
+        PUBLISH: ${{ inputs.publish }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        OWNER: ${{ github.repository_owner }}
+        REPO_NAME: ${{ github.event.repository.name }}
+        BASE_REF_DEFAULT: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        base_ref="$COMMENT_BASE_REF"
+        [ -n "$base_ref" ] || base_ref="$BASE_REF_DEFAULT"
+        main_url="https://${OWNER}.github.io/${REPO_NAME}"
+        mkdir -p agg
+
+        # Fetch the base branch once so each row's "Before" can come from it (the
+        # committed baseline already matches the capture under the strict gate).
+        if [ -n "${base_ref// }" ]; then
+          git fetch --depth=1 origin "$base_ref" || true
+        fi
+
+        # One aggregated comment per arch: each lists every project captured on
+        # that arch, so multi-arch repos keep one sticky combined comment each.
+        arches="$(jq -r '[.[].arch] | unique | .[]' <<<"$MATRIX")"
+        for arch in $arches; do
+          entries='[]'
+          # Iterate this arch's lanes; skip a first-seed lane that has no baseline
+          # to diff against (exactly as the per-project comment does).
+          while IFS= read -r lane; do
+            [ -n "$lane" ] || continue
+            project="$(jq -r '.project' <<<"$lane")"
+            current="$(jq -r '.current' <<<"$lane")"
+            manifest="$(jq -r '.manifest' <<<"$lane")"
+            before="$manifest"
+            if [ -n "${base_ref// }" ] && [ -n "$manifest" ] \
+              && git show "origin/${base_ref}:${manifest}" >"agg/${project}-${arch}.before.json" 2>/dev/null; then
+              before="agg/${project}-${arch}.before.json"
+            fi
+            if [ -z "$before" ] || [ ! -f "$before" ]; then
+              echo "no baseline for ${project}/${arch}; skipping (first-seed lane)"
+              continue
+            fi
+            subpath="/${project}"
+            [ -z "$arch" ] || subpath="${subpath}/${arch}"
+            gallery_url="${main_url}/pr-${PR}${subpath}"
+            entries="$(jq -c \
+              --arg id "$project" \
+              --arg current "$current" \
+              --arg baseline "$before" \
+              --arg arch "$arch" \
+              --arg gallery "$gallery_url" \
+              '. + [({
+                 id: $id, current: $current, baseline_manifest: $baseline,
+                 gallery_url: $gallery
+               } + (if $arch == "" then {} else {arch: $arch} end))]' \
+              <<<"$entries")"
+          done < <(jq -c --arg arch "$arch" '.[] | select(.arch == $arch)' <<<"$MATRIX")
+
+          count="$(jq 'length' <<<"$entries")"
+          if [ "$count" -eq 0 ]; then
+            echo "no diffable projects for arch '${arch}'; nothing to aggregate"
+            continue
+          fi
+
+          spec="agg/projects-${arch:-noarch}.json"
+          jq -n --argjson projects "$entries" '{schema: 1, projects: $projects}' >"$spec"
+          marker="screencomp-aggregate"
+          [ -z "$arch" ] || marker="screencomp-aggregate-${arch}"
+          screencomp comment --projects "$spec" --marker "$marker" --output comment.md
+
+          if [ "$PUBLISH" != "true" ]; then
+            echo "publish=false: rendered the aggregated comment for arch '${arch}', not posting"
+            cat comment.md
+            continue
+          fi
+
+          # Upsert by marker (the first HTML comment in the body), so the single
+          # combined comment updates in place across pushes.
+          m="$(grep -m1 -o '<!--[^>]*-->' comment.md)"
+          if [ -z "$m" ]; then
+            echo "::error::no upsert marker found in the rendered comment" >&2
+            exit 1
+          fi
+          id="$(gh api --paginate "repos/${REPO}/issues/${PR}/comments" \
+            --jq "map(select(.body | contains(\"${m}\"))) | last | .id // empty")"
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/${REPO}/issues/comments/${id}" -F body=@comment.md >/dev/null
+          else
+            gh pr comment "$PR" --body-file comment.md
+          fi
+        done

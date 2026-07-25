@@ -206,7 +206,8 @@ fn comment_cli(t: &Trees) -> Cli {
         command: Command::Comment(CommentArgs {
             baseline: Some(t.baseline.clone()),
             baseline_manifest: None,
-            current: t.current.clone(),
+            projects: None,
+            current: Some(t.current.clone()),
             arch: None,
             title: None,
             marker: None,

@@ -205,6 +205,45 @@ they write shared PR and `gh-pages` branches. Projects absent from the runtime
 array are not captured or classified.
 An empty `projects` array preserves the original single-capture behavior.
 
+##### One combined comment for many projects (`comment-mode: aggregated`)
+
+By default every project posts its own sticky comment, so a monorepo with a dozen
+affected projects leaves a dozen comments on the PR — correct, but noisy. Set
+`comment-mode: aggregated` to consolidate them into a **single** upserted comment
+instead: a combined summary line plus one row per affected project, each with its
+added/changed/removed/unchanged counts and a link to its own gallery.
+
+```yaml
+  visual-docs:
+    needs: affected
+    uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v0
+    with:
+      projects: ${{ needs.affected.outputs.projects }}
+      capture-command: ./scripts/capture-project "$SCREENCOMP_PROJECT"
+      comment-mode: aggregated   # one combined comment instead of one per project
+```
+
+The rendered comment looks like:
+
+> ## Visual changes
+>
+> **2 projects affected · 1 added · 1 changed · 1 removed**
+>
+> | Project | Added | Changed | Removed | Unchanged | Gallery |
+> |:--------|------:|--------:|--------:|----------:|:--------|
+> | app-admin | 0 | 0 | 1 | 1 | [View gallery](#) |
+> | app-web | 1 | 1 | 0 | 0 | [View gallery](#) |
+
+Only affected projects appear; unaffected ones are simply absent (never listed as
+removed). The single comment upserts in place across pushes via one stable marker
+(`screencomp-aggregate`, per arch on a multi-arch repo). The default
+`per-project` value keeps every existing consumer's behavior unchanged, and the
+per-project galleries and GitHub Pages output are identical either way — only the
+PR-comment surface consolidates. Under the hood each project is still classified
+independently (`screencomp comment --projects <spec.json>`), so a
+[custom-steps caller](#when-your-capture-needs-custom-steps-the-composite-actions)
+can compose the same `visual-docs-aggregate` action after its own report lanes.
+
 It runs the reproducibility gate, classifies against the committed digest
 manifest (failing the job on drift under the default strict gate), builds the
 gallery, deploys a canonical gallery from the default branch and a per-PR
@@ -572,6 +611,31 @@ screencomp comment --baseline shots/baseline --current shots/current \
     --arch x86_64 \
     --marker screencomp-x86_64 --title "Visual changes (x86_64)"
 ```
+
+For a many-project monorepo, `comment --projects <spec.json>` renders one combined
+comment for every project instead of one each (see
+[aggregated mode](#one-combined-comment-for-many-projects-comment-mode-aggregated)).
+The spec is a versioned JSON document — each project carries the same inputs the
+single-project command takes:
+
+```json
+{
+  "schema": 1,
+  "projects": [
+    { "id": "app-web", "current": "shots/current/app-web", "arch": "x86_64",
+      "baseline_manifest": "shots/baseline/app-web/x86_64.json",
+      "gallery_url": "https://you.github.io/site/pr-7/app-web/x86_64" },
+    { "id": "app-admin", "label": "Admin console",
+      "baseline": "shots/baseline/app-admin", "current": "shots/current/app-admin",
+      "arch": "x86_64", "gallery_url": "https://you.github.io/site/pr-7/app-admin/x86_64" }
+  ]
+}
+```
+
+Each project needs a non-empty `id` (its default row label; `label` overrides) and
+exactly one of `baseline`/`baseline_manifest`, plus a `current` root; `arch` and
+`gallery_url` are optional. The reusable workflow's `comment-mode: aggregated`
+generates this spec for you.
 
 The supported arches live in one place — `[capture].arches` in `screencomp.toml`
 (see [Configuration](#configuration)). CI reads that list via `screencomp arches
