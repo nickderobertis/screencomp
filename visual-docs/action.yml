@@ -92,6 +92,16 @@ inputs:
       falls back to diffing the committed manifest.
     required: false
     default: ''
+  comment-mode:
+    description: >-
+      `per-project` (default) posts this lane's own sticky before/after comment.
+      `aggregated` suppresses the per-lane comment so a single combined comment
+      (one row per affected project) can be posted once across every lane — see the
+      reusable workflow's `aggregate-comment` job, which composes `screencomp
+      comment --projects`. Everything else (gallery, Pages, manifest push) is
+      unaffected by this setting.
+    required: false
+    default: per-project
   gallery-url:
     description: 'Override the "After" image base URL for the comment (defaults to this PR''s Pages preview).'
     required: false
@@ -297,7 +307,7 @@ runs:
     # comment vs base.
     - name: Resolve comment baseline
       id: cbase
-      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.comment-mode != 'aggregated' }}
       shell: bash
       env:
         MANIFEST: ${{ steps.cfg.outputs.manifest }}
@@ -320,7 +330,7 @@ runs:
         echo "manifest=$comment_manifest" >>"$GITHUB_OUTPUT"
 
     - name: Render PR comment
-      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' }}
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.comment-mode != 'aggregated' }}
       shell: bash
       env:
         COMMENT_MANIFEST: ${{ steps.cbase.outputs.manifest }}
@@ -354,7 +364,7 @@ runs:
     # found and edited. This is what lets each arch keep its OWN sticky comment:
     # --edit-last would make every arch lane clobber the single most-recent comment.
     - name: Post PR comment
-      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.publish == 'true' }}
+      if: ${{ github.event_name == 'pull_request' && steps.cfg.outputs.has_baseline == 'true' && inputs.publish == 'true' && inputs.comment-mode != 'aggregated' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}

@@ -2184,6 +2184,61 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
 }
 
+#[test]
+fn aggregated_comment_mode_is_wired_end_to_end() {
+    // The aggregated surface spans three files that must stay in lockstep: the
+    // reusable workflow exposes `comment-mode` and forwards it, the per-project
+    // action suppresses its own comment in that mode, and the `visual-docs-aggregate`
+    // action composes `screencomp comment --projects` into one upserted comment.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let aggregate = std::fs::read_to_string(root.join("visual-docs-aggregate/action.yml")).unwrap();
+
+    // Reusable workflow: the mode is a real input, forwarded to the per-project
+    // action, and there is an aggregate-comment job composing the aggregate action.
+    assert!(
+        reusable.contains("\n      comment-mode:"),
+        "reusable workflow missing comment-mode input"
+    );
+    assert!(
+        reusable.contains("comment-mode: ${{ inputs.comment-mode }}"),
+        "report job must forward comment-mode to the per-project action"
+    );
+    assert!(
+        reusable.contains("aggregate-comment:")
+            && reusable.contains("inputs.comment-mode == 'aggregated'")
+            && reusable.contains("uses: nickderobertis/screencomp/visual-docs-aggregate@v0"),
+        "aggregate-comment job must gate on the mode and compose the aggregate action"
+    );
+    // The aggregate job hands the resolved matrix to the action.
+    assert!(
+        reusable.contains("matrix: ${{ toJSON(fromJSON(needs.arches.outputs.matrix).include) }}"),
+        "aggregate-comment must pass the resolved capture matrix"
+    );
+
+    // Per-project action: a comment-mode input whose 'aggregated' value suppresses
+    // this lane's own comment (so it isn't double-posted alongside the combined one).
+    assert!(
+        action.contains("comment-mode:"),
+        "per-project action missing comment-mode input"
+    );
+    assert!(
+        action.contains("inputs.comment-mode != 'aggregated'"),
+        "per-project comment steps must be suppressed in aggregated mode"
+    );
+
+    // Aggregate action: builds a schema-1 projects spec and renders it with a
+    // single stable aggregate marker, upserting by that marker.
+    assert!(
+        aggregate.contains("screencomp comment --projects")
+            && aggregate.contains("{schema: 1, projects: $projects}")
+            && aggregate.contains("marker=\"screencomp-aggregate\""),
+        "aggregate action must compose `comment --projects` under a stable marker"
+    );
+}
+
 /// Recursively copy `src` into `dst` (creating `dst`), using only path APIs so
 /// the artifact round-trip behaves identically on Windows and Unix.
 // Only used by the Unix-scoped reusable-workflow lanes test above.
