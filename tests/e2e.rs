@@ -538,6 +538,22 @@ fn deployed_canonical_gallery_drives_a_focused_preview_diff() {
     assert!(preview.join("current/about-desktop.png").exists());
 }
 
+#[test]
+fn focused_gallery_requires_a_baseline() {
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--focused")
+        .arg("--output")
+        .arg(TempDir::new().unwrap().path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "required arguments were not provided",
+        ))
+        .stderr(predicate::str::contains("--baseline <DIR>"));
+}
+
 /// Host CPU arch, mirroring `commands::arch::host_arch`.
 fn host_arch() -> String {
     match std::env::consts::ARCH {

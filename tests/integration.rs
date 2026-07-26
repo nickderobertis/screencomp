@@ -2302,6 +2302,18 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         "{}",
         String::from_utf8_lossy(&failure.stderr)
     );
+    let mut invalid = std::process::Command::new("bash");
+    invalid.arg("-c").arg(&config_script);
+    base_env(&mut invalid);
+    let failure = invalid
+        .env("INPUT_PAGES_REPOSITORY", "not-a-repository")
+        .env("INPUT_PAGES_TOKEN", "token")
+        .output()
+        .unwrap();
+    assert!(!failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&failure.stderr).contains("pages-repository must be an owner/name")
+    );
 
     let mut external = std::process::Command::new("bash");
     external.arg("-c").arg(&config_script);
@@ -2399,6 +2411,63 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
             .join("arm64/captures.json")
             .is_file(),
         "{fetch_outputs}"
+    );
+
+    // Cleanup and prune each carry the same early credential boundary because
+    // those event-only jobs do not run the report action's config step.
+    let validation_marker = "      - name: Validate external Pages credentials";
+    let mut validation_tail = reusable.as_str();
+    let mut validations = 0;
+    while let Some(start) = validation_tail.find(validation_marker) {
+        let block = &validation_tail[start..];
+        let run_start = block.find("        run: |\n").unwrap() + "        run: |\n".len();
+        let run_end = block[run_start..].find("\n      - uses:").unwrap() + run_start;
+        let script = block[run_start..run_end]
+            .lines()
+            .map(|line| line.strip_prefix("          ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace("${{ inputs.pages-repository }}", "$PAGES_REPOSITORY");
+        let result = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(script)
+            .env("PAGES_REPOSITORY", "docs/galleries")
+            .env("PAGES_TOKEN", "")
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("pages-token is required"));
+        validations += 1;
+        validation_tail = &block[run_end..];
+    }
+    assert_eq!(validations, 2, "cleanup and prune must both validate");
+
+    let aggregate_step = aggregate
+        .find("    - name: Render and upsert the aggregated comment")
+        .unwrap();
+    let aggregate_run = aggregate[aggregate_step..].find("      run: |\n").unwrap()
+        + aggregate_step
+        + "      run: |\n".len();
+    let aggregate_end = aggregate[aggregate_run..]
+        .find("\n    - name:")
+        .map_or(aggregate.len(), |offset| aggregate_run + offset);
+    let aggregate_script = aggregate[aggregate_run..aggregate_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let invalid_aggregate = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(aggregate_script)
+        .env("COMMENT_BASE_REF", "")
+        .env("BASE_REF_DEFAULT", "")
+        .env("PAGES_REPOSITORY", "invalid")
+        .output()
+        .unwrap();
+    assert!(!invalid_aggregate.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_aggregate.stderr)
+            .contains("pages-repository must be an owner/name")
     );
 }
 
