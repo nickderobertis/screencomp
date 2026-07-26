@@ -376,6 +376,10 @@ fn gallery_creates_index_html() {
     let copied = std::fs::read(dir.path().join("about-desktop.png")).expect("image copied");
     let source = std::fs::read(current().join("about-desktop.png")).expect("source image");
     assert_eq!(copied, source);
+    assert_eq!(
+        std::fs::read(dir.path().join("captures.json")).unwrap(),
+        std::fs::read(current().join("captures.json")).unwrap()
+    );
 }
 
 #[test]
@@ -494,6 +498,44 @@ fn gallery_diff_mode_renders_before_after() {
     // Both image trees are copied so before/after both render.
     assert!(dir.path().join("baseline/about-desktop.png").exists());
     assert!(dir.path().join("current/about-desktop.png").exists());
+}
+
+#[test]
+fn deployed_canonical_gallery_drives_a_focused_preview_diff() {
+    let dir = TempDir::new().unwrap();
+    let canonical = dir.path().join("canonical");
+    let preview = dir.path().join("preview");
+
+    // This is the same two-command boundary the Pages workflow uses: first
+    // publish a plain canonical gallery, then consume its deployed subtree as
+    // the next run's baseline.
+    bin()
+        .args(["gallery", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&canonical)
+        .assert()
+        .success();
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--baseline")
+        .arg(&canonical)
+        .arg("--focused")
+        .arg("--output")
+        .arg(&preview)
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(preview.join("index.html")).expect("preview");
+    assert!(html.contains("<h2>Changed</h2>"), "{html}");
+    assert!(html.contains("<h2>Added</h2>"), "{html}");
+    assert!(html.contains("<summary>Unchanged ("), "{html}");
+    assert!(!html.contains("<h2>Unchanged</h2>"), "{html}");
+    assert!(preview.join("baseline/captures.json").exists());
+    assert!(preview.join("current/captures.json").exists());
+    assert!(preview.join("baseline/about-desktop.png").exists());
+    assert!(preview.join("current/about-desktop.png").exists());
 }
 
 /// Host CPU arch, mirroring `commands::arch::host_arch`.

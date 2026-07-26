@@ -272,7 +272,17 @@ img{width:100%;height:auto;border:1px solid #ddd;border-radius:4px}\
 /// which the gallery command copies alongside the page); added, removed, and
 /// unchanged shots show a single image. A side without an image (e.g. a
 /// manifest-mode baseline) renders a "no image" note rather than a broken `<img>`.
-pub(crate) fn render_diff_html(classification: &Classification, title: &str) -> String {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffMode {
+    Full,
+    Focused,
+}
+
+pub(crate) fn render_diff_html(
+    classification: &Classification,
+    title: &str,
+    mode: DiffMode,
+) -> String {
     let c = classification.counts;
     let mut body = format!(
         "<table class=\"summary\">\
@@ -320,12 +330,20 @@ pub(crate) fn render_diff_html(classification: &Classification, title: &str) -> 
         "Removed",
         "removed",
     ));
-    body.push_str(&single_section(
-        classification,
-        Status::Unchanged,
-        "Unchanged",
-        "unchanged",
-    ));
+    if mode == DiffMode::Full {
+        body.push_str(&single_section(
+            classification,
+            Status::Unchanged,
+            "Unchanged",
+            "unchanged",
+        ));
+    } else if c.unchanged > 0 {
+        body.push_str(&format!(
+            "<details><summary>Unchanged ({})</summary>\
+<p>Unchanged screenshots are omitted from this focused diff.</p></details>\n",
+            c.unchanged
+        ));
+    }
 
     format!(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n\
@@ -607,7 +625,7 @@ mod tests {
             },
         };
 
-        let html = render_diff_html(&classification, "Diff");
+        let html = render_diff_html(&classification, "Diff", DiffMode::Full);
         assert!(html.contains("<title>Diff</title>"));
         assert!(html.contains("<h2>Changed</h2>"));
         assert!(html.contains("about [theme=dark]"));
@@ -634,7 +652,7 @@ mod tests {
                 ..Counts::default()
             },
         };
-        let html = render_diff_html(&classification, "Diff");
+        let html = render_diff_html(&classification, "Diff", DiffMode::Full);
         assert!(html.contains("no image"));
         assert!(html.contains("src=\"current/home.png\""));
     }
@@ -645,7 +663,44 @@ mod tests {
             entries: vec![],
             counts: Counts::default(),
         };
-        let html = render_diff_html(&classification, "Diff");
+        let html = render_diff_html(&classification, "Diff", DiffMode::Full);
         assert!(html.contains("No visual changes."));
+    }
+
+    #[test]
+    fn focused_diff_omits_unchanged_shots_behind_a_disclosure() {
+        let classification = Classification {
+            entries: vec![
+                entry("changed", &[], Status::Changed),
+                entry("same", &[], Status::Unchanged),
+            ],
+            counts: Counts {
+                changed: 1,
+                unchanged: 1,
+                ..Counts::default()
+            },
+        };
+
+        let html = render_diff_html(&classification, "Diff", DiffMode::Focused);
+        assert!(html.contains("<h2>Changed</h2>"));
+        assert!(html.contains("<summary>Unchanged (1)</summary>"));
+        assert!(!html.contains("src=\"current/same.png\""));
+        assert!(!html.contains("<h2>Unchanged</h2>"));
+    }
+
+    #[test]
+    fn focused_diff_without_unchanged_shots_has_no_disclosure() {
+        let classification = Classification {
+            entries: vec![entry("new", &[], Status::Added)],
+            counts: Counts {
+                added: 1,
+                ..Counts::default()
+            },
+        };
+
+        let html = render_diff_html(&classification, "Diff", DiffMode::Focused);
+        assert!(html.contains("<h2>Added</h2>"));
+        assert!(!html.contains("<details>"));
+        assert!(!html.contains("Unchanged</h2>"));
     }
 }

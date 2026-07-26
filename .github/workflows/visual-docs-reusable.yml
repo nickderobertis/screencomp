@@ -115,6 +115,10 @@ on:
         description: Deploy the gallery to GitHub Pages (canonical on push, per-PR preview on PRs).
         type: boolean
         default: true
+      pages-repository:
+        description: External owner/name repository that hosts the galleries. Empty uses this repository.
+        type: string
+        default: ''
       publish:
         description: >-
           Perform external side effects: post the PR comment, push the regenerated
@@ -187,6 +191,9 @@ on:
           to the PR branch. Only needed when the repo enforces required status
           checks (the default GITHUB_TOKEN cannot trigger runs). See the README's
           "Branch protection".
+        required: false
+      pages-token:
+        description: Token with contents:write on pages-repository. Required when pages-repository is set.
         required: false
 
 # Serialize gh-pages writes WITHOUT dropping canonical deploys. Every run writes
@@ -392,6 +399,8 @@ jobs:
           # In aggregated mode the per-lane comment is suppressed here; the
           # aggregate-comment job posts the single combined comment instead.
           comment-mode: ${{ inputs.comment-mode }}
+          pages-repository: ${{ inputs.pages-repository }}
+          pages-token: ${{ secrets.pages-token }}
           github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Aggregate comment: ONE combined comment for a many-project monorepo ---
@@ -433,6 +442,7 @@ jobs:
           matrix: ${{ toJSON(fromJSON(needs.arches.outputs.matrix).include) }}
           comment-base-ref: ${{ inputs.comment-base-ref }}
           publish: ${{ inputs.publish }}
+          pages-repository: ${{ inputs.pages-repository }}
           github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Cleanup: drop a closed PR's preview from gh-pages ---------------------
@@ -448,11 +458,20 @@ jobs:
     permissions:
       contents: write # rewrite the gh-pages branch
     steps:
+      - name: Validate external Pages credentials
+        if: ${{ inputs.pages-repository != '' }}
+        env:
+          PAGES_TOKEN: ${{ secrets.pages-token }}
+        run: |
+          [ -n "${PAGES_TOKEN// }" ] && exit 0
+          echo "::error::pages-token is required when pages-repository is configured; provide a token with contents:write on ${{ inputs.pages-repository }}" >&2
+          exit 1
       - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: cleanup
           pr: ${{ github.event.pull_request.number }}
-          token: ${{ secrets.push-token || github.token }}
+          repo: ${{ inputs.pages-repository || github.repository }}
+          token: ${{ inputs.pages-repository && secrets.pages-token || secrets.push-token || github.token }}
 
   # ---- Prune: bound gh-pages history so old galleries don't accrete ----------
   # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
@@ -471,8 +490,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Validate external Pages credentials
+        if: ${{ inputs.pages-repository != '' }}
+        env:
+          PAGES_TOKEN: ${{ secrets.pages-token }}
+        run: |
+          [ -n "${PAGES_TOKEN// }" ] && exit 0
+          echo "::error::pages-token is required when pages-repository is configured; provide a token with contents:write on ${{ inputs.pages-repository }}" >&2
+          exit 1
       - uses: nickderobertis/screencomp/gh-pages-maintenance@v0
         with:
           mode: prune
           keep-versions: ${{ inputs.gh-pages-history-versions }}
-          token: ${{ secrets.push-token || github.token }}
+          repo: ${{ inputs.pages-repository || github.repository }}
+          token: ${{ inputs.pages-repository && secrets.pages-token || secrets.push-token || github.token }}

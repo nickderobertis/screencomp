@@ -40,6 +40,10 @@ branding:
   color: purple
 
 inputs:
+  pages-repository:
+    description: 'External owner/name repository that hosts galleries. Empty uses the current repository.'
+    required: false
+    default: ''
   matrix:
     description: >-
       The capture matrix as JSON: one object per project/arch lane, each with
@@ -89,12 +93,15 @@ runs:
         PR: ${{ github.event.pull_request.number }}
         OWNER: ${{ github.repository_owner }}
         REPO_NAME: ${{ github.event.repository.name }}
+        PAGES_REPOSITORY: ${{ inputs.pages-repository }}
         BASE_REF_DEFAULT: ${{ github.base_ref }}
       run: |
         set -euo pipefail
         base_ref="$COMMENT_BASE_REF"
         [ -n "$base_ref" ] || base_ref="$BASE_REF_DEFAULT"
-        main_url="https://${OWNER}.github.io/${REPO_NAME}"
+        pages_repo="$PAGES_REPOSITORY"
+        [ -n "$pages_repo" ] || pages_repo="${OWNER}/${REPO_NAME}"
+        main_url="https://${pages_repo%%/*}.github.io/${pages_repo#*/}"
         mkdir -p agg
 
         # Fetch the base branch once so each row's "Before" can come from it (the

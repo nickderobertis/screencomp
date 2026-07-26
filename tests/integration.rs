@@ -229,6 +229,10 @@ fn gallery_writes_index_html() {
     let source = std::fs::read(std::path::Path::new(&current()).join("about-desktop.png"))
         .expect("source image");
     assert_eq!(copied, source);
+    assert_eq!(
+        std::fs::read(out_dir.path().join("captures.json")).unwrap(),
+        std::fs::read(std::path::Path::new(&current()).join("captures.json")).unwrap()
+    );
 }
 
 #[test]
@@ -288,6 +292,8 @@ fn gallery_diff_mode_copies_both_trees() {
     assert!(html.contains("<h2>Changed</h2>"));
     assert!(out_dir.path().join("baseline/about-desktop.png").exists());
     assert!(out_dir.path().join("current/about-desktop.png").exists());
+    assert!(out_dir.path().join("baseline/captures.json").exists());
+    assert!(out_dir.path().join("current/captures.json").exists());
 }
 
 #[test]
@@ -2175,6 +2181,8 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
             .env("CURRENT", "shots/current/shop's")
             .env("ARCH", "x86_64")
             .env("GALLERY_TITLE", "Shop's screenshots")
+            .env("BASELINE_FOUND", "")
+            .env("BASELINE_PATH", "")
             .status()
             .unwrap()
             .success()
@@ -2182,6 +2190,104 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     let args = std::fs::read_to_string(calls).unwrap();
     assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
     assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
+    assert!(!args.lines().any(|arg| arg == "--baseline"));
+}
+
+#[cfg(unix)]
+#[test]
+fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+
+    for contract in [
+        "\n  pages-repository:",
+        "\n  pages-token:",
+        "external_repository: ${{ inputs.pages-repository }}",
+        "personal_token: ${{ inputs.pages-token }}",
+        "args+=(--baseline \"$BASELINE_PATH\" --focused)",
+        "repo: ${{ inputs.pages-repository || github.repository }}",
+    ] {
+        assert!(
+            action.contains(contract) || reusable.contains(contract),
+            "{contract}"
+        );
+    }
+    assert!(
+        reusable.contains("pages-repository: ${{ inputs.pages-repository }}")
+            && reusable.contains("pages-token: ${{ secrets.pages-token }}"),
+        "reusable workflow must forward external Pages credentials"
+    );
+
+    let config_step = action.find("    - name: Resolve config").unwrap();
+    let config_run = action[config_step..].find("      run: |\n").unwrap()
+        + config_step
+        + "      run: |\n".len();
+    let config_end = action[config_run..]
+        .find("\n    - name:")
+        .map(|offset| config_run + offset)
+        .unwrap();
+    let config_script = action[config_run..config_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("${{ github.repository }}", "source/app")
+        .replace("${{ github.repository_owner }}", "source")
+        .replace("${{ github.event.repository.name }}", "app")
+        .replace("${{ github.event.pull_request.number }}", "17");
+    let dir = TempDir::new().unwrap();
+    let output = dir.path().join("output");
+    let base_env = |command: &mut std::process::Command| {
+        command
+            .env("INPUT_ARCH", "arm64")
+            .env("INPUT_PROJECT", "web")
+            .env("INPUT_MANIFEST", "")
+            .env("INPUT_GALLERY_URL", "")
+            .env("INPUT_BASELINE_URL", "")
+            .env("INPUT_PAGES", "true")
+            .env("INPUT_PUBLISH", "true")
+            .env("GITHUB_OUTPUT", &output);
+    };
+
+    let mut missing = std::process::Command::new("bash");
+    missing.arg("-c").arg(&config_script);
+    base_env(&mut missing);
+    let failure = missing
+        .env("INPUT_PAGES_REPOSITORY", "docs/galleries")
+        .env("INPUT_PAGES_TOKEN", "")
+        .output()
+        .unwrap();
+    assert!(!failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&failure.stderr).contains("pages-token is required"),
+        "{}",
+        String::from_utf8_lossy(&failure.stderr)
+    );
+
+    let mut external = std::process::Command::new("bash");
+    external.arg("-c").arg(&config_script);
+    base_env(&mut external);
+    let success = external
+        .env("INPUT_PAGES_REPOSITORY", "docs/galleries")
+        .env("INPUT_PAGES_TOKEN", "token")
+        .output()
+        .unwrap();
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let outputs = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        outputs.contains("gallery_url=https://docs.github.io/galleries/pr-17/web/arm64"),
+        "{outputs}"
+    );
+    assert!(
+        outputs.contains("baseline_url=https://docs.github.io/galleries/web/arm64"),
+        "{outputs}"
+    );
 }
 
 #[test]

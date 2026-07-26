@@ -183,6 +183,11 @@ pub struct GalleryArgs {
     /// Page title for the generated gallery.
     #[arg(long, default_value = "Screenshot gallery")]
     pub title: String,
+
+    /// Lead with changed, added, and removed shots, keeping unchanged shots out
+    /// of the main flow. Requires `--baseline`.
+    #[arg(long, requires = "baseline")]
+    pub focused: bool,
 }
 
 /// Arguments for [`Command::Comment`].

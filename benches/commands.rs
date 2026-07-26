@@ -195,6 +195,7 @@ fn gallery_cli(t: &Trees) -> Cli {
             arch: None,
             output: t.gallery_out.clone(),
             title: "Screenshot gallery".to_owned(),
+            focused: false,
         }),
     }
 }

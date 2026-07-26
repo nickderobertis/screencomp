@@ -266,6 +266,24 @@ the comment's "Before" comes from; defaults to the PR base branch).
 > credential that can trigger workflows (a fine-grained PAT or App token), because
 > the default `GITHUB_TOKEN`'s manifest push starts no runs and strands the PR.
 
+**Host galleries in a dedicated Pages repository.** Set the reusable workflow's
+`pages-repository` input to a public `owner/name` repository and pass a
+`pages-token` secret with `contents:write` access to it:
+
+```yaml
+with:
+  pages-repository: your-org/visual-docs-pages
+secrets:
+  pages-token: ${{ secrets.VISUAL_DOCS_PAGES_TOKEN }}
+```
+
+Enable Pages from the `gh-pages` branch in that repository. Canonical galleries,
+PR previews, comment links, and cleanup/history maintenance then all use
+`https://your-org.github.io/visual-docs-pages`; the source repository's Pages
+configuration is untouched. The token is mandatory when `pages-repository` is
+set. The Pages repository must be public for GitHub's anonymous image proxy to
+render inline before/after thumbnails in PR comments.
+
 **Keeping the `gh-pages` branch bounded.** The source repo never accumulates
 binary history — it commits only the [digest manifest](#image-free-baselines-digest-manifest),
 never PNGs. But the *galleries* do commit PNGs to the `gh-pages` branch, so left
@@ -457,7 +475,7 @@ screencomp gallery --input current --output public/screenshots --title "UI"
 
 # Before/after diff gallery (current vs baseline) — e.g. a per-PR preview.
 screencomp gallery --input current --baseline baseline \
-    --output public/pr-123 --title "PR #123 visual diff"
+    --focused --output public/pr-123 --title "PR #123 visual diff"
 
 screencomp comment --baseline baseline --current current \
     --gallery-url https://example.github.io/repo/pr-123/ \
@@ -467,8 +485,12 @@ screencomp comment --baseline baseline --current current \
 The diff gallery groups shots into Changed (rendered before/after), Added,
 Removed, and Unchanged, and copies both captures' images so it is self-contained:
 each shot's PNG lands at `<output>/baseline/<image>` and `<output>/current/<image>`,
-where `<image>` is the path that shot's entry records in `captures.json`. A plain
-gallery (no `--baseline`) instead copies a single capture's images flat at
+where `<image>` is the path that shot's entry records in `captures.json`.
+`--focused` keeps unchanged screenshots behind a compact disclosure instead of
+putting them in the review flow. Each image subtree also receives its source
+`captures.json`; a plain gallery writes that index beside `index.html`. A deployed
+canonical gallery is therefore a valid `--baseline` root for a later diff. A
+plain gallery (no `--baseline`) copies a single capture's images flat at
 `<output>/<image>`.
 
 When the diff is small (at most `comment.embed_limit` screenshots differ — 10 by
