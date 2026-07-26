@@ -123,6 +123,7 @@ fn run_aggregated(
         let classification = classify(&baseline, &current, &[]);
         let label = project.label.clone().unwrap_or_else(|| project.id.clone());
         rows.push((
+            project.id.clone(),
             label,
             classification,
             project
@@ -143,7 +144,8 @@ fn run_aggregated(
     let summaries: Vec<ProjectSummary<'_>> = rows
         .iter()
         .map(
-            |(label, classification, gallery_url, baseline_url, current_url)| ProjectSummary {
+            |(id, label, classification, gallery_url, baseline_url, current_url)| ProjectSummary {
+                id,
                 label,
                 classification,
                 gallery_url: gallery_url.as_deref(),
@@ -155,6 +157,28 @@ fn run_aggregated(
         )
         .collect();
 
+    let total_differing: usize = summaries
+        .iter()
+        .map(|summary| {
+            let counts = summary.classification.counts;
+            counts.added + counts.changed + counts.removed
+        })
+        .sum();
+    if total_differing > cfg.comment.embed_limit
+        && let Some(summary) = summaries.iter().find(|summary| {
+            let counts = summary.classification.counts;
+            counts.added + counts.changed + counts.removed > 0 && summary.gallery_url.is_none()
+        })
+    {
+        return Err(AppError::InvalidLayout {
+            path: spec_path.to_owned(),
+            reason: format!(
+                "project `{}` has visual changes but no `gallery_url`; over-limit aggregated comments require a focused-diff gallery URL",
+                summary.id
+            ),
+        });
+    }
+
     let title = args.title.as_deref().unwrap_or(&cfg.comment.title);
     let marker = args.marker.as_deref().unwrap_or(AGGREGATE_MARKER);
     let markdown = render_aggregated_markdown(&summaries, title, marker, cfg.comment.embed_limit);
@@ -164,7 +188,7 @@ fn run_aggregated(
 
 /// The `--projects` spec: a versioned JSON document naming the projects to fold
 /// into one aggregated comment.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectsSpec {
     /// Contract version; only [`PROJECTS_SPEC_SCHEMA`] is understood.
@@ -175,31 +199,38 @@ struct ProjectsSpec {
 
 /// One project in a [`ProjectsSpec`]: its identity plus the same inputs the
 /// single-project `comment` path takes, so each row classifies the same way.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectEntry {
     /// Stable project ID; also the default display label.
     id: String,
     /// Display label for the row; defaults to `id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
     /// Current capture root (`<dir>/[<arch>/]captures.json`).
     current: Utf8PathBuf,
     /// Baseline image tree. Exactly one of `baseline`/`baseline_manifest` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     baseline: Option<Utf8PathBuf>,
     /// Baseline digest manifest. Exactly one of `baseline`/`baseline_manifest` is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
     baseline_manifest: Option<Utf8PathBuf>,
     /// CPU-arch subtree to scope to; resolved like `--arch` when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
     /// Per-project gallery URL linked from the row.
+    #[serde(skip_serializing_if = "Option::is_none")]
     gallery_url: Option<HostedUrl>,
     /// Base URL hosting this project's "Before" images.
+    #[serde(skip_serializing_if = "Option::is_none")]
     baseline_url: Option<HostedUrl>,
     /// Base URL hosting this project's "After" images.
+    #[serde(skip_serializing_if = "Option::is_none")]
     current_url: Option<HostedUrl>,
 }
 
 /// An absolute HTTP(S) URL safe to interpolate into generated Markdown.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(try_from = "String")]
 struct HostedUrl(String);
 
@@ -318,4 +349,25 @@ fn image_bases(args: &CommentArgs, manifest_mode: bool) -> (Option<String>, Opti
 /// Drop a single trailing slash so derived subpaths join cleanly.
 fn trim_slash(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_two_projects_spec_round_trips_without_empty_optional_fields() {
+        let golden = include_str!("../../tests/fixtures/projects-schema-2.json");
+        let spec: ProjectsSpec = serde_json::from_str(golden).expect("schema-2 golden parses");
+        let rendered = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&spec).expect("schema-2 spec serializes")
+        );
+
+        assert_eq!(rendered, golden);
+        assert!(!rendered.contains("\"label\""));
+        assert!(!rendered.contains("\"arch\""));
+        assert!(!rendered.contains("\"baseline_url\""));
+        assert!(!rendered.contains("\"current_url\""));
+    }
 }

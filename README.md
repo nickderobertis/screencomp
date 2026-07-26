@@ -671,6 +671,9 @@ bases use the same `<base>/<image>` contract as single-project comments and make
 schema 2's inline form possible. Schema 1 is intentionally rejected; add the two
 per-project image-base fields and change `schema` to `2`. The reusable workflow's
 `comment-mode: aggregated` generates this spec from each focused-diff preview.
+`gallery_url` may be omitted when the total diff stays within the inline limit,
+but every project with visual changes must provide it when the combined diff is
+over the limit so every table row has a working focused-gallery link.
 
 The supported arches live in one place — `[capture].arches` in `screencomp.toml`
 (see [Configuration](#configuration)). CI reads that list via `screencomp arches

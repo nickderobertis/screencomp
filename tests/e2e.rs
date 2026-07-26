@@ -369,7 +369,7 @@ fn comment_aggregated_links_focused_diffs_over_the_limit() {
         &spec,
         format!(
             r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
-            "current":{current:?},"gallery_url":"https://example.test/pr-1/app",
+            "current":{current:?},
             "baseline_url":"https://example.test/pr-1/app/baseline",
             "current_url":"https://example.test/pr-1/app/current"}}]}}"#,
             baseline = root.join("baseline").to_str().unwrap(),
@@ -379,6 +379,31 @@ fn comment_aggregated_links_focused_diffs_over_the_limit() {
     .unwrap();
     let config = root.join("screencomp.toml");
     std::fs::write(&config, "[comment]\nembed_limit = 1\n").unwrap();
+
+    bin()
+        .args(["--config"])
+        .arg(&config)
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "over-limit aggregated comments require a focused-diff gallery URL",
+        ));
+
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},"gallery_url":"https://example.test/pr-1/app",
+            "baseline_url":"https://example.test/pr-1/app/baseline",
+            "current_url":"https://example.test/pr-1/app/current"}}]}}"#,
+            baseline = root.join("baseline").to_str().unwrap(),
+            current = root.join("current").to_str().unwrap(),
+        ),
+    )
+    .unwrap();
 
     let output = bin()
         .args(["--config"])

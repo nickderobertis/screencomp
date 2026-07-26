@@ -93,10 +93,12 @@ pub(crate) fn render_markdown(
     md
 }
 
-/// One affected project's line in an aggregated comment: its display `label`, its
-/// classified `counts`, and an optional link to its own gallery.
+/// One project's inputs to an aggregated comment, including stable identity,
+/// classification, hosted image bases, and an optional focused-gallery link.
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectSummary<'a> {
+    /// Stable unique project identity, used as the ordering tie-breaker.
+    pub(crate) id: &'a str,
     /// Human-facing project name (defaults to the project ID).
     pub(crate) label: &'a str,
     /// Shot-level classification for this project.
@@ -155,7 +157,7 @@ pub(crate) fn render_aggregated_markdown(
     ));
 
     let mut ordered: Vec<&ProjectSummary<'_>> = projects.iter().collect();
-    ordered.sort_by(|a, b| a.label.cmp(b.label));
+    ordered.sort_by(|a, b| (a.label, a.id).cmp(&(b.label, b.id)));
     let total_differing = differing(total);
     if total_differing <= embed_limit {
         for p in ordered
@@ -551,12 +553,14 @@ mod tests {
     }
 
     fn summary<'a>(
+        id: &'a str,
         label: &'a str,
         classification: &'a Classification,
         url: Option<&'a str>,
         bases: ImageBases<'a>,
     ) -> ProjectSummary<'a> {
         ProjectSummary {
+            id,
             label,
             classification,
             gallery_url: url,
@@ -585,6 +589,7 @@ mod tests {
         let projects = [
             summary(
                 "app-web",
+                "app-web",
                 &web,
                 Some("https://example.test/pr-7/app-web"),
                 ImageBases {
@@ -594,6 +599,7 @@ mod tests {
             ),
             summary(
                 "app-admin",
+                "app-admin",
                 &admin,
                 Some("https://example.test/pr-7/app-admin"),
                 ImageBases {
@@ -601,7 +607,7 @@ mod tests {
                     after: Some("https://example.test/pr-7/app-admin/current"),
                 },
             ),
-            summary("docs", &unchanged, None, ImageBases::default()),
+            summary("docs", "docs", &unchanged, None, ImageBases::default()),
         ];
         let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate", 3);
 
@@ -643,8 +649,9 @@ mod tests {
             },
         };
         let projects = [
-            summary("zeta", &unchanged, None, ImageBases::default()),
+            summary("zeta", "zeta", &unchanged, None, ImageBases::default()),
             summary(
+                "solo",
                 "solo",
                 &changed,
                 Some("https://example.test/focused"),
@@ -687,7 +694,13 @@ mod tests {
                 ..Counts::default()
             },
         };
-        let projects = [summary("solo", &changed, None, ImageBases::default())];
+        let projects = [summary(
+            "solo",
+            "solo",
+            &changed,
+            None,
+            ImageBases::default(),
+        )];
         let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate", 1);
         assert!(
             md.contains("### solo\n\n#### Changed\n- `missing [theme=dark]`"),
@@ -697,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregated_output_is_stable_across_project_order() {
+    fn aggregated_duplicate_labels_are_stable_across_reversed_project_order() {
         let first = classification();
         let second = Classification {
             entries: vec![entry("legacy", Status::Removed)],
@@ -706,8 +719,8 @@ mod tests {
                 ..Counts::default()
             },
         };
-        let a = summary("a", &first, Some("a"), ImageBases::default());
-        let b = summary("b", &second, Some("b"), ImageBases::default());
+        let a = summary("a", "shared", &first, Some("a"), ImageBases::default());
+        let b = summary("b", "shared", &second, Some("b"), ImageBases::default());
         assert_eq!(
             render_aggregated_markdown(&[a.clone(), b.clone()], "Visual changes", "marker", 0),
             render_aggregated_markdown(&[b, a], "Visual changes", "marker", 0)
