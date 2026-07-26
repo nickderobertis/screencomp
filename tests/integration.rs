@@ -2176,7 +2176,7 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     assert!(
         std::process::Command::new("bash")
             .arg("-c")
-            .arg(executable)
+            .arg(&executable)
             .env("CALLS", &calls)
             .env("CURRENT", "shots/current/shop's")
             .env("ARCH", "x86_64")
@@ -2187,10 +2187,29 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
             .unwrap()
             .success()
     );
-    let args = std::fs::read_to_string(calls).unwrap();
+    let args = std::fs::read_to_string(&calls).unwrap();
     assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
     assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
     assert!(!args.lines().any(|arg| arg == "--baseline"));
+
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&executable)
+            .env("CALLS", &calls)
+            .env("CURRENT", "shots/current/shop's")
+            .env("ARCH", "x86_64")
+            .env("GALLERY_TITLE", "Shop's screenshots")
+            .env("BASELINE_FOUND", "true")
+            .env("BASELINE_PATH", "deployed/shop's")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let args = std::fs::read_to_string(calls).unwrap();
+    assert!(args.lines().any(|arg| arg == "--baseline"));
+    assert!(args.lines().any(|arg| arg == "deployed/shop's"));
+    assert!(args.lines().any(|arg| arg == "--focused"));
 }
 
 #[cfg(unix)]
@@ -2200,6 +2219,8 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
     let reusable =
         std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
     let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let aggregate = std::fs::read_to_string(root.join("visual-docs-aggregate/action.yml")).unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
 
     for contract in [
         "\n  pages-repository:",
@@ -2210,7 +2231,10 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         "repo: ${{ inputs.pages-repository || github.repository }}",
     ] {
         assert!(
-            action.contains(contract) || reusable.contains(contract),
+            action.contains(contract)
+                || reusable.contains(contract)
+                || aggregate.contains(contract)
+                || readme.contains(contract),
             "{contract}"
         );
     }
@@ -2218,6 +2242,19 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         reusable.contains("pages-repository: ${{ inputs.pages-repository }}")
             && reusable.contains("pages-token: ${{ secrets.pages-token }}"),
         "reusable workflow must forward external Pages credentials"
+    );
+    assert!(
+        aggregate.contains("pages_repo=\"${OWNER}/${REPO_NAME}\"")
+            && aggregate
+                .contains("main_url=\"https://${pages_repo%%/*}.github.io/${pages_repo#*/}\"")
+            && aggregate.contains("pages-repository must be an owner/name"),
+        "aggregated comments must validate and derive the same external Pages host"
+    );
+    assert!(
+        readme.contains("pages-repository: your-org/visual-docs-pages")
+            && readme.contains("pages-token: ${{ secrets.VISUAL_DOCS_PAGES_TOKEN }}")
+            && readme.contains("must be public"),
+        "external Pages documentation must stay aligned with the action contract"
     );
 
     let config_step = action.find("    - name: Resolve config").unwrap();
@@ -2287,6 +2324,81 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
     assert!(
         outputs.contains("baseline_url=https://docs.github.io/galleries/web/arm64"),
         "{outputs}"
+    );
+
+    // Execute the action's canonical-baseline fetch against a real local
+    // gh-pages branch. Only the remote URL is replaced; sparse checkout,
+    // branch fetch, index detection, and output resolution are the shipped shell.
+    let remote = dir.path().join("pages");
+    std::fs::create_dir_all(remote.join("web/arm64")).unwrap();
+    std::fs::write(
+        remote.join("web/arm64/captures.json"),
+        r#"{"schema":1,"shots":[]}"#,
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "gallery"],
+        vec!["branch", "-M", "gh-pages"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&remote)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let fetch_step = action
+        .find("    - name: Fetch canonical gallery baseline")
+        .unwrap();
+    let fetch_run =
+        action[fetch_step..].find("      run: |\n").unwrap() + fetch_step + "      run: |\n".len();
+    let fetch_end = action[fetch_run..]
+        .find("\n    - name:")
+        .map(|offset| fetch_run + offset)
+        .unwrap();
+    let fetch_script = action[fetch_run..fetch_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(
+            "\"https://github.com/${PAGES_REPO}.git\"",
+            &format!("\"{}\"", remote.display()),
+        );
+    let fetch_output = dir.path().join("fetch-output");
+    let fetch = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&fetch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "web/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &fetch_output)
+        .output()
+        .unwrap();
+    assert!(
+        fetch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetch.stderr)
+    );
+    let fetch_outputs = std::fs::read_to_string(&fetch_output).unwrap();
+    assert!(fetch_outputs.contains("found=true"), "{fetch_outputs}");
+    let baseline_root = fetch_outputs
+        .lines()
+        .find_map(|line| line.strip_prefix("path="))
+        .unwrap();
+    assert!(
+        Path::new(baseline_root)
+            .join("arm64/captures.json")
+            .is_file(),
+        "{fetch_outputs}"
     );
 }
 
