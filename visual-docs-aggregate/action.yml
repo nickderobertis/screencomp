@@ -32,9 +32,9 @@
 name: screencomp aggregate comment
 description: >-
   Post ONE aggregated pull-request comment covering every affected project — a
-  combined summary plus one row per project (its added/changed/removed/unchanged
-  counts and a link to its own gallery), upserted in place by a single stable
-  marker. Compose it after the per-project report lanes.
+  combined summary with inline screenshots for a small diff, or changed-project
+  rows linking to focused galleries for a large diff, upserted in place by a
+  single stable marker. Compose it after the per-project report lanes.
 author: screencomp contributors
 branding:
   icon: message-square
@@ -139,15 +139,20 @@ runs:
             subpath="/${project}"
             [ -z "$arch" ] || subpath="${subpath}/${arch}"
             gallery_url="${main_url}/pr-${PR}${subpath}"
+            baseline_url="${gallery_url}/baseline"
+            current_url="${gallery_url}/current"
             entries="$(jq -c \
               --arg id "$project" \
               --arg current "$current" \
               --arg baseline "$before" \
               --arg arch "$arch" \
               --arg gallery "$gallery_url" \
+              --arg baseline_url "$baseline_url" \
+              --arg current_url "$current_url" \
               '. + [({
                  id: $id, current: $current, baseline_manifest: $baseline,
-                 gallery_url: $gallery
+                 gallery_url: $gallery, baseline_url: $baseline_url,
+                 current_url: $current_url
                } + (if $arch == "" then {} else {arch: $arch} end))]' \
               <<<"$entries")"
           done < <(jq -c --arg arch "$arch" '.[] | select(.arch == $arch)' <<<"$MATRIX")
@@ -159,7 +164,7 @@ runs:
           fi
 
           spec="agg/projects-${arch:-noarch}.json"
-          jq -n --argjson projects "$entries" '{schema: 1, projects: $projects}' >"$spec"
+          jq -n --argjson projects "$entries" '{schema: 2, projects: $projects}' >"$spec"
           marker="screencomp-aggregate"
           [ -z "$arch" ] || marker="screencomp-aggregate-${arch}"
           screencomp comment --projects "$spec" --marker "$marker" --output comment.md

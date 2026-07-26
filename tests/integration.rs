@@ -880,20 +880,24 @@ fn write_aggregate_spec(root: &Path) -> String {
         &spec,
         format!(
             r#"{{
-              "schema": 1,
+              "schema": 2,
               "projects": [
                 {{
                   "id": "app-web",
                   "current": {web_current:?},
                   "baseline_manifest": {web_manifest:?},
-                  "gallery_url": "https://example.test/pr-1/app-web"
+                  "gallery_url": "https://example.test/pr-1/app-web",
+                  "baseline_url": "https://example.test/pr-1/app-web/baseline",
+                  "current_url": "https://example.test/pr-1/app-web/current"
                 }},
                 {{
                   "id": "app-admin",
                   "label": "Admin console",
                   "baseline": {admin_baseline:?},
                   "current": {admin_current:?},
-                  "gallery_url": "https://example.test/pr-1/app-admin"
+                  "gallery_url": "https://example.test/pr-1/app-admin",
+                  "baseline_url": "https://example.test/pr-1/app-admin/baseline",
+                  "current_url": "https://example.test/pr-1/app-admin/current"
                 }}
               ]
             }}"#,
@@ -920,24 +924,21 @@ fn comment_aggregated_renders_one_comment_for_many_projects() {
     assert_eq!(out.matches("<!--").count(), 1, "exactly one marker: {out}");
     // Combined summary totals every project (app-web: +1 ~1; app-admin: -1).
     assert!(
-        out.contains("**2 projects affected · 1 added · 1 changed · 1 removed**"),
-        "{out}"
-    );
-    // One row per project, each with its own counts and gallery link; the label
-    // override wins and rows are label-ordered (Admin console before app-web).
-    let admin = out.find("| Admin console |").expect("admin row");
-    let web = out.find("| app-web |").expect("web row");
-    assert!(admin < web, "rows are label-ordered: {out}");
-    assert!(
         out.contains(
-            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+            "**2 projects with visual changes · 0 projects unchanged · 1 added · 1 changed · 1 removed**"
         ),
         "{out}"
     );
+    assert!(!out.contains("| Project |"), "{out}");
+    let admin = out.find("### Admin console").expect("admin section");
+    let web = out.find("### app-web").expect("web section");
+    assert!(admin < web, "sections are label-ordered: {out}");
     assert!(
-        out.contains(
-            "| Admin console | 0 | 0 | 1 | 1 | [View gallery](https://example.test/pr-1/app-admin) |"
-        ),
+        out.contains("src=\"https://example.test/pr-1/app-web/current/pricing.png\""),
+        "{out}"
+    );
+    assert!(
+        out.contains("src=\"https://example.test/pr-1/app-admin/baseline/about.png\""),
         "{out}"
     );
 }
@@ -953,7 +954,7 @@ fn comment_aggregated_rejects_a_project_without_a_baseline() {
     std::fs::write(
         &spec,
         format!(
-            r#"{{"schema":1,"projects":[{{"id":"app","current":{:?}}}]}}"#,
+            r#"{{"schema":2,"projects":[{{"id":"app","current":{:?}}}]}}"#,
             path_str(&dir.path().join("app/current"))
         ),
     )
@@ -975,6 +976,20 @@ fn comment_aggregated_rejects_an_unknown_schema() {
     let err = result.unwrap_err();
     assert!(matches!(err, AppError::InvalidLayout { .. }), "{err:?}");
     assert!(err.to_string().contains("schema"), "{err}");
+}
+
+#[test]
+fn comment_aggregated_rejects_schema_one_with_migration_guidance() {
+    let dir = TempDir::new().unwrap();
+    let spec = path_str(&dir.path().join("v1.json"));
+    std::fs::write(&spec, r#"{"schema":1,"projects":[]}"#).unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("schema 2 adds"), "{err}");
+    assert!(err.contains("baseline_url"), "{err}");
+    assert!(err.contains("current_url"), "{err}");
+    assert!(err.contains("set `schema` to 2"), "{err}");
 }
 
 #[test]
@@ -2601,11 +2616,13 @@ fn aggregated_comment_mode_is_wired_end_to_end() {
         "per-project comment steps must be suppressed in aggregated mode"
     );
 
-    // Aggregate action: builds a schema-1 projects spec and renders it with a
+    // Aggregate action: builds a schema-2 projects spec and renders it with a
     // single stable aggregate marker, upserting by that marker.
     assert!(
         aggregate.contains("screencomp comment --projects")
-            && aggregate.contains("{schema: 1, projects: $projects}")
+            && aggregate.contains("{schema: 2, projects: $projects}")
+            && aggregate.contains("baseline_url: $baseline_url")
+            && aggregate.contains("current_url: $current_url")
             && aggregate.contains("marker=\"screencomp-aggregate\""),
         "aggregate action must compose `comment --projects` under a stable marker"
     );

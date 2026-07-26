@@ -297,12 +297,16 @@ fn comment_aggregated_upserts_one_comment_across_projects() {
         &spec,
         format!(
             r#"{{
-              "schema": 1,
+              "schema": 2,
               "projects": [
                 {{"id":"app-web","baseline":{web_b:?},"current":{web_c:?},
-                  "gallery_url":"https://example.test/pr-1/app-web"}},
+                  "gallery_url":"https://example.test/pr-1/app-web",
+                  "baseline_url":"https://example.test/pr-1/app-web/baseline",
+                  "current_url":"https://example.test/pr-1/app-web/current"}},
                 {{"id":"app-admin","baseline":{adm_b:?},"current":{adm_c:?},
-                  "gallery_url":"https://example.test/pr-1/app-admin"}}
+                  "gallery_url":"https://example.test/pr-1/app-admin",
+                  "baseline_url":"https://example.test/pr-1/app-admin/baseline",
+                  "current_url":"https://example.test/pr-1/app-admin/current"}}
               ]
             }}"#,
             web_b = root.join("app-web/baseline").to_str().unwrap(),
@@ -327,18 +331,72 @@ fn comment_aggregated_upserts_one_comment_across_projects() {
     assert!(md.starts_with("<!-- screencomp-aggregate -->"), "{md}");
     assert_eq!(md.matches("<!--").count(), 1, "exactly one marker: {md}");
     assert!(
-        md.contains("**2 projects affected · 1 added · 1 changed · 0 removed**"),
-        "{md}"
-    );
-    // An affected-but-unchanged project still appears (all zero counts), never
-    // omitted and never mislabeled as removed.
-    assert!(md.contains("| app-admin | 0 | 0 | 0 | 1 |"), "{md}");
-    assert!(
         md.contains(
-            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+            "**1 project with visual changes · 1 project unchanged · 1 added · 1 changed · 0 removed**"
         ),
         "{md}"
     );
+    assert!(!md.contains("| Project |"), "{md}");
+    assert!(!md.contains("### app-admin"), "{md}");
+    assert!(
+        md.contains("src=\"https://example.test/pr-1/app-web/baseline/home.png\""),
+        "{md}"
+    );
+    assert!(
+        md.contains("src=\"https://example.test/pr-1/app-web/current/home.png\""),
+        "{md}"
+    );
+}
+
+#[test]
+fn comment_aggregated_links_focused_diffs_over_the_limit() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let vp: &[(&str, &str)] = &[("viewport", "desktop")];
+    write_capture(
+        &root.join("baseline"),
+        &[("home", vp, &digest("aa"), "home.png", b"old")],
+    );
+    write_capture(
+        &root.join("current"),
+        &[
+            ("home", vp, &digest("bb"), "home.png", b"new"),
+            ("added", vp, &digest("cc"), "added.png", b"add"),
+        ],
+    );
+    let spec = root.join("projects.json");
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},"gallery_url":"https://example.test/pr-1/app",
+            "baseline_url":"https://example.test/pr-1/app/baseline",
+            "current_url":"https://example.test/pr-1/app/current"}}]}}"#,
+            baseline = root.join("baseline").to_str().unwrap(),
+            current = root.join("current").to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    let config = root.join("screencomp.toml");
+    std::fs::write(&config, "[comment]\nembed_limit = 1\n").unwrap();
+
+    let output = bin()
+        .args(["--config"])
+        .arg(&config)
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let md = String::from_utf8(output).unwrap();
+    assert!(md.contains("| Project |"), "{md}");
+    assert!(
+        md.contains("[View focused diff](https://example.test/pr-1/app)"),
+        "{md}"
+    );
+    assert!(!md.contains("<img"), "{md}");
 }
 
 #[test]

@@ -21,7 +21,7 @@ const AGGREGATE_MARKER: &str = "screencomp-aggregate";
 
 /// Only-understood version of the `--projects` spec contract. Bump deliberately:
 /// a new schema is a new contract with the workflow that generates the spec.
-const PROJECTS_SPEC_SCHEMA: u32 = 1;
+const PROJECTS_SPEC_SCHEMA: u32 = 2;
 
 pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     // Config is loaded once at the run boundary and shared via Ctx.
@@ -110,8 +110,7 @@ fn run_aggregated(
 
     // Classify every project first, owning the label/counts/url so the borrowed
     // `ProjectSummary` view can reference them when rendering.
-    let mut rows: Vec<(String, crate::domain::classify::Counts, Option<String>)> =
-        Vec::with_capacity(spec.projects.len());
+    let mut rows = Vec::with_capacity(spec.projects.len());
     for project in &spec.projects {
         let arch = resolve_arch(project.arch.as_deref(), &cfg.capture.arches)?;
         let plat = arch.as_deref();
@@ -121,23 +120,35 @@ fn run_aggregated(
             plat,
         )?;
         let current = discover_scoped(&project.current, plat)?;
-        let counts = classify(&baseline, &current, &[]).counts;
+        let classification = classify(&baseline, &current, &[]);
         let label = project.label.clone().unwrap_or_else(|| project.id.clone());
-        rows.push((label, counts, project.gallery_url.clone()));
+        rows.push((
+            label,
+            classification,
+            project.gallery_url.clone(),
+            project.baseline_url.clone(),
+            project.current_url.clone(),
+        ));
     }
 
     let summaries: Vec<ProjectSummary<'_>> = rows
         .iter()
-        .map(|(label, counts, url)| ProjectSummary {
-            label,
-            counts: *counts,
-            gallery_url: url.as_deref(),
-        })
+        .map(
+            |(label, classification, gallery_url, baseline_url, current_url)| ProjectSummary {
+                label,
+                classification,
+                gallery_url: gallery_url.as_deref(),
+                bases: ImageBases {
+                    before: baseline_url.as_deref(),
+                    after: current_url.as_deref(),
+                },
+            },
+        )
         .collect();
 
     let title = args.title.as_deref().unwrap_or(&cfg.comment.title);
     let marker = args.marker.as_deref().unwrap_or(AGGREGATE_MARKER);
-    let markdown = render_aggregated_markdown(&summaries, title, marker);
+    let markdown = render_aggregated_markdown(&summaries, title, marker, cfg.comment.embed_limit);
 
     emit(&markdown, args.output.as_deref(), ctx, out)
 }
@@ -172,6 +183,10 @@ struct ProjectEntry {
     arch: Option<String>,
     /// Per-project gallery URL linked from the row.
     gallery_url: Option<String>,
+    /// Base URL hosting this project's "Before" images.
+    baseline_url: Option<String>,
+    /// Base URL hosting this project's "After" images.
+    current_url: Option<String>,
 }
 
 /// Read and validate the `--projects` spec, returning a typed error for a missing
@@ -188,9 +203,14 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
         reason,
     };
     if spec.schema != PROJECTS_SPEC_SCHEMA {
+        let migration = if spec.schema == 1 {
+            "; schema 2 adds per-project `baseline_url` and `current_url` image bases; add those fields and set `schema` to 2"
+        } else {
+            ""
+        };
         return Err(invalid(format!(
-            "unsupported projects spec schema {} (this screencomp understands {PROJECTS_SPEC_SCHEMA})",
-            spec.schema
+            "unsupported projects spec schema {} (this screencomp understands {PROJECTS_SPEC_SCHEMA}){migration}",
+            spec.schema,
         )));
     }
     let mut seen = std::collections::BTreeSet::new();

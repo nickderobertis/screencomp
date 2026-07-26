@@ -210,8 +210,12 @@ An empty `projects` array preserves the original single-capture behavior.
 By default every project posts its own sticky comment, so a monorepo with a dozen
 affected projects leaves a dozen comments on the PR — correct, but noisy. Set
 `comment-mode: aggregated` to consolidate them into a **single** upserted comment
-instead: a combined summary line plus one row per affected project, each with its
-added/changed/removed/unchanged counts and a link to its own gallery.
+instead. The combined summary distinguishes projects with visual changes from
+projects whose captures are unchanged. When the total added + changed + removed
+shots across all projects is at most `[comment].embed_limit`, the comment groups
+the actual before/after screenshots under each changed project. Above the limit,
+it shows a compact counts table containing only changed projects, with one link
+per row to that project's focused-diff gallery.
 
 ```yaml
   visual-docs:
@@ -223,19 +227,20 @@ added/changed/removed/unchanged counts and a link to its own gallery.
       comment-mode: aggregated   # one combined comment instead of one per project
 ```
 
-The rendered comment looks like:
+The over-limit form looks like:
 
 > ## Visual changes
 >
-> **2 projects affected · 1 added · 1 changed · 1 removed**
+> **2 projects with visual changes · 9 projects unchanged · 1 added · 1 changed · 1 removed**
 >
 > | Project | Added | Changed | Removed | Unchanged | Gallery |
 > |:--------|------:|--------:|--------:|----------:|:--------|
 > | app-admin | 0 | 0 | 1 | 1 | [View gallery](#) |
 > | app-web | 1 | 1 | 0 | 0 | [View gallery](#) |
 
-Only affected projects appear; unaffected ones are simply absent (never listed as
-removed). The single comment upserts in place across pushes via one stable marker
+Only projects with a nonzero visual diff appear as screenshot groups or table
+rows; unchanged projects remain accounted for in the summary. The single comment
+upserts in place across pushes via one stable marker
 (`screencomp-aggregate`, per arch on a multi-arch repo). The default
 `per-project` value keeps every existing consumer's behavior unchanged, and the
 per-project galleries and GitHub Pages output are identical either way — only the
@@ -642,22 +647,30 @@ single-project command takes:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "projects": [
     { "id": "app-web", "current": "shots/current/app-web", "arch": "x86_64",
       "baseline_manifest": "shots/baseline/app-web/x86_64.json",
-      "gallery_url": "https://you.github.io/site/pr-7/app-web/x86_64" },
+      "gallery_url": "https://you.github.io/site/pr-7/app-web/x86_64",
+      "baseline_url": "https://you.github.io/site/pr-7/app-web/x86_64/baseline",
+      "current_url": "https://you.github.io/site/pr-7/app-web/x86_64/current" },
     { "id": "app-admin", "label": "Admin console",
       "baseline": "shots/baseline/app-admin", "current": "shots/current/app-admin",
-      "arch": "x86_64", "gallery_url": "https://you.github.io/site/pr-7/app-admin/x86_64" }
+      "arch": "x86_64",
+      "gallery_url": "https://you.github.io/site/pr-7/app-admin/x86_64",
+      "baseline_url": "https://you.github.io/site/pr-7/app-admin/x86_64/baseline",
+      "current_url": "https://you.github.io/site/pr-7/app-admin/x86_64/current" }
   ]
 }
 ```
 
 Each project needs a non-empty `id` (its default row label; `label` overrides) and
-exactly one of `baseline`/`baseline_manifest`, plus a `current` root; `arch` and
-`gallery_url` are optional. The reusable workflow's `comment-mode: aggregated`
-generates this spec for you.
+exactly one of `baseline`/`baseline_manifest`, plus a `current` root; `arch`,
+`gallery_url`, `baseline_url`, and `current_url` are optional. The two image
+bases use the same `<base>/<image>` contract as single-project comments and make
+schema 2's inline form possible. Schema 1 is intentionally rejected; add the two
+per-project image-base fields and change `schema` to `2`. The reusable workflow's
+`comment-mode: aggregated` generates this spec from each focused-diff preview.
 
 The supported arches live in one place — `[capture].arches` in `screencomp.toml`
 (see [Configuration](#configuration)). CI reads that list via `screencomp arches
