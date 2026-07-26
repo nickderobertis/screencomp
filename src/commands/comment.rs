@@ -236,8 +236,31 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
             }
             _ => {}
         }
+        for (field, value) in [
+            ("gallery_url", project.gallery_url.as_deref()),
+            ("baseline_url", project.baseline_url.as_deref()),
+            ("current_url", project.current_url.as_deref()),
+        ] {
+            if let Some(value) = value
+                && !valid_hosted_url(value)
+            {
+                return Err(invalid(format!(
+                    "project `{}` has invalid `{field}`; use an absolute http(s) URL without whitespace or Markdown delimiters",
+                    project.id
+                )));
+            }
+        }
     }
     Ok(spec)
+}
+
+/// Whether an externally supplied hosted URL is safe to place in Markdown.
+fn valid_hosted_url(value: &str) -> bool {
+    (value.starts_with("https://") || value.starts_with("http://"))
+        && value.len() > "https://".len()
+        && !value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "\"<>[]()".contains(c))
 }
 
 /// Resolve the `(before, after)` image bases for the inline previews.

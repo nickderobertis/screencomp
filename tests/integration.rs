@@ -993,6 +993,36 @@ fn comment_aggregated_rejects_schema_one_with_migration_guidance() {
 }
 
 #[test]
+fn comment_aggregated_rejects_an_unsafe_image_base() {
+    let dir = TempDir::new().unwrap();
+    write_capture(
+        &dir.path().join("baseline"),
+        &[("home", &[], &digest("aa"), "home.png", b"old")],
+    );
+    write_capture(
+        &dir.path().join("current"),
+        &[("home", &[], &digest("bb"), "home.png", b"new")],
+    );
+    let spec = path_str(&dir.path().join("unsafe.json"));
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},"baseline_url":"javascript:alert(1)",
+            "current_url":"https://example.test/current"}}]}}"#,
+            baseline = path_str(&dir.path().join("baseline")),
+            current = path_str(&dir.path().join("current")),
+        ),
+    )
+    .unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("invalid `baseline_url`"), "{err}");
+    assert!(err.contains("absolute http(s) URL"), "{err}");
+}
+
+#[test]
 fn manifest_and_classify_are_arch_scoped() {
     let dir = TempDir::new().unwrap();
     let base = dir.path().join("baseline");
