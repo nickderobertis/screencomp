@@ -1018,8 +1018,7 @@ fn comment_aggregated_rejects_an_unsafe_image_base() {
 
     let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("invalid `baseline_url`"), "{err}");
-    assert!(err.contains("absolute http(s) URL"), "{err}");
+    assert!(err.contains("expected an absolute http(s) URL"), "{err}");
 }
 
 #[test]

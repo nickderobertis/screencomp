@@ -125,9 +125,18 @@ fn run_aggregated(
         rows.push((
             label,
             classification,
-            project.gallery_url.clone(),
-            project.baseline_url.clone(),
-            project.current_url.clone(),
+            project
+                .gallery_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
+            project
+                .baseline_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
+            project
+                .current_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
         ));
     }
 
@@ -182,11 +191,41 @@ struct ProjectEntry {
     /// CPU-arch subtree to scope to; resolved like `--arch` when omitted.
     arch: Option<String>,
     /// Per-project gallery URL linked from the row.
-    gallery_url: Option<String>,
+    gallery_url: Option<HostedUrl>,
     /// Base URL hosting this project's "Before" images.
-    baseline_url: Option<String>,
+    baseline_url: Option<HostedUrl>,
     /// Base URL hosting this project's "After" images.
-    current_url: Option<String>,
+    current_url: Option<HostedUrl>,
+}
+
+/// An absolute HTTP(S) URL safe to interpolate into generated Markdown.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(try_from = "String")]
+struct HostedUrl(String);
+
+impl HostedUrl {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HostedUrl {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let has_scheme = value.starts_with("https://") || value.starts_with("http://");
+        let has_host = value
+            .split_once("://")
+            .is_some_and(|(_, rest)| !rest.is_empty() && !rest.starts_with('/'));
+        let unsafe_character = value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "\"<>[]()".contains(c));
+        if has_scheme && has_host && !unsafe_character {
+            Ok(Self(value))
+        } else {
+            Err("expected an absolute http(s) URL without whitespace or Markdown delimiters")
+        }
+    }
 }
 
 /// Read and validate the `--projects` spec, returning a typed error for a missing
@@ -236,31 +275,8 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
             }
             _ => {}
         }
-        for (field, value) in [
-            ("gallery_url", project.gallery_url.as_deref()),
-            ("baseline_url", project.baseline_url.as_deref()),
-            ("current_url", project.current_url.as_deref()),
-        ] {
-            if let Some(value) = value
-                && !valid_hosted_url(value)
-            {
-                return Err(invalid(format!(
-                    "project `{}` has invalid `{field}`; use an absolute http(s) URL without whitespace or Markdown delimiters",
-                    project.id
-                )));
-            }
-        }
     }
     Ok(spec)
-}
-
-/// Whether an externally supplied hosted URL is safe to place in Markdown.
-fn valid_hosted_url(value: &str) -> bool {
-    (value.starts_with("https://") || value.starts_with("http://"))
-        && value.len() > "https://".len()
-        && !value
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || "\"<>[]()".contains(c))
 }
 
 /// Resolve the `(before, after)` image bases for the inline previews.
