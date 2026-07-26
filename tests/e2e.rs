@@ -439,6 +439,52 @@ fn comment_projects_conflicts_with_single_project_inputs() {
 }
 
 #[test]
+fn comment_projects_rejects_invalid_baseline_choice_then_accepts_one_source() {
+    let dir = TempDir::new().unwrap();
+    let spec = dir.path().join("projects.json");
+    let baseline = baseline().to_str().unwrap().to_owned();
+    let current = current().to_str().unwrap().to_owned();
+
+    for (project_fields, expected) in [
+        (
+            format!(r#""baseline":{baseline:?},"baseline_manifest":"baseline.json","#),
+            "sets both `baseline` and `baseline_manifest`; use exactly one",
+        ),
+        ("".to_owned(), "needs a `baseline` or `baseline_manifest`"),
+    ] {
+        std::fs::write(
+            &spec,
+            format!(
+                r#"{{"schema":2,"projects":[{{"id":"app",{project_fields}"current":{current:?}}}]}}"#
+            ),
+        )
+        .unwrap();
+        bin()
+            .args(["comment", "--projects"])
+            .arg(&spec)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(expected));
+    }
+
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},"current":{current:?}}}]}}"#
+        ),
+    )
+    .unwrap();
+    bin()
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Visual changes"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn gallery_creates_index_html() {
     let dir = TempDir::new().unwrap();
 

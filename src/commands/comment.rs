@@ -114,11 +114,8 @@ fn run_aggregated(
     for project in &spec.projects {
         let arch = resolve_arch(project.arch.as_deref(), &cfg.capture.arches)?;
         let plat = arch.as_deref();
-        let baseline = baseline_snapshot(
-            project.baseline.as_deref(),
-            project.baseline_manifest.as_deref(),
-            plat,
-        )?;
+        let (baseline_root, baseline_manifest) = project.baseline.inputs();
+        let baseline = baseline_snapshot(baseline_root, baseline_manifest, plat)?;
         let current = discover_scoped(&project.current, plat)?;
         let classification = classify(&baseline, &current, &[]);
         let label = project.label.clone().unwrap_or_else(|| project.id.clone());
@@ -200,7 +197,7 @@ struct ProjectsSpec {
 /// One project in a [`ProjectsSpec`]: its identity plus the same inputs the
 /// single-project `comment` path takes, so each row classifies the same way.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ProjectEntryWire")]
 struct ProjectEntry {
     /// Stable project ID; also the default display label.
     id: String,
@@ -209,12 +206,9 @@ struct ProjectEntry {
     label: Option<String>,
     /// Current capture root (`<dir>/[<arch>/]captures.json`).
     current: Utf8PathBuf,
-    /// Baseline image tree. Exactly one of `baseline`/`baseline_manifest` is set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    baseline: Option<Utf8PathBuf>,
-    /// Baseline digest manifest. Exactly one of `baseline`/`baseline_manifest` is set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    baseline_manifest: Option<Utf8PathBuf>,
+    /// Exactly one validated baseline source, serialized in schema 2's flat shape.
+    #[serde(flatten)]
+    baseline: BaselineSource,
     /// CPU-arch subtree to scope to; resolved like `--arch` when omitted.
     #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
@@ -227,6 +221,75 @@ struct ProjectEntry {
     /// Base URL hosting this project's "After" images.
     #[serde(skip_serializing_if = "Option::is_none")]
     current_url: Option<HostedUrl>,
+}
+
+/// The two mutually exclusive baseline sources accepted by an aggregate project.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+enum BaselineSource {
+    /// A baseline capture tree containing images.
+    Capture { baseline: Utf8PathBuf },
+    /// A digest-only baseline manifest.
+    Manifest { baseline_manifest: Utf8PathBuf },
+}
+
+impl BaselineSource {
+    fn inputs(&self) -> (Option<&Utf8Path>, Option<&Utf8Path>) {
+        match self {
+            Self::Capture { baseline } => (Some(baseline), None),
+            Self::Manifest { baseline_manifest } => (None, Some(baseline_manifest)),
+        }
+    }
+}
+
+/// Deserialization-only schema-2 shape. Conversion immediately collapses the two
+/// optional JSON keys into [`BaselineSource`], preserving contextual diagnostics
+/// while keeping invalid states out of the accepted model.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectEntryWire {
+    id: String,
+    label: Option<String>,
+    current: Utf8PathBuf,
+    baseline: Option<Utf8PathBuf>,
+    baseline_manifest: Option<Utf8PathBuf>,
+    arch: Option<String>,
+    gallery_url: Option<HostedUrl>,
+    baseline_url: Option<HostedUrl>,
+    current_url: Option<HostedUrl>,
+}
+
+impl TryFrom<ProjectEntryWire> for ProjectEntry {
+    type Error = String;
+
+    fn try_from(wire: ProjectEntryWire) -> Result<Self, Self::Error> {
+        let baseline = match (wire.baseline, wire.baseline_manifest) {
+            (Some(baseline), None) => BaselineSource::Capture { baseline },
+            (None, Some(baseline_manifest)) => BaselineSource::Manifest { baseline_manifest },
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "project `{}` sets both `baseline` and `baseline_manifest`; use exactly one",
+                    wire.id
+                ));
+            }
+            (None, None) => {
+                return Err(format!(
+                    "project `{}` needs a `baseline` or `baseline_manifest`",
+                    wire.id
+                ));
+            }
+        };
+        Ok(Self {
+            id: wire.id,
+            label: wire.label,
+            current: wire.current,
+            baseline,
+            arch: wire.arch,
+            gallery_url: wire.gallery_url,
+            baseline_url: wire.baseline_url,
+            current_url: wire.current_url,
+        })
+    }
 }
 
 /// An absolute HTTP(S) URL safe to interpolate into generated Markdown.
@@ -290,21 +353,6 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
         }
         if !seen.insert(project.id.as_str()) {
             return Err(invalid(format!("duplicate project id `{}`", project.id)));
-        }
-        match (&project.baseline, &project.baseline_manifest) {
-            (Some(_), Some(_)) => {
-                return Err(invalid(format!(
-                    "project `{}` sets both `baseline` and `baseline_manifest`; use exactly one",
-                    project.id
-                )));
-            }
-            (None, None) => {
-                return Err(invalid(format!(
-                    "project `{}` needs a `baseline` or `baseline_manifest`",
-                    project.id
-                )));
-            }
-            _ => {}
         }
     }
     Ok(spec)
