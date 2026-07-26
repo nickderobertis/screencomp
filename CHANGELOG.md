@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5](https://github.com/nickderobertis/screencomp/compare/v0.4.4...v0.4.5) - 2026-07-26
+
+### Added
+
+- support external focused Pages galleries; exercise external Pages… ([#88](https://github.com/nickderobertis/screencomp/pull/88))
+
 ## [0.4.4](https://github.com/nickderobertis/screencomp/compare/v0.4.3...v0.4.4) - 2026-07-25
 
 ### Added
