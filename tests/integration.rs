@@ -2413,6 +2413,72 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         "{fetch_outputs}"
     );
 
+    let missing_output = dir.path().join("missing-output");
+    let missing_index = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&fetch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "missing/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &missing_output)
+        .output()
+        .unwrap();
+    assert!(missing_index.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&missing_output).unwrap(),
+        "found=false\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing_index.stdout)
+            .contains("no canonical gallery at missing/arm64")
+    );
+
+    let no_branch = dir.path().join("pages-without-gh-pages");
+    std::fs::create_dir_all(&no_branch).unwrap();
+    std::fs::write(no_branch.join("README"), "seed").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "seed"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&no_branch)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let no_branch_script = fetch_script.replace(
+        &remote.display().to_string(),
+        &no_branch.display().to_string(),
+    );
+    let no_branch_output = dir.path().join("no-branch-output");
+    let branch_absent = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(no_branch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "web/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &no_branch_output)
+        .output()
+        .unwrap();
+    assert!(branch_absent.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&no_branch_output).unwrap(),
+        "found=false\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&branch_absent.stdout).contains("no canonical gallery branch yet")
+    );
+
     // Cleanup and prune each carry the same early credential boundary because
     // those event-only jobs do not run the report action's config step.
     let validation_marker = "      - name: Validate external Pages credentials";
