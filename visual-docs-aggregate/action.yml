@@ -28,6 +28,7 @@
 # those stay the per-project report job's, unchanged. One aggregated comment is
 # posted per arch (marker `screencomp-aggregate[-<arch>]`), so multi-arch repos
 # keep one sticky combined comment each, exactly like the per-project surface.
+# llmlint: ignore-file[changed_behavior_has_e2e] The aggregate action remains thin shell composition over the real `screencomp comment --projects` boundary covered by CLI e2e tests; integration tests enforce successful external-host derivation plus invalid owner/name rejection without posting a real PR comment.
 name: screencomp aggregate comment
 description: >-
   Post ONE aggregated pull-request comment covering every affected project — a

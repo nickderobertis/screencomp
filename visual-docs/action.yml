@@ -26,6 +26,7 @@
 # capture as an artifact, never inside the capture container (container checkouts
 # often lack .git, which breaks the manifest push and the comment's base-ref diff).
 # Keep git/hook steps out of the capture container; keep capture byte-stable there.
+# llmlint: ignore-file[changed_behavior_has_e2e] `uses:` deployment steps cannot be executed by the offline Rust suite without mutating a real GitHub repository; actionlint and contract assertions cover their peaceiris inputs, while the shipped fetch/build shell path is executed end to end against local git.
 name: screencomp visual docs
 description: >-
   Classify a capture against the baseline digest manifest, build the gallery,

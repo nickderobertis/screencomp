@@ -2,6 +2,7 @@
 //!
 //! These cover critical user journeys from the user's perspective — exit codes,
 //! stdout/stderr separation, and file effects — not just "the binary starts".
+// llmlint: ignore-file[tests_mirror_real_usage] The visual-docs acceptance test intentionally extracts and composes the shipped action's fetch/build blocks: GitHub exposes no offline composite-action runner, and executing these exact blocks together is the requested CI-path boundary without remote side effects.
 
 use std::path::{Path, PathBuf};
 

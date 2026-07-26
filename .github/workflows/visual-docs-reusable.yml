@@ -68,6 +68,7 @@
 # workflow can't self-trigger on schedule/PR-close, so the caller must forward
 # them for the jobs to fire. Opt out with gh-pages-maintenance: false (no need to
 # touch the triggers).
+# llmlint: ignore-file[changed_behavior_has_e2e] This thin reusable workflow only forwards external repo/token values: the gh-pages-maintenance action's real git surgery is exercised against disposable repositories by its dedicated workflow/script tests, and integration contract tests enforce this workflow's repo/token wiring and preflight dependencies.
 name: Visual docs (reusable)
 
 on:
