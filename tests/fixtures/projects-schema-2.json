@@ -6,6 +6,11 @@
       "current": "shots/current/app",
       "baseline_manifest": "shots/baseline/app.json",
       "gallery_url": "https://example.test/pr-7/app"
+    },
+    {
+      "id": "admin",
+      "current": "shots/current/admin",
+      "baseline": "shots/baseline/admin"
     }
   ]
 }
