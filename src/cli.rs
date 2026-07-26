@@ -183,6 +183,11 @@ pub struct GalleryArgs {
     /// Page title for the generated gallery.
     #[arg(long, default_value = "Screenshot gallery")]
     pub title: String,
+
+    /// Lead with changed, added, and removed shots, keeping unchanged shots out
+    /// of the main flow. Requires `--baseline`.
+    #[arg(long, requires = "baseline")]
+    pub focused: bool,
 }
 
 /// Arguments for [`Command::Comment`].
@@ -205,11 +210,12 @@ pub struct CommentArgs {
     pub baseline_manifest: Option<Utf8PathBuf>,
 
     /// Aggregated mode: a JSON spec listing many projects (each with its own
-    /// baseline, current capture, arch, and gallery URL) rendered into ONE combined
-    /// comment for a multi-project monorepo, instead of one comment per project.
+    /// baseline, current capture, arch, gallery URL, and Before/After image bases)
+    /// rendered into ONE combined comment for a multi-project monorepo.
     /// Keyed by a single stable `--marker` (default `screencomp-aggregate`) so it
     /// upserts in place. Mutually exclusive with the single-project inputs; only the
-    /// projects listed appear (unaffected projects are simply absent).
+    /// Schema 2 is required. Projects with no visual diff appear only in the
+    /// combined summary.
     #[arg(
         long,
         value_name = "FILE",

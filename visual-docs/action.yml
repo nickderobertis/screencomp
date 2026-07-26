@@ -26,6 +26,7 @@
 # capture as an artifact, never inside the capture container (container checkouts
 # often lack .git, which breaks the manifest push and the comment's base-ref diff).
 # Keep git/hook steps out of the capture container; keep capture byte-stable there.
+# llmlint: ignore-file[changed_behavior_has_e2e] `uses:` deployment steps cannot be executed by the offline Rust suite without mutating a real GitHub repository; actionlint and contract assertions cover their peaceiris inputs, while the shipped fetch/build shell path is executed end to end against local git.
 name: screencomp visual docs
 description: >-
   Classify a capture against the baseline digest manifest, build the gallery,
@@ -110,6 +111,14 @@ inputs:
     description: 'Override the "Before" image base URL for the comment (defaults to the canonical main gallery).'
     required: false
     default: ''
+  pages-repository:
+    description: 'External owner/name repository that hosts the gallery. Empty uses the current repository.'
+    required: false
+    default: ''
+  pages-token:
+    description: 'Token with contents:write on pages-repository. Required for external Pages hosting.'
+    required: false
+    default: ''
   github-token:
     description: 'Token for posting the PR comment and deploying Pages.'
     required: false
@@ -129,6 +138,8 @@ runs:
         INPUT_BASELINE_URL: ${{ inputs.baseline-url }}
         INPUT_PAGES: ${{ inputs.pages }}
         INPUT_PUBLISH: ${{ inputs.publish }}
+        INPUT_PAGES_REPOSITORY: ${{ inputs.pages-repository }}
+        INPUT_PAGES_TOKEN: ${{ inputs.pages-token }}
       run: |
         set -euo pipefail
         arch="$INPUT_ARCH"
@@ -141,6 +152,18 @@ runs:
           echo "::error::project must match [A-Za-z0-9_-]" >&2
           exit 1
         fi
+        pages_repo="$INPUT_PAGES_REPOSITORY"
+        if [[ -n "$pages_repo" && ! "$pages_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::pages-repository must be an owner/name" >&2
+          exit 1
+        fi
+        if [ -n "$pages_repo" ] && [ "$INPUT_PAGES" = "true" ] \
+          && [ "$INPUT_PUBLISH" = "true" ] && [ -z "${INPUT_PAGES_TOKEN// }" ]; then
+          echo "::error::pages-token is required when pages-repository is configured; provide a token with contents:write on ${pages_repo}" >&2
+          exit 1
+        fi
+        [ -n "$pages_repo" ] || pages_repo='${{ github.repository }}'
+        echo "pages_repo=$pages_repo" >>"$GITHUB_OUTPUT"
         # Each arch lives in its own subtree, baseline, gallery subpath, and
         # sticky comment, so multiple arch lanes never clobber one another.
         if [ -n "$arch" ]; then
@@ -183,7 +206,9 @@ runs:
         # arch-specific.
         gallery_url="$INPUT_GALLERY_URL"
         baseline_url="$INPUT_BASELINE_URL"
-        main_url="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+        pages_owner="${pages_repo%%/*}"
+        pages_name="${pages_repo#*/}"
+        main_url="https://${pages_owner}.github.io/${pages_name}"
         preview_url="${main_url}/pr-${{ github.event.pull_request.number }}${subpath}"
         if [ "$INPUT_PAGES" = "true" ] && [ "$INPUT_PUBLISH" = "true" ]; then
           [ -n "$gallery_url" ] || gallery_url="$preview_url"
@@ -250,6 +275,46 @@ runs:
           exit "$status"
         fi
 
+    - name: Fetch canonical gallery baseline
+      id: gallery-baseline
+      if: ${{ inputs.pages == 'true' && github.event_name == 'pull_request' }}
+      shell: bash
+      env:
+        PAGES_REPO: ${{ steps.cfg.outputs.pages_repo }}
+        PAGES_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+        DEST: ${{ steps.cfg.outputs.dest }}
+        ARCH: ${{ inputs.arch }}
+      run: |
+        set -euo pipefail
+        checkout="$(mktemp -d "${RUNNER_TEMP}/screencomp-pages-baseline.XXXXXX")"
+        git init -q "$checkout"
+        git -C "$checkout" remote add origin "https://github.com/${PAGES_REPO}.git"
+        if [ -n "$DEST" ]; then
+          git -C "$checkout" sparse-checkout init --cone
+          git -C "$checkout" sparse-checkout set "$DEST"
+        fi
+        auth="$(printf 'x-access-token:%s' "$PAGES_TOKEN" | base64 | tr -d '\n')"
+        if ! git -C "$checkout" \
+          -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
+          fetch --quiet --depth=1 --filter=blob:none origin gh-pages; then
+          echo "no canonical gallery branch yet; building a plain preview"
+          echo "found=false" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+        git -C "$checkout" checkout --quiet --detach FETCH_HEAD
+        baseline="$checkout${DEST:+/$DEST}"
+        if [ ! -f "$baseline/captures.json" ]; then
+          echo "no canonical gallery at ${DEST:-/}; building a plain preview"
+          echo "found=false" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "found=true" >>"$GITHUB_OUTPUT"
+        baseline_root="$baseline"
+        if [ -n "$ARCH" ]; then
+          baseline_root="${baseline%/$ARCH}"
+        fi
+        echo "path=$baseline_root" >>"$GITHUB_OUTPUT"
+
     - name: Build gallery
       if: ${{ inputs.pages == 'true' }}
       shell: bash
@@ -257,14 +322,19 @@ runs:
         CURRENT: ${{ inputs.current }}
         ARCH: ${{ inputs.arch }}
         GALLERY_TITLE: ${{ inputs.gallery-title }}
+        BASELINE_FOUND: ${{ steps.gallery-baseline.outputs.found }}
+        BASELINE_PATH: ${{ steps.gallery-baseline.outputs.path }}
       run: |
         set -euo pipefail
         args=(--input "$CURRENT" --output site --title "$GALLERY_TITLE")
         [ -z "$ARCH" ] || args+=(--arch "$ARCH")
+        if [ "$BASELINE_FOUND" = "true" ]; then
+          args+=(--baseline "$BASELINE_PATH" --focused)
+        fi
         screencomp gallery "${args[@]}"
 
     - name: Deploy canonical gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'push' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'push' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
@@ -275,10 +345,30 @@ runs:
         keep_files: true
 
     - name: Deploy PR preview gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'pull_request' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
+        publish_dir: site
+        destination_dir: pr-${{ github.event.pull_request.number }}${{ steps.cfg.outputs.subpath }}
+        keep_files: true
+
+    - name: Deploy canonical gallery externally
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'push' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        personal_token: ${{ inputs.pages-token }}
+        external_repository: ${{ inputs.pages-repository }}
+        publish_dir: site
+        destination_dir: ${{ steps.cfg.outputs.dest }}
+        keep_files: true
+
+    - name: Deploy PR preview gallery externally
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'pull_request' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        personal_token: ${{ inputs.pages-token }}
+        external_repository: ${{ inputs.pages-repository }}
         publish_dir: site
         destination_dir: pr-${{ github.event.pull_request.number }}${{ steps.cfg.outputs.subpath }}
         keep_files: true

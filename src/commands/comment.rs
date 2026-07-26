@@ -21,7 +21,7 @@ const AGGREGATE_MARKER: &str = "screencomp-aggregate";
 
 /// Only-understood version of the `--projects` spec contract. Bump deliberately:
 /// a new schema is a new contract with the workflow that generates the spec.
-const PROJECTS_SPEC_SCHEMA: u32 = 1;
+const PROJECTS_SPEC_SCHEMA: u32 = 2;
 
 pub(crate) fn run(args: &CommentArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     // Config is loaded once at the run boundary and shared via Ctx.
@@ -110,41 +110,82 @@ fn run_aggregated(
 
     // Classify every project first, owning the label/counts/url so the borrowed
     // `ProjectSummary` view can reference them when rendering.
-    let mut rows: Vec<(String, crate::domain::classify::Counts, Option<String>)> =
-        Vec::with_capacity(spec.projects.len());
+    let mut rows = Vec::with_capacity(spec.projects.len());
     for project in &spec.projects {
         let arch = resolve_arch(project.arch.as_deref(), &cfg.capture.arches)?;
         let plat = arch.as_deref();
-        let baseline = baseline_snapshot(
-            project.baseline.as_deref(),
-            project.baseline_manifest.as_deref(),
-            plat,
-        )?;
+        let (baseline_root, baseline_manifest) = project.baseline.inputs();
+        let baseline = baseline_snapshot(baseline_root, baseline_manifest, plat)?;
         let current = discover_scoped(&project.current, plat)?;
-        let counts = classify(&baseline, &current, &[]).counts;
+        let classification = classify(&baseline, &current, &[]);
         let label = project.label.clone().unwrap_or_else(|| project.id.clone());
-        rows.push((label, counts, project.gallery_url.clone()));
+        rows.push((
+            project.id.clone(),
+            label,
+            classification,
+            project
+                .gallery_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
+            project
+                .baseline_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
+            project
+                .current_url
+                .as_ref()
+                .map(|url| url.as_str().to_owned()),
+        ));
     }
 
     let summaries: Vec<ProjectSummary<'_>> = rows
         .iter()
-        .map(|(label, counts, url)| ProjectSummary {
-            label,
-            counts: *counts,
-            gallery_url: url.as_deref(),
-        })
+        .map(
+            |(id, label, classification, gallery_url, baseline_url, current_url)| ProjectSummary {
+                id,
+                label,
+                classification,
+                gallery_url: gallery_url.as_deref(),
+                bases: ImageBases {
+                    before: baseline_url.as_deref(),
+                    after: current_url.as_deref(),
+                },
+            },
+        )
         .collect();
+
+    let total_differing: usize = summaries
+        .iter()
+        .map(|summary| {
+            let counts = summary.classification.counts;
+            counts.added + counts.changed + counts.removed
+        })
+        .sum();
+    if total_differing > cfg.comment.embed_limit
+        && let Some(summary) = summaries.iter().find(|summary| {
+            let counts = summary.classification.counts;
+            counts.added + counts.changed + counts.removed > 0 && summary.gallery_url.is_none()
+        })
+    {
+        return Err(AppError::InvalidLayout {
+            path: spec_path.to_owned(),
+            reason: format!(
+                "project `{}` has visual changes but no `gallery_url`; over-limit aggregated comments require a focused-diff gallery URL",
+                summary.id
+            ),
+        });
+    }
 
     let title = args.title.as_deref().unwrap_or(&cfg.comment.title);
     let marker = args.marker.as_deref().unwrap_or(AGGREGATE_MARKER);
-    let markdown = render_aggregated_markdown(&summaries, title, marker);
+    let markdown = render_aggregated_markdown(&summaries, title, marker, cfg.comment.embed_limit);
 
     emit(&markdown, args.output.as_deref(), ctx, out)
 }
 
 /// The `--projects` spec: a versioned JSON document naming the projects to fold
 /// into one aggregated comment.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProjectsSpec {
     /// Contract version; only [`PROJECTS_SPEC_SCHEMA`] is understood.
@@ -155,23 +196,130 @@ struct ProjectsSpec {
 
 /// One project in a [`ProjectsSpec`]: its identity plus the same inputs the
 /// single-project `comment` path takes, so each row classifies the same way.
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "ProjectEntryWire")]
 struct ProjectEntry {
     /// Stable project ID; also the default display label.
     id: String,
     /// Display label for the row; defaults to `id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
     /// Current capture root (`<dir>/[<arch>/]captures.json`).
     current: Utf8PathBuf,
-    /// Baseline image tree. Exactly one of `baseline`/`baseline_manifest` is set.
-    baseline: Option<Utf8PathBuf>,
-    /// Baseline digest manifest. Exactly one of `baseline`/`baseline_manifest` is set.
-    baseline_manifest: Option<Utf8PathBuf>,
+    /// Exactly one validated baseline source, serialized in schema 2's flat shape.
+    #[serde(flatten)]
+    baseline: BaselineSource,
     /// CPU-arch subtree to scope to; resolved like `--arch` when omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
     /// Per-project gallery URL linked from the row.
-    gallery_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gallery_url: Option<HostedUrl>,
+    /// Base URL hosting this project's "Before" images.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_url: Option<HostedUrl>,
+    /// Base URL hosting this project's "After" images.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_url: Option<HostedUrl>,
+}
+
+/// The two mutually exclusive baseline sources accepted by an aggregate project.
+#[derive(Debug, serde::Serialize)]
+#[serde(untagged)]
+enum BaselineSource {
+    /// A baseline capture tree containing images.
+    Capture { baseline: Utf8PathBuf },
+    /// A digest-only baseline manifest.
+    Manifest { baseline_manifest: Utf8PathBuf },
+}
+
+impl BaselineSource {
+    fn inputs(&self) -> (Option<&Utf8Path>, Option<&Utf8Path>) {
+        match self {
+            Self::Capture { baseline } => (Some(baseline), None),
+            Self::Manifest { baseline_manifest } => (None, Some(baseline_manifest)),
+        }
+    }
+}
+
+/// Deserialization-only schema-2 shape. Conversion immediately collapses the two
+/// optional JSON keys into [`BaselineSource`], preserving contextual diagnostics
+/// while keeping invalid states out of the accepted model.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectEntryWire {
+    id: String,
+    label: Option<String>,
+    current: Utf8PathBuf,
+    baseline: Option<Utf8PathBuf>,
+    baseline_manifest: Option<Utf8PathBuf>,
+    arch: Option<String>,
+    gallery_url: Option<HostedUrl>,
+    baseline_url: Option<HostedUrl>,
+    current_url: Option<HostedUrl>,
+}
+
+impl TryFrom<ProjectEntryWire> for ProjectEntry {
+    type Error = String;
+
+    fn try_from(wire: ProjectEntryWire) -> Result<Self, Self::Error> {
+        let baseline = match (wire.baseline, wire.baseline_manifest) {
+            (Some(baseline), None) => BaselineSource::Capture { baseline },
+            (None, Some(baseline_manifest)) => BaselineSource::Manifest { baseline_manifest },
+            (Some(_), Some(_)) => {
+                return Err(format!(
+                    "project `{}` sets both `baseline` and `baseline_manifest`; use exactly one",
+                    wire.id
+                ));
+            }
+            (None, None) => {
+                return Err(format!(
+                    "project `{}` needs a `baseline` or `baseline_manifest`",
+                    wire.id
+                ));
+            }
+        };
+        Ok(Self {
+            id: wire.id,
+            label: wire.label,
+            current: wire.current,
+            baseline,
+            arch: wire.arch,
+            gallery_url: wire.gallery_url,
+            baseline_url: wire.baseline_url,
+            current_url: wire.current_url,
+        })
+    }
+}
+
+/// An absolute HTTP(S) URL safe to interpolate into generated Markdown.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(try_from = "String")]
+struct HostedUrl(String);
+
+impl HostedUrl {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for HostedUrl {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let has_scheme = value.starts_with("https://") || value.starts_with("http://");
+        let has_host = value
+            .split_once("://")
+            .is_some_and(|(_, rest)| !rest.is_empty() && !rest.starts_with('/'));
+        let unsafe_character = value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "\"<>[]()".contains(c));
+        if has_scheme && has_host && !unsafe_character {
+            Ok(Self(value))
+        } else {
+            Err("expected an absolute http(s) URL without whitespace or Markdown delimiters")
+        }
+    }
 }
 
 /// Read and validate the `--projects` spec, returning a typed error for a missing
@@ -188,9 +336,14 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
         reason,
     };
     if spec.schema != PROJECTS_SPEC_SCHEMA {
+        let migration = if spec.schema == 1 {
+            "; schema 2 adds per-project `baseline_url` and `current_url` image bases; add those fields and set `schema` to 2"
+        } else {
+            ""
+        };
         return Err(invalid(format!(
-            "unsupported projects spec schema {} (this screencomp understands {PROJECTS_SPEC_SCHEMA})",
-            spec.schema
+            "unsupported projects spec schema {} (this screencomp understands {PROJECTS_SPEC_SCHEMA}){migration}",
+            spec.schema,
         )));
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -200,21 +353,6 @@ fn read_projects_spec(path: &Utf8Path) -> Result<ProjectsSpec, AppError> {
         }
         if !seen.insert(project.id.as_str()) {
             return Err(invalid(format!("duplicate project id `{}`", project.id)));
-        }
-        match (&project.baseline, &project.baseline_manifest) {
-            (Some(_), Some(_)) => {
-                return Err(invalid(format!(
-                    "project `{}` sets both `baseline` and `baseline_manifest`; use exactly one",
-                    project.id
-                )));
-            }
-            (None, None) => {
-                return Err(invalid(format!(
-                    "project `{}` needs a `baseline` or `baseline_manifest`",
-                    project.id
-                )));
-            }
-            _ => {}
         }
     }
     Ok(spec)
@@ -259,4 +397,25 @@ fn image_bases(args: &CommentArgs, manifest_mode: bool) -> (Option<String>, Opti
 /// Drop a single trailing slash so derived subpaths join cleanly.
 fn trim_slash(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schema_two_projects_spec_round_trips_without_empty_optional_fields() {
+        let golden = include_str!("../../tests/fixtures/projects-schema-2.json");
+        let spec: ProjectsSpec = serde_json::from_str(golden).expect("schema-2 golden parses");
+        let rendered = format!(
+            "{}\n",
+            serde_json::to_string_pretty(&spec).expect("schema-2 spec serializes")
+        );
+
+        assert_eq!(rendered, golden);
+        assert!(!rendered.contains("\"label\""));
+        assert!(!rendered.contains("\"arch\""));
+        assert!(!rendered.contains("\"baseline_url\""));
+        assert!(!rendered.contains("\"current_url\""));
+    }
 }

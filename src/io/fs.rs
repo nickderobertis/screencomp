@@ -105,6 +105,15 @@ pub(crate) fn copy_images(
     Ok(images.len())
 }
 
+/// Copy a capture's source index into `output`, preserving its bytes.
+pub(crate) fn copy_index(src_dir: &Utf8Path, output: &Utf8Path) -> Result<(), AppError> {
+    let src = src_dir.join(CAPTURES_FILE);
+    let dest = output.join(CAPTURES_FILE);
+    fs::create_dir_all(output).map_err(|e| AppError::io(format!("creating {output}"), e))?;
+    fs::copy(&src, &dest).map_err(|e| AppError::io(format!("copying {src} to {dest}"), e))?;
+    Ok(())
+}
+
 /// Read `path` into a string, wrapping a failure as an [`AppError::Io`].
 ///
 /// Used by `scope` to read a newline-delimited candidate-path list from a file

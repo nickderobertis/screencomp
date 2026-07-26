@@ -229,6 +229,10 @@ fn gallery_writes_index_html() {
     let source = std::fs::read(std::path::Path::new(&current()).join("about-desktop.png"))
         .expect("source image");
     assert_eq!(copied, source);
+    assert_eq!(
+        std::fs::read(out_dir.path().join("captures.json")).unwrap(),
+        std::fs::read(std::path::Path::new(&current()).join("captures.json")).unwrap()
+    );
 }
 
 #[test]
@@ -288,6 +292,8 @@ fn gallery_diff_mode_copies_both_trees() {
     assert!(html.contains("<h2>Changed</h2>"));
     assert!(out_dir.path().join("baseline/about-desktop.png").exists());
     assert!(out_dir.path().join("current/about-desktop.png").exists());
+    assert!(out_dir.path().join("baseline/captures.json").exists());
+    assert!(out_dir.path().join("current/captures.json").exists());
 }
 
 #[test]
@@ -874,20 +880,24 @@ fn write_aggregate_spec(root: &Path) -> String {
         &spec,
         format!(
             r#"{{
-              "schema": 1,
+              "schema": 2,
               "projects": [
                 {{
                   "id": "app-web",
                   "current": {web_current:?},
                   "baseline_manifest": {web_manifest:?},
-                  "gallery_url": "https://example.test/pr-1/app-web"
+                  "gallery_url": "https://example.test/pr-1/app-web",
+                  "baseline_url": "https://example.test/pr-1/app-web/baseline",
+                  "current_url": "https://example.test/pr-1/app-web/current"
                 }},
                 {{
                   "id": "app-admin",
                   "label": "Admin console",
                   "baseline": {admin_baseline:?},
                   "current": {admin_current:?},
-                  "gallery_url": "https://example.test/pr-1/app-admin"
+                  "gallery_url": "https://example.test/pr-1/app-admin",
+                  "baseline_url": "https://example.test/pr-1/app-admin/baseline",
+                  "current_url": "https://example.test/pr-1/app-admin/current"
                 }}
               ]
             }}"#,
@@ -914,24 +924,21 @@ fn comment_aggregated_renders_one_comment_for_many_projects() {
     assert_eq!(out.matches("<!--").count(), 1, "exactly one marker: {out}");
     // Combined summary totals every project (app-web: +1 ~1; app-admin: -1).
     assert!(
-        out.contains("**2 projects affected · 1 added · 1 changed · 1 removed**"),
-        "{out}"
-    );
-    // One row per project, each with its own counts and gallery link; the label
-    // override wins and rows are label-ordered (Admin console before app-web).
-    let admin = out.find("| Admin console |").expect("admin row");
-    let web = out.find("| app-web |").expect("web row");
-    assert!(admin < web, "rows are label-ordered: {out}");
-    assert!(
         out.contains(
-            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+            "**2 projects with visual changes · 0 projects unchanged · 1 added · 1 changed · 1 removed**"
         ),
         "{out}"
     );
+    assert!(!out.contains("| Project |"), "{out}");
+    let admin = out.find("### Admin console").expect("admin section");
+    let web = out.find("### app-web").expect("web section");
+    assert!(admin < web, "sections are label-ordered: {out}");
     assert!(
-        out.contains(
-            "| Admin console | 0 | 0 | 1 | 1 | [View gallery](https://example.test/pr-1/app-admin) |"
-        ),
+        out.contains("src=\"https://example.test/pr-1/app-web/current/pricing.png\""),
+        "{out}"
+    );
+    assert!(
+        out.contains("src=\"https://example.test/pr-1/app-admin/baseline/about.png\""),
         "{out}"
     );
 }
@@ -947,7 +954,7 @@ fn comment_aggregated_rejects_a_project_without_a_baseline() {
     std::fs::write(
         &spec,
         format!(
-            r#"{{"schema":1,"projects":[{{"id":"app","current":{:?}}}]}}"#,
+            r#"{{"schema":2,"projects":[{{"id":"app","current":{:?}}}]}}"#,
             path_str(&dir.path().join("app/current"))
         ),
     )
@@ -969,6 +976,49 @@ fn comment_aggregated_rejects_an_unknown_schema() {
     let err = result.unwrap_err();
     assert!(matches!(err, AppError::InvalidLayout { .. }), "{err:?}");
     assert!(err.to_string().contains("schema"), "{err}");
+}
+
+#[test]
+fn comment_aggregated_rejects_schema_one_with_migration_guidance() {
+    let dir = TempDir::new().unwrap();
+    let spec = path_str(&dir.path().join("v1.json"));
+    std::fs::write(&spec, r#"{"schema":1,"projects":[]}"#).unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("schema 2 adds"), "{err}");
+    assert!(err.contains("baseline_url"), "{err}");
+    assert!(err.contains("current_url"), "{err}");
+    assert!(err.contains("set `schema` to 2"), "{err}");
+}
+
+#[test]
+fn comment_aggregated_rejects_an_unsafe_image_base() {
+    let dir = TempDir::new().unwrap();
+    write_capture(
+        &dir.path().join("baseline"),
+        &[("home", &[], &digest("aa"), "home.png", b"old")],
+    );
+    write_capture(
+        &dir.path().join("current"),
+        &[("home", &[], &digest("bb"), "home.png", b"new")],
+    );
+    let spec = path_str(&dir.path().join("unsafe.json"));
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},"baseline_url":"javascript:alert(1)",
+            "current_url":"https://example.test/current"}}]}}"#,
+            baseline = path_str(&dir.path().join("baseline")),
+            current = path_str(&dir.path().join("current")),
+        ),
+    )
+    .unwrap();
+
+    let (result, _) = invoke(&["screencomp", "comment", "--projects", &spec]);
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("expected an absolute http(s) URL"), "{err}");
 }
 
 #[test]
@@ -2170,18 +2220,384 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     assert!(
         std::process::Command::new("bash")
             .arg("-c")
-            .arg(executable)
+            .arg(&executable)
             .env("CALLS", &calls)
             .env("CURRENT", "shots/current/shop's")
             .env("ARCH", "x86_64")
             .env("GALLERY_TITLE", "Shop's screenshots")
+            .env("BASELINE_FOUND", "")
+            .env("BASELINE_PATH", "")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let args = std::fs::read_to_string(&calls).unwrap();
+    assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
+    assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
+    assert!(!args.lines().any(|arg| arg == "--baseline"));
+
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&executable)
+            .env("CALLS", &calls)
+            .env("CURRENT", "shots/current/shop's")
+            .env("ARCH", "x86_64")
+            .env("GALLERY_TITLE", "Shop's screenshots")
+            .env("BASELINE_FOUND", "true")
+            .env("BASELINE_PATH", "deployed/shop's")
             .status()
             .unwrap()
             .success()
     );
     let args = std::fs::read_to_string(calls).unwrap();
-    assert!(args.lines().any(|arg| arg == "shots/current/shop's"));
-    assert!(args.lines().any(|arg| arg == "Shop's screenshots"));
+    assert!(args.lines().any(|arg| arg == "--baseline"));
+    assert!(args.lines().any(|arg| arg == "deployed/shop's"));
+    assert!(args.lines().any(|arg| arg == "--focused"));
+}
+
+#[cfg(unix)]
+#[test]
+fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let aggregate = std::fs::read_to_string(root.join("visual-docs-aggregate/action.yml")).unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+
+    for contract in [
+        "\n  pages-repository:",
+        "\n  pages-token:",
+        "external_repository: ${{ inputs.pages-repository }}",
+        "personal_token: ${{ inputs.pages-token }}",
+        "args+=(--baseline \"$BASELINE_PATH\" --focused)",
+        "repo: ${{ inputs.pages-repository || github.repository }}",
+    ] {
+        assert!(
+            action.contains(contract)
+                || reusable.contains(contract)
+                || aggregate.contains(contract)
+                || readme.contains(contract),
+            "{contract}"
+        );
+    }
+    assert!(
+        reusable.contains("pages-repository: ${{ inputs.pages-repository }}")
+            && reusable.contains("pages-token: ${{ secrets.pages-token }}"),
+        "reusable workflow must forward external Pages credentials"
+    );
+    assert!(
+        aggregate.contains("pages_repo=\"${OWNER}/${REPO_NAME}\"")
+            && aggregate
+                .contains("main_url=\"https://${pages_repo%%/*}.github.io/${pages_repo#*/}\"")
+            && aggregate.contains("pages-repository must be an owner/name"),
+        "aggregated comments must validate and derive the same external Pages host"
+    );
+    assert!(
+        readme.contains("pages-repository: your-org/visual-docs-pages")
+            && readme.contains("pages-token: ${{ secrets.VISUAL_DOCS_PAGES_TOKEN }}")
+            && readme.contains("must be public"),
+        "external Pages documentation must stay aligned with the action contract"
+    );
+
+    let config_step = action.find("    - name: Resolve config").unwrap();
+    let config_run = action[config_step..].find("      run: |\n").unwrap()
+        + config_step
+        + "      run: |\n".len();
+    let config_end = action[config_run..]
+        .find("\n    - name:")
+        .map(|offset| config_run + offset)
+        .unwrap();
+    let config_script = action[config_run..config_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("${{ github.repository }}", "source/app")
+        .replace("${{ github.repository_owner }}", "source")
+        .replace("${{ github.event.repository.name }}", "app")
+        .replace("${{ github.event.pull_request.number }}", "17");
+    let dir = TempDir::new().unwrap();
+    let output = dir.path().join("output");
+    let base_env = |command: &mut std::process::Command| {
+        command
+            .env("INPUT_ARCH", "arm64")
+            .env("INPUT_PROJECT", "web")
+            .env("INPUT_MANIFEST", "")
+            .env("INPUT_GALLERY_URL", "")
+            .env("INPUT_BASELINE_URL", "")
+            .env("INPUT_PAGES", "true")
+            .env("INPUT_PUBLISH", "true")
+            .env("GITHUB_OUTPUT", &output);
+    };
+
+    let mut missing = std::process::Command::new("bash");
+    missing.arg("-c").arg(&config_script);
+    base_env(&mut missing);
+    let failure = missing
+        .env("INPUT_PAGES_REPOSITORY", "docs/galleries")
+        .env("INPUT_PAGES_TOKEN", "")
+        .output()
+        .unwrap();
+    assert!(!failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&failure.stderr).contains("pages-token is required"),
+        "{}",
+        String::from_utf8_lossy(&failure.stderr)
+    );
+    let mut invalid = std::process::Command::new("bash");
+    invalid.arg("-c").arg(&config_script);
+    base_env(&mut invalid);
+    let failure = invalid
+        .env("INPUT_PAGES_REPOSITORY", "not-a-repository")
+        .env("INPUT_PAGES_TOKEN", "token")
+        .output()
+        .unwrap();
+    assert!(!failure.status.success());
+    assert!(
+        String::from_utf8_lossy(&failure.stderr).contains("pages-repository must be an owner/name")
+    );
+
+    let mut external = std::process::Command::new("bash");
+    external.arg("-c").arg(&config_script);
+    base_env(&mut external);
+    let success = external
+        .env("INPUT_PAGES_REPOSITORY", "docs/galleries")
+        .env("INPUT_PAGES_TOKEN", "token")
+        .output()
+        .unwrap();
+    assert!(
+        success.status.success(),
+        "{}",
+        String::from_utf8_lossy(&success.stderr)
+    );
+    let outputs = std::fs::read_to_string(&output).unwrap();
+    assert!(
+        outputs.contains("gallery_url=https://docs.github.io/galleries/pr-17/web/arm64"),
+        "{outputs}"
+    );
+    assert!(
+        outputs.contains("baseline_url=https://docs.github.io/galleries/web/arm64"),
+        "{outputs}"
+    );
+
+    // Execute the action's canonical-baseline fetch against a real local
+    // gh-pages branch. Only the remote URL is replaced; sparse checkout,
+    // branch fetch, index detection, and output resolution are the shipped shell.
+    let remote = dir.path().join("pages");
+    std::fs::create_dir_all(remote.join("web/arm64")).unwrap();
+    std::fs::write(
+        remote.join("web/arm64/captures.json"),
+        r#"{"schema":1,"shots":[]}"#,
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "gallery"],
+        vec!["branch", "-M", "gh-pages"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&remote)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let fetch_step = action
+        .find("    - name: Fetch canonical gallery baseline")
+        .unwrap();
+    let fetch_run =
+        action[fetch_step..].find("      run: |\n").unwrap() + fetch_step + "      run: |\n".len();
+    let fetch_end = action[fetch_run..]
+        .find("\n    - name:")
+        .map(|offset| fetch_run + offset)
+        .unwrap();
+    let fetch_script = action[fetch_run..fetch_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(
+            "\"https://github.com/${PAGES_REPO}.git\"",
+            &format!("\"{}\"", remote.display()),
+        );
+    let fetch_output = dir.path().join("fetch-output");
+    let fetch = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&fetch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "web/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &fetch_output)
+        .output()
+        .unwrap();
+    assert!(
+        fetch.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetch.stderr)
+    );
+    let fetch_outputs = std::fs::read_to_string(&fetch_output).unwrap();
+    assert!(fetch_outputs.contains("found=true"), "{fetch_outputs}");
+    let baseline_root = fetch_outputs
+        .lines()
+        .find_map(|line| line.strip_prefix("path="))
+        .unwrap();
+    assert!(
+        Path::new(baseline_root)
+            .join("arm64/captures.json")
+            .is_file(),
+        "{fetch_outputs}"
+    );
+
+    let missing_output = dir.path().join("missing-output");
+    let missing_index = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&fetch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "missing/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &missing_output)
+        .output()
+        .unwrap();
+    assert!(missing_index.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&missing_output).unwrap(),
+        "found=false\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing_index.stdout)
+            .contains("no canonical gallery at missing/arm64")
+    );
+
+    let no_branch = dir.path().join("pages-without-gh-pages");
+    std::fs::create_dir_all(&no_branch).unwrap();
+    std::fs::write(no_branch.join("README"), "seed").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "seed"],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&no_branch)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let no_branch_script = fetch_script.replace(
+        &remote.display().to_string(),
+        &no_branch.display().to_string(),
+    );
+    let no_branch_output = dir.path().join("no-branch-output");
+    let branch_absent = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(no_branch_script)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "web/arm64")
+        .env("ARCH", "arm64")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &no_branch_output)
+        .output()
+        .unwrap();
+    assert!(branch_absent.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&no_branch_output).unwrap(),
+        "found=false\n"
+    );
+    assert!(
+        String::from_utf8_lossy(&branch_absent.stdout).contains("no canonical gallery branch yet")
+    );
+
+    // One first-job preflight gates matrix resolution and every side-effecting
+    // path, including event-only maintenance jobs.
+    for dependency in [
+        "arches:\n    needs: pages-preflight",
+        "needs: [pages-preflight, arches]",
+        "needs: [pages-preflight, arches, capture]",
+        "cleanup-preview:\n    needs: pages-preflight",
+        "prune-history:\n    needs: pages-preflight",
+    ] {
+        assert!(reusable.contains(dependency), "{dependency}");
+    }
+    let validation_marker = "      - name: Validate external Pages configuration";
+    assert_eq!(reusable.matches(validation_marker).count(), 1);
+    let block = &reusable[reusable.find(validation_marker).unwrap()..];
+    let run_start = block.find("        run: |\n").unwrap() + "        run: |\n".len();
+    let run_end = block[run_start..].find("\n\n  #").unwrap() + run_start;
+    let script = block[run_start..run_end]
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (repo, token, succeeds) in [
+        ("", "", true),
+        ("docs/galleries", "token", true),
+        ("docs/galleries", "", false),
+        ("invalid", "token", false),
+    ] {
+        let result = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .env("PAGES_REPOSITORY", repo)
+            .env("PAGES_TOKEN", token)
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.success(),
+            succeeds,
+            "repo={repo:?}, stderr={}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let aggregate_step = aggregate
+        .find("    - name: Render and upsert the aggregated comment")
+        .unwrap();
+    let aggregate_run = aggregate[aggregate_step..].find("      run: |\n").unwrap()
+        + aggregate_step
+        + "      run: |\n".len();
+    let aggregate_end = aggregate[aggregate_run..]
+        .find("\n    - name:")
+        .map_or(aggregate.len(), |offset| aggregate_run + offset);
+    let aggregate_script = aggregate[aggregate_run..aggregate_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let invalid_aggregate = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(aggregate_script)
+        .env("COMMENT_BASE_REF", "")
+        .env("BASE_REF_DEFAULT", "")
+        .env("PAGES_REPOSITORY", "invalid")
+        .output()
+        .unwrap();
+    assert!(!invalid_aggregate.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_aggregate.stderr)
+            .contains("pages-repository must be an owner/name")
+    );
+
+    let justfile = std::fs::read_to_string(root.join("justfile")).unwrap();
+    assert!(
+        justfile.contains("\ngate: check\n"),
+        "`just gate` must remain an alias of the full check gate"
+    );
 }
 
 #[test]
@@ -2229,11 +2645,13 @@ fn aggregated_comment_mode_is_wired_end_to_end() {
         "per-project comment steps must be suppressed in aggregated mode"
     );
 
-    // Aggregate action: builds a schema-1 projects spec and renders it with a
+    // Aggregate action: builds a schema-2 projects spec and renders it with a
     // single stable aggregate marker, upserting by that marker.
     assert!(
         aggregate.contains("screencomp comment --projects")
-            && aggregate.contains("{schema: 1, projects: $projects}")
+            && aggregate.contains("{schema: 2, projects: $projects}")
+            && aggregate.contains("baseline_url: $baseline_url")
+            && aggregate.contains("current_url: $current_url")
             && aggregate.contains("marker=\"screencomp-aggregate\""),
         "aggregate action must compose `comment --projects` under a stable marker"
     );

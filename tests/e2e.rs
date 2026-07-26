@@ -2,6 +2,7 @@
 //!
 //! These cover critical user journeys from the user's perspective — exit codes,
 //! stdout/stderr separation, and file effects — not just "the binary starts".
+// llmlint: ignore-file[tests_mirror_real_usage] The visual-docs acceptance test intentionally extracts and composes the shipped action's fetch/build blocks: GitHub exposes no offline composite-action runner, and executing these exact blocks together is the requested CI-path boundary without remote side effects.
 
 use std::path::{Path, PathBuf};
 
@@ -296,12 +297,16 @@ fn comment_aggregated_upserts_one_comment_across_projects() {
         &spec,
         format!(
             r#"{{
-              "schema": 1,
+              "schema": 2,
               "projects": [
                 {{"id":"app-web","baseline":{web_b:?},"current":{web_c:?},
-                  "gallery_url":"https://example.test/pr-1/app-web"}},
+                  "gallery_url":"https://example.test/pr-1/app-web",
+                  "baseline_url":"https://example.test/pr-1/app-web/baseline",
+                  "current_url":"https://example.test/pr-1/app-web/current"}},
                 {{"id":"app-admin","baseline":{adm_b:?},"current":{adm_c:?},
-                  "gallery_url":"https://example.test/pr-1/app-admin"}}
+                  "gallery_url":"https://example.test/pr-1/app-admin",
+                  "baseline_url":"https://example.test/pr-1/app-admin/baseline",
+                  "current_url":"https://example.test/pr-1/app-admin/current"}}
               ]
             }}"#,
             web_b = root.join("app-web/baseline").to_str().unwrap(),
@@ -326,18 +331,97 @@ fn comment_aggregated_upserts_one_comment_across_projects() {
     assert!(md.starts_with("<!-- screencomp-aggregate -->"), "{md}");
     assert_eq!(md.matches("<!--").count(), 1, "exactly one marker: {md}");
     assert!(
-        md.contains("**2 projects affected · 1 added · 1 changed · 0 removed**"),
-        "{md}"
-    );
-    // An affected-but-unchanged project still appears (all zero counts), never
-    // omitted and never mislabeled as removed.
-    assert!(md.contains("| app-admin | 0 | 0 | 0 | 1 |"), "{md}");
-    assert!(
         md.contains(
-            "| app-web | 1 | 1 | 0 | 0 | [View gallery](https://example.test/pr-1/app-web) |"
+            "**1 project with visual changes · 1 project unchanged · 1 added · 1 changed · 0 removed**"
         ),
         "{md}"
     );
+    assert!(!md.contains("| Project |"), "{md}");
+    assert!(!md.contains("### app-admin"), "{md}");
+    assert!(
+        md.contains("src=\"https://example.test/pr-1/app-web/baseline/home.png\""),
+        "{md}"
+    );
+    assert!(
+        md.contains("src=\"https://example.test/pr-1/app-web/current/home.png\""),
+        "{md}"
+    );
+}
+
+#[test]
+fn comment_aggregated_links_focused_diffs_over_the_limit() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let vp: &[(&str, &str)] = &[("viewport", "desktop")];
+    write_capture(
+        &root.join("baseline"),
+        &[("home", vp, &digest("aa"), "home.png", b"old")],
+    );
+    write_capture(
+        &root.join("current"),
+        &[
+            ("home", vp, &digest("bb"), "home.png", b"new"),
+            ("added", vp, &digest("cc"), "added.png", b"add"),
+        ],
+    );
+    let spec = root.join("projects.json");
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},
+            "baseline_url":"https://example.test/pr-1/app/baseline",
+            "current_url":"https://example.test/pr-1/app/current"}}]}}"#,
+            baseline = root.join("baseline").to_str().unwrap(),
+            current = root.join("current").to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    let config = root.join("screencomp.toml");
+    std::fs::write(&config, "[comment]\nembed_limit = 1\n").unwrap();
+
+    bin()
+        .args(["--config"])
+        .arg(&config)
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "over-limit aggregated comments require a focused-diff gallery URL",
+        ));
+
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},
+            "current":{current:?},"gallery_url":"https://example.test/pr-1/app",
+            "baseline_url":"https://example.test/pr-1/app/baseline",
+            "current_url":"https://example.test/pr-1/app/current"}}]}}"#,
+            baseline = root.join("baseline").to_str().unwrap(),
+            current = root.join("current").to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+
+    let output = bin()
+        .args(["--config"])
+        .arg(&config)
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let md = String::from_utf8(output).unwrap();
+    assert!(md.contains("| Project |"), "{md}");
+    assert!(
+        md.contains("[View focused diff](https://example.test/pr-1/app)"),
+        "{md}"
+    );
+    assert!(!md.contains("<img"), "{md}");
 }
 
 #[test]
@@ -352,6 +436,52 @@ fn comment_projects_conflicts_with_single_project_inputs() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn comment_projects_rejects_invalid_baseline_choice_then_accepts_one_source() {
+    let dir = TempDir::new().unwrap();
+    let spec = dir.path().join("projects.json");
+    let baseline = baseline().to_str().unwrap().to_owned();
+    let current = current().to_str().unwrap().to_owned();
+
+    for (project_fields, expected) in [
+        (
+            format!(r#""baseline":{baseline:?},"baseline_manifest":"baseline.json","#),
+            "sets both `baseline` and `baseline_manifest`; use exactly one",
+        ),
+        ("".to_owned(), "needs a `baseline` or `baseline_manifest`"),
+    ] {
+        std::fs::write(
+            &spec,
+            format!(
+                r#"{{"schema":2,"projects":[{{"id":"app",{project_fields}"current":{current:?}}}]}}"#
+            ),
+        )
+        .unwrap();
+        bin()
+            .args(["comment", "--projects"])
+            .arg(&spec)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(expected));
+    }
+
+    std::fs::write(
+        &spec,
+        format!(
+            r#"{{"schema":2,"projects":[{{"id":"app","baseline":{baseline:?},"current":{current:?}}}]}}"#
+        ),
+    )
+    .unwrap();
+    bin()
+        .args(["comment", "--projects"])
+        .arg(&spec)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Visual changes"))
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
@@ -376,6 +506,10 @@ fn gallery_creates_index_html() {
     let copied = std::fs::read(dir.path().join("about-desktop.png")).expect("image copied");
     let source = std::fs::read(current().join("about-desktop.png")).expect("source image");
     assert_eq!(copied, source);
+    assert_eq!(
+        std::fs::read(dir.path().join("captures.json")).unwrap(),
+        std::fs::read(current().join("captures.json")).unwrap()
+    );
 }
 
 #[test]
@@ -494,6 +628,252 @@ fn gallery_diff_mode_renders_before_after() {
     // Both image trees are copied so before/after both render.
     assert!(dir.path().join("baseline/about-desktop.png").exists());
     assert!(dir.path().join("current/about-desktop.png").exists());
+}
+
+#[test]
+fn deployed_canonical_gallery_drives_a_focused_preview_diff() {
+    let dir = TempDir::new().unwrap();
+    let canonical = dir.path().join("canonical");
+    let preview = dir.path().join("preview");
+
+    // This is the same two-command boundary the Pages workflow uses: first
+    // publish a plain canonical gallery, then consume its deployed subtree as
+    // the next run's baseline.
+    bin()
+        .args(["gallery", "--input"])
+        .arg(baseline())
+        .arg("--output")
+        .arg(&canonical)
+        .assert()
+        .success();
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--baseline")
+        .arg(&canonical)
+        .arg("--focused")
+        .arg("--output")
+        .arg(&preview)
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(preview.join("index.html")).expect("preview");
+    assert!(html.contains("<h2>Changed</h2>"), "{html}");
+    assert!(html.contains("<h2>Added</h2>"), "{html}");
+    assert!(html.contains("<summary>Unchanged ("), "{html}");
+    assert!(!html.contains("<h2>Unchanged</h2>"), "{html}");
+    assert!(preview.join("baseline/captures.json").exists());
+    assert!(preview.join("current/captures.json").exists());
+    assert!(preview.join("baseline/about-desktop.png").exists());
+    assert!(preview.join("current/about-desktop.png").exists());
+}
+
+#[test]
+fn focused_gallery_requires_a_baseline() {
+    bin()
+        .args(["gallery", "--input"])
+        .arg(current())
+        .arg("--focused")
+        .arg("--output")
+        .arg(TempDir::new().unwrap().path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "required arguments were not provided",
+        ))
+        .stderr(predicate::str::contains("--baseline <DIR>"));
+}
+
+#[cfg(unix)]
+#[test]
+fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical() {
+    let dir = TempDir::new().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_screencomp"));
+    let binary_dir = binary.parent().unwrap();
+    let path = std::env::join_paths(std::iter::once(binary_dir.to_path_buf()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+
+    let canonical = dir.path().join("canonical-repository");
+    std::fs::create_dir_all(&canonical).unwrap();
+    assert!(
+        std::process::Command::new(&binary)
+            .args(["gallery", "--input"])
+            .arg(baseline())
+            .arg("--output")
+            .arg(&canonical)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for args in [
+        ["init", "-q"].as_slice(),
+        ["config", "user.name", "Test"].as_slice(),
+        ["config", "user.email", "test@example.com"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "-qm", "canonical"].as_slice(),
+        ["branch", "-M", "gh-pages"].as_slice(),
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&canonical)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    let fetch_step = action
+        .find("    - name: Fetch canonical gallery baseline")
+        .unwrap();
+    let fetch_run =
+        action[fetch_step..].find("      run: |\n").unwrap() + fetch_step + "      run: |\n".len();
+    let fetch_end = action[fetch_run..].find("\n    - name:").unwrap() + fetch_run;
+    let fetch_script = action[fetch_run..fetch_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace(
+            "\"https://github.com/${PAGES_REPO}.git\"",
+            &format!("\"{}\"", canonical.display()),
+        );
+    let build_step = action.find("    - name: Build gallery").unwrap();
+    let build_run =
+        action[build_step..].find("      run: |\n").unwrap() + build_step + "      run: |\n".len();
+    let build_end = action[build_run..].find("\n    - name:").unwrap() + build_run;
+    let build_script = action[build_run..build_end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let preview_work = dir.path().join("preview-work");
+    std::fs::create_dir_all(&preview_work).unwrap();
+    let fetch_output = preview_work.join("fetch-output");
+    let fetched = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&fetch_script)
+        .current_dir(&preview_work)
+        .env("PAGES_REPO", "docs/galleries")
+        .env("PAGES_TOKEN", "token")
+        .env("DEST", "")
+        .env("ARCH", "")
+        .env("RUNNER_TEMP", dir.path())
+        .env("GITHUB_OUTPUT", &fetch_output)
+        .output()
+        .unwrap();
+    assert!(
+        fetched.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fetched.stderr)
+    );
+    let fetch_outputs = std::fs::read_to_string(&fetch_output).unwrap();
+    let baseline_path = fetch_outputs
+        .lines()
+        .find_map(|line| line.strip_prefix("path="))
+        .unwrap();
+    let built = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&build_script)
+        .current_dir(&preview_work)
+        .env("PATH", &path)
+        .env("CURRENT", current())
+        .env("ARCH", "")
+        .env("GALLERY_TITLE", "PR preview")
+        .env("BASELINE_FOUND", "true")
+        .env("BASELINE_PATH", baseline_path)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let site = preview_work.join("site");
+    let html = std::fs::read_to_string(site.join("index.html")).unwrap();
+    assert!(html.contains("<h2>Changed</h2>"), "{html}");
+    assert!(html.contains("<summary>Unchanged ("), "{html}");
+    assert!(!html.contains("<h2>Unchanged</h2>"), "{html}");
+    for file in [
+        "baseline/captures.json",
+        "current/captures.json",
+        "baseline/about-desktop.png",
+        "current/about-desktop.png",
+    ] {
+        assert!(site.join(file).is_file(), "{file}");
+    }
+
+    let no_canonical = dir.path().join("repository-without-gh-pages");
+    std::fs::create_dir_all(&no_canonical).unwrap();
+    std::fs::write(no_canonical.join("README"), "seed").unwrap();
+    for args in [
+        ["init", "-q"].as_slice(),
+        ["config", "user.name", "Test"].as_slice(),
+        ["config", "user.email", "test@example.com"].as_slice(),
+        ["add", "."].as_slice(),
+        ["commit", "-qm", "seed"].as_slice(),
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&no_canonical)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let recovery_fetch = fetch_script.replace(
+        &canonical.display().to_string(),
+        &no_canonical.display().to_string(),
+    );
+    let recovery_work = dir.path().join("recovery-work");
+    std::fs::create_dir_all(&recovery_work).unwrap();
+    let recovery_output = recovery_work.join("fetch-output");
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(recovery_fetch)
+            .current_dir(&recovery_work)
+            .env("PAGES_REPO", "docs/galleries")
+            .env("PAGES_TOKEN", "token")
+            .env("DEST", "")
+            .env("ARCH", "")
+            .env("RUNNER_TEMP", dir.path())
+            .env("GITHUB_OUTPUT", &recovery_output)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&recovery_output).unwrap(),
+        "found=false\n"
+    );
+    assert!(
+        std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&build_script)
+            .current_dir(&recovery_work)
+            .env("PATH", &path)
+            .env("CURRENT", current())
+            .env("ARCH", "")
+            .env("GALLERY_TITLE", "First preview")
+            .env("BASELINE_FOUND", "false")
+            .env("BASELINE_PATH", "")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let recovery_site = recovery_work.join("site");
+    let recovery_html = std::fs::read_to_string(recovery_site.join("index.html")).unwrap();
+    assert!(!recovery_html.contains("<h2>Changed</h2>"));
+    assert!(recovery_site.join("captures.json").is_file());
+    assert!(recovery_site.join("about-desktop.png").is_file());
+    assert!(!recovery_site.join("baseline").exists());
 }
 
 /// Host CPU arch, mirroring `commands::arch::host_arch`.

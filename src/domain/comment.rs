@@ -93,32 +93,37 @@ pub(crate) fn render_markdown(
     md
 }
 
-/// One affected project's line in an aggregated comment: its display `label`, its
-/// classified `counts`, and an optional link to its own gallery.
+/// One project's inputs to an aggregated comment, including stable identity,
+/// classification, hosted image bases, and an optional focused-gallery link.
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectSummary<'a> {
+    /// Stable unique project identity, used as the ordering tie-breaker.
+    pub(crate) id: &'a str,
     /// Human-facing project name (defaults to the project ID).
     pub(crate) label: &'a str,
-    /// Added/changed/removed/unchanged counts for this project.
-    pub(crate) counts: Counts,
+    /// Shot-level classification for this project.
+    pub(crate) classification: &'a Classification,
     /// Per-project gallery URL, linked from the row when present.
     pub(crate) gallery_url: Option<&'a str>,
+    /// Hosted image roots used by the inline form.
+    pub(crate) bases: ImageBases<'a>,
 }
 
 /// Render ONE aggregated pull-request comment covering every affected `project`.
 ///
 /// Where [`render_markdown`] renders a single project's comment (a monorepo with
 /// N projects gets N sticky comments), this consolidates them into one: a combined
-/// summary line plus a table with one row per project — its
-/// added/changed/removed/unchanged counts and a link to its own gallery. Only the
-/// projects passed in appear; a monorepo's unaffected projects are simply absent
-/// (never listed as removed). Rows are ordered by label so the output is
-/// byte-stable regardless of the caller's order. `marker` is embedded as
-/// `<!-- marker -->` so the single comment upserts in place across runs.
+/// summary line followed by inline screenshots when the total diff is at or below
+/// `embed_limit`, or a table linking affected projects to their focused galleries
+/// when it is larger. Projects with no visual diff contribute to the summary but
+/// never get an inline section or table row. Projects and their classifications
+/// are ordered deterministically. `marker` is embedded as `<!-- marker -->` so
+/// the single comment upserts in place across runs.
 pub(crate) fn render_aggregated_markdown(
     projects: &[ProjectSummary<'_>],
     title: &str,
     marker: &str,
+    embed_limit: usize,
 ) -> String {
     let mut md = String::new();
     md.push_str(&format!("<!-- {marker} -->\n"));
@@ -130,40 +135,68 @@ pub(crate) fn render_aggregated_markdown(
     }
 
     let mut total = Counts::default();
+    let mut changed_projects = 0;
     for p in projects {
-        total.added += p.counts.added;
-        total.changed += p.counts.changed;
-        total.removed += p.counts.removed;
-        total.unchanged += p.counts.unchanged;
+        let counts = p.classification.counts;
+        total.added += counts.added;
+        total.changed += counts.changed;
+        total.removed += counts.removed;
+        total.unchanged += counts.unchanged;
+        if differing(counts) > 0 {
+            changed_projects += 1;
+        }
     }
-    let n = projects.len();
-    let noun = if n == 1 { "project" } else { "projects" };
+    let unchanged_projects = projects.len() - changed_projects;
     md.push_str(&format!(
-        "**{n} {noun} affected · {} added · {} changed · {} removed**\n\n",
-        total.added, total.changed, total.removed
+        "**{} · {} · {} added · {} changed · {} removed**\n\n",
+        project_count(changed_projects, "with visual changes"),
+        project_count(unchanged_projects, "unchanged"),
+        total.added,
+        total.changed,
+        total.removed
     ));
+
+    let mut ordered: Vec<&ProjectSummary<'_>> = projects.iter().collect();
+    ordered.sort_by(|a, b| (a.label, a.id).cmp(&(b.label, b.id)));
+    let total_differing = differing(total);
+    if total_differing <= embed_limit {
+        for p in ordered
+            .into_iter()
+            .filter(|p| differing(p.classification.counts) > 0)
+        {
+            md.push_str(&format!("### {}\n\n", p.label));
+            push_embedded_at_level(&mut md, p.classification, p.bases, "####");
+        }
+        return md;
+    }
 
     md.push_str("| Project | Added | Changed | Removed | Unchanged | Gallery |\n");
     md.push_str("|:--------|------:|--------:|--------:|----------:|:--------|\n");
-    let mut ordered: Vec<&ProjectSummary<'_>> = projects.iter().collect();
-    ordered.sort_by(|a, b| a.label.cmp(b.label));
-    for p in ordered {
+    for p in ordered
+        .into_iter()
+        .filter(|p| differing(p.classification.counts) > 0)
+    {
+        let counts = p.classification.counts;
         let gallery = match p.gallery_url {
-            Some(url) => format!("[View gallery]({url})"),
+            Some(url) => format!("[View focused diff]({url})"),
             None => "—".to_owned(),
         };
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} | {} |\n",
-            p.label,
-            p.counts.added,
-            p.counts.changed,
-            p.counts.removed,
-            p.counts.unchanged,
-            gallery,
+            p.label, counts.added, counts.changed, counts.removed, counts.unchanged, gallery,
         ));
     }
 
     md
+}
+
+fn differing(counts: Counts) -> usize {
+    counts.added + counts.changed + counts.removed
+}
+
+fn project_count(count: usize, qualifier: &str) -> String {
+    let noun = if count == 1 { "project" } else { "projects" };
+    format!("{count} {noun} {qualifier}")
 }
 
 /// Public URL of an image under `base`, joined with exactly one separating slash.
@@ -185,6 +218,15 @@ fn side_url(base: Option<&str>, image: Option<&str>) -> Option<String> {
 /// carries no image). A shot whose required side does not resolve falls back to a
 /// label bullet so nothing silently 404s. Returns whether anything was written.
 fn push_embedded(md: &mut String, classification: &Classification, bases: ImageBases<'_>) -> bool {
+    push_embedded_at_level(md, classification, bases, "###")
+}
+
+fn push_embedded_at_level(
+    md: &mut String,
+    classification: &Classification,
+    bases: ImageBases<'_>,
+    heading_level: &str,
+) -> bool {
     let changed: Vec<&Entry> = classification
         .entries
         .iter()
@@ -221,13 +263,13 @@ fn push_embedded(md: &mut String, classification: &Classification, bases: ImageB
             }
         }
         if !section.is_empty() {
-            md.push_str("### Changed\n");
+            md.push_str(&format!("{heading_level} Changed\n"));
             md.push_str(&section);
             any = true;
         }
         if !bullets.is_empty() {
             if !any {
-                md.push_str("### Changed\n");
+                md.push_str(&format!("{heading_level} Changed\n"));
             }
             for b in &bullets {
                 md.push_str(b);
@@ -244,6 +286,7 @@ fn push_embedded(md: &mut String, classification: &Classification, bases: ImageB
         "Added",
         bases.after,
         true,
+        heading_level,
     );
     any |= push_embedded_single(
         md,
@@ -252,6 +295,7 @@ fn push_embedded(md: &mut String, classification: &Classification, bases: ImageB
         "Removed",
         bases.before,
         false,
+        heading_level,
     );
     any
 }
@@ -268,6 +312,7 @@ fn push_embedded_single(
     heading: &str,
     base: Option<&str>,
     current: bool,
+    heading_level: &str,
 ) -> bool {
     let items: Vec<&Entry> = classification
         .entries
@@ -277,7 +322,7 @@ fn push_embedded_single(
     if items.is_empty() {
         return false;
     }
-    md.push_str(&format!("### {heading}\n"));
+    md.push_str(&format!("{heading_level} {heading}\n"));
     for e in items {
         let label = e.key.label();
         let image = if current {
@@ -507,81 +552,179 @@ mod tests {
         );
     }
 
-    fn summary<'a>(label: &'a str, counts: Counts, url: Option<&'a str>) -> ProjectSummary<'a> {
+    fn summary<'a>(
+        id: &'a str,
+        label: &'a str,
+        classification: &'a Classification,
+        url: Option<&'a str>,
+        bases: ImageBases<'a>,
+    ) -> ProjectSummary<'a> {
         ProjectSummary {
+            id,
             label,
-            counts,
+            classification,
             gallery_url: url,
+            bases,
         }
     }
 
     #[test]
-    fn aggregated_lists_one_row_per_project_with_a_combined_summary() {
+    fn aggregated_embeds_a_mixed_diff_exactly_at_the_limit() {
+        let web = classification();
+        let admin = Classification {
+            entries: vec![entry("legacy", Status::Removed)],
+            counts: Counts {
+                removed: 1,
+                unchanged: 5,
+                ..Counts::default()
+            },
+        };
+        let unchanged = Classification {
+            entries: vec![entry("home", Status::Unchanged)],
+            counts: Counts {
+                unchanged: 1,
+                ..Counts::default()
+            },
+        };
         let projects = [
             summary(
                 "app-web",
-                Counts {
-                    added: 1,
-                    changed: 2,
-                    removed: 0,
-                    unchanged: 10,
-                },
+                "app-web",
+                &web,
                 Some("https://example.test/pr-7/app-web"),
+                ImageBases {
+                    before: Some("https://example.test/pr-7/app-web/baseline"),
+                    after: Some("https://example.test/pr-7/app-web/current"),
+                },
             ),
             summary(
                 "app-admin",
-                Counts {
-                    added: 0,
-                    changed: 0,
-                    removed: 1,
-                    unchanged: 5,
-                },
+                "app-admin",
+                &admin,
                 Some("https://example.test/pr-7/app-admin"),
+                ImageBases {
+                    before: Some("https://example.test/pr-7/app-admin/baseline"),
+                    after: Some("https://example.test/pr-7/app-admin/current"),
+                },
             ),
+            summary("docs", "docs", &unchanged, None, ImageBases::default()),
         ];
-        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate");
+        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate", 3);
 
         assert!(md.starts_with("<!-- screencomp-aggregate -->\n"), "{md}");
-        assert!(md.contains("## Visual changes"), "{md}");
-        // Combined summary line totals every project.
-        assert!(
-            md.contains("**2 projects affected · 1 added · 2 changed · 1 removed**"),
-            "{md}"
-        );
-        // Rows are ordered by label (app-admin before app-web) and carry each
-        // project's own counts and gallery link.
-        let admin = md.find("| app-admin |").expect("admin row");
-        let web = md.find("| app-web |").expect("web row");
-        assert!(admin < web, "rows should be label-ordered: {md}");
         assert!(
             md.contains(
-                "| app-web | 1 | 2 | 0 | 10 | [View gallery](https://example.test/pr-7/app-web) |"
+                "**2 projects with visual changes · 1 project unchanged · 1 added · 1 changed · 1 removed**"
             ),
             "{md}"
         );
+        assert!(!md.contains("| Project |"), "{md}");
+        let admin_heading = md.find("### app-admin").expect("admin heading");
+        let web_heading = md.find("### app-web").expect("web heading");
         assert!(
-            md.contains(
-                "| app-admin | 0 | 0 | 1 | 5 | [View gallery](https://example.test/pr-7/app-admin) |"
-            ),
+            admin_heading < web_heading,
+            "projects are label-ordered: {md}"
+        );
+        assert!(!md.contains("### docs"), "{md}");
+        assert!(
+            md.contains("src=\"https://example.test/pr-7/app-web/baseline/home-dark.png\""),
             "{md}"
         );
+        assert!(
+            md.contains("src=\"https://example.test/pr-7/app-web/current/home-dark.png\""),
+            "{md}"
+        );
+        assert!(md.contains("#### Added"), "{md}");
+        assert!(md.contains("#### Removed"), "{md}");
     }
 
     #[test]
-    fn aggregated_singular_noun_and_missing_gallery() {
-        let projects = [summary("solo", Counts::default(), None)];
-        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate");
-        assert!(md.contains("**1 project affected · 0 added"), "{md}");
-        // No gallery URL renders an em-dash placeholder, never a broken link.
-        assert!(md.contains("| solo | 0 | 0 | 0 | 0 | — |"), "{md}");
+    fn aggregated_links_only_changed_projects_one_over_the_limit() {
+        let changed = classification();
+        let unchanged = Classification {
+            entries: vec![],
+            counts: Counts {
+                unchanged: 4,
+                ..Counts::default()
+            },
+        };
+        let projects = [
+            summary("zeta", "zeta", &unchanged, None, ImageBases::default()),
+            summary(
+                "solo",
+                "solo",
+                &changed,
+                Some("https://example.test/focused"),
+                ImageBases::default(),
+            ),
+        ];
+        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate", 1);
+        assert!(
+            md.contains("**1 project with visual changes · 1 project unchanged"),
+            "{md}"
+        );
+        assert!(!md.contains("| zeta |"), "{md}");
+        assert!(
+            md.contains(
+                "| solo | 1 | 1 | 0 | 4 | [View focused diff](https://example.test/focused) |"
+            ),
+            "{md}"
+        );
+        assert!(!md.contains("<img"), "{md}");
     }
 
     #[test]
     fn aggregated_empty_reports_no_affected_projects() {
-        let md = render_aggregated_markdown(&[], "Visual changes", "screencomp-aggregate");
+        let md = render_aggregated_markdown(&[], "Visual changes", "screencomp-aggregate", 10);
         assert!(md.starts_with("<!-- screencomp-aggregate -->\n"), "{md}");
         assert!(md.contains("_No affected projects._"), "{md}");
         assert!(!md.contains("| Project |"), "{md}");
+    }
+
+    #[test]
+    fn aggregated_unresolved_image_uses_a_label_bullet() {
+        let changed = Classification {
+            entries: vec![Entry {
+                baseline_image: None,
+                current_image: None,
+                ..entry("missing", Status::Changed)
+            }],
+            counts: Counts {
+                changed: 1,
+                ..Counts::default()
+            },
+        };
+        let projects = [summary(
+            "solo",
+            "solo",
+            &changed,
+            None,
+            ImageBases::default(),
+        )];
+        let md = render_aggregated_markdown(&projects, "Visual changes", "screencomp-aggregate", 1);
+        assert!(
+            md.contains("### solo\n\n#### Changed\n- `missing [theme=dark]`"),
+            "{md}"
+        );
+        assert!(!md.contains("<img"), "{md}");
+    }
+
+    #[test]
+    fn aggregated_duplicate_labels_are_stable_across_reversed_project_order() {
+        let first = classification();
+        let second = Classification {
+            entries: vec![entry("legacy", Status::Removed)],
+            counts: Counts {
+                removed: 1,
+                ..Counts::default()
+            },
+        };
+        let a = summary("a", "shared", &first, Some("a"), ImageBases::default());
+        let b = summary("b", "shared", &second, Some("b"), ImageBases::default());
+        assert_eq!(
+            render_aggregated_markdown(&[a.clone(), b.clone()], "Visual changes", "marker", 0),
+            render_aggregated_markdown(&[b, a], "Visual changes", "marker", 0)
+        );
     }
 
     #[test]

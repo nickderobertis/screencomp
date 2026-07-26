@@ -68,6 +68,7 @@
 # workflow can't self-trigger on schedule/PR-close, so the caller must forward
 # them for the jobs to fire. Opt out with gh-pages-maintenance: false (no need to
 # touch the triggers).
+# llmlint: ignore-file[changed_behavior_has_e2e] This thin reusable workflow only forwards external repo/token values: the gh-pages-maintenance action's real git surgery is exercised against disposable repositories by its dedicated workflow/script tests, and integration contract tests enforce this workflow's repo/token wiring and preflight dependencies.
 name: Visual docs (reusable)
 
 on:
@@ -115,6 +116,10 @@ on:
         description: Deploy the gallery to GitHub Pages (canonical on push, per-PR preview on PRs).
         type: boolean
         default: true
+      pages-repository:
+        description: External owner/name repository that hosts the galleries. Empty uses this repository.
+        type: string
+        default: ''
       publish:
         description: >-
           Perform external side effects: post the PR comment, push the regenerated
@@ -188,6 +193,9 @@ on:
           checks (the default GITHUB_TOKEN cannot trigger runs). See the README's
           "Branch protection".
         required: false
+      pages-token:
+        description: Token with contents:write on pages-repository. Required when pages-repository is set.
+        required: false
 
 # Serialize gh-pages writes WITHOUT dropping canonical deploys. Every run writes
 # the same gh-pages branch, so overlapping runs on one ref would race — but the
@@ -203,6 +211,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Validate external hosting before matrix resolution can start capture work.
+  # Empty keeps the same-repository path unchanged.
+  pages-preflight:
+    runs-on: ubuntu-latest
+    env:
+      PAGES_REPOSITORY: ${{ inputs.pages-repository }}
+      PAGES_TOKEN: ${{ secrets.pages-token }}
+    steps:
+      - name: Validate external Pages configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "$PAGES_REPOSITORY" ] || exit 0
+          [[ "$PAGES_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+            echo "::error::pages-repository must be an owner/name" >&2
+            exit 1
+          }
+          [ -n "${PAGES_TOKEN// }" ] || {
+            echo "::error::pages-token is required when pages-repository is configured; provide a token with contents:write on ${PAGES_REPOSITORY}" >&2
+            exit 1
+          }
+
   # ---- Arches: resolve the capture arch matrix ------------------------------
   # The single source of truth for which arches to capture is [capture].arches in
   # screencomp.toml. Install the CLI and let it parse the list, so the matrix
@@ -210,6 +240,7 @@ jobs:
   # escape hatch for callers with no committed config (e.g. the self-test); when
   # empty (the norm) the config is read.
   arches:
+    needs: pages-preflight
     if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
     outputs:
@@ -285,7 +316,7 @@ jobs:
   # One lane per configured arch, each on a runner of that arch so the pixels
   # match the committed baseline's arch.
   capture:
-    needs: arches
+    needs: [pages-preflight, arches]
     if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
     strategy:
       fail-fast: false
@@ -348,7 +379,7 @@ jobs:
   # The arch is passed explicitly so `report` need not run on a matching-arch
   # runner (classify is a byte comparison, arch-independent).
   report:
-    needs: [arches, capture]
+    needs: [pages-preflight, arches, capture]
     runs-on: ubuntu-latest
     strategy:
       # Report lanes write the shared PR and gh-pages branches. max-parallel: 1
@@ -392,6 +423,8 @@ jobs:
           # In aggregated mode the per-lane comment is suppressed here; the
           # aggregate-comment job posts the single combined comment instead.
           comment-mode: ${{ inputs.comment-mode }}
+          pages-repository: ${{ inputs.pages-repository }}
+          pages-token: ${{ secrets.pages-token }}
           github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Aggregate comment: ONE combined comment for a many-project monorepo ---
@@ -404,7 +437,7 @@ jobs:
   # baselines are the report job's, untouched here. A custom caller composes the
   # SAME action after its own report lanes, so the two paths can't diverge.
   aggregate-comment:
-    needs: [arches, report]
+    needs: [pages-preflight, arches, report]
     if: ${{ inputs.comment-mode == 'aggregated' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
@@ -433,6 +466,7 @@ jobs:
           matrix: ${{ toJSON(fromJSON(needs.arches.outputs.matrix).include) }}
           comment-base-ref: ${{ inputs.comment-base-ref }}
           publish: ${{ inputs.publish }}
+          pages-repository: ${{ inputs.pages-repository }}
           github-token: ${{ secrets.push-token || github.token }}
 
   # ---- Cleanup: drop a closed PR's preview from gh-pages ---------------------
@@ -443,6 +477,7 @@ jobs:
   # script), floated on `@v0` — no capture, just a branch rewrite. Deleting the
   # whole /pr-<n>/ prefix removes every arch's preview for that PR at once.
   cleanup-preview:
+    needs: pages-preflight
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'pull_request' && github.event.action == 'closed' }}
     runs-on: ubuntu-latest
     permissions:
@@ -452,7 +487,8 @@ jobs:
         with:
           mode: cleanup
           pr: ${{ github.event.pull_request.number }}
-          token: ${{ secrets.push-token || github.token }}
+          repo: ${{ inputs.pages-repository || github.repository }}
+          token: ${{ inputs.pages-repository && secrets.pages-token || secrets.push-token || github.token }}
 
   # ---- Prune: bound gh-pages history so old galleries don't accrete ----------
   # Every deploy commits PNG blobs; a changed shot leaves its old blob in history
@@ -466,6 +502,7 @@ jobs:
   # (same github.ref), so it queues behind an in-flight deploy rather than racing
   # it; it does not touch in-flight PR previews (a different ref), which redeploy.
   prune-history:
+    needs: pages-preflight
     if: ${{ inputs.pages && inputs.publish && inputs.gh-pages-maintenance && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     permissions:
@@ -475,4 +512,5 @@ jobs:
         with:
           mode: prune
           keep-versions: ${{ inputs.gh-pages-history-versions }}
-          token: ${{ secrets.push-token || github.token }}
+          repo: ${{ inputs.pages-repository || github.repository }}
+          token: ${{ inputs.pages-repository && secrets.pages-token || secrets.push-token || github.token }}
