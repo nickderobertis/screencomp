@@ -245,6 +245,9 @@ check:
 # Backward-compatible alias for the `check` gate (kept for docs/bench refs).
 full-check: check
 
+# Orchestrator/pre-push spelling for the same complete deterministic gate.
+gate: check
+
 # Remove build and release artifacts.
 clean:
     cargo clean

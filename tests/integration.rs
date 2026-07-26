@@ -2479,34 +2479,47 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         String::from_utf8_lossy(&branch_absent.stdout).contains("no canonical gallery branch yet")
     );
 
-    // Cleanup and prune each carry the same early credential boundary because
-    // those event-only jobs do not run the report action's config step.
-    let validation_marker = "      - name: Validate external Pages credentials";
-    let mut validation_tail = reusable.as_str();
-    let mut validations = 0;
-    while let Some(start) = validation_tail.find(validation_marker) {
-        let block = &validation_tail[start..];
-        let run_start = block.find("        run: |\n").unwrap() + "        run: |\n".len();
-        let run_end = block[run_start..].find("\n      - uses:").unwrap() + run_start;
-        let script = block[run_start..run_end]
-            .lines()
-            .map(|line| line.strip_prefix("          ").unwrap_or(line))
-            .collect::<Vec<_>>()
-            .join("\n")
-            .replace("${{ inputs.pages-repository }}", "$PAGES_REPOSITORY");
+    // One first-job preflight gates matrix resolution and every side-effecting
+    // path, including event-only maintenance jobs.
+    for dependency in [
+        "arches:\n    needs: pages-preflight",
+        "needs: [pages-preflight, arches]",
+        "needs: [pages-preflight, arches, capture]",
+        "cleanup-preview:\n    needs: pages-preflight",
+        "prune-history:\n    needs: pages-preflight",
+    ] {
+        assert!(reusable.contains(dependency), "{dependency}");
+    }
+    let validation_marker = "      - name: Validate external Pages configuration";
+    assert_eq!(reusable.matches(validation_marker).count(), 1);
+    let block = &reusable[reusable.find(validation_marker).unwrap()..];
+    let run_start = block.find("        run: |\n").unwrap() + "        run: |\n".len();
+    let run_end = block[run_start..].find("\n\n  #").unwrap() + run_start;
+    let script = block[run_start..run_end]
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (repo, token, succeeds) in [
+        ("", "", true),
+        ("docs/galleries", "token", true),
+        ("docs/galleries", "", false),
+        ("invalid", "token", false),
+    ] {
         let result = std::process::Command::new("bash")
             .arg("-c")
-            .arg(script)
-            .env("PAGES_REPOSITORY", "docs/galleries")
-            .env("PAGES_TOKEN", "")
+            .arg(&script)
+            .env("PAGES_REPOSITORY", repo)
+            .env("PAGES_TOKEN", token)
             .output()
             .unwrap();
-        assert!(!result.status.success());
-        assert!(String::from_utf8_lossy(&result.stderr).contains("pages-token is required"));
-        validations += 1;
-        validation_tail = &block[run_end..];
+        assert_eq!(
+            result.status.success(),
+            succeeds,
+            "repo={repo:?}, stderr={}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
-    assert_eq!(validations, 2, "cleanup and prune must both validate");
 
     let aggregate_step = aggregate
         .find("    - name: Render and upsert the aggregated comment")
@@ -2534,6 +2547,12 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
     assert!(
         String::from_utf8_lossy(&invalid_aggregate.stderr)
             .contains("pages-repository must be an owner/name")
+    );
+
+    let justfile = std::fs::read_to_string(root.join("justfile")).unwrap();
+    assert!(
+        justfile.contains("\ngate: check\n"),
+        "`just gate` must remain an alias of the full check gate"
     );
 }
 
