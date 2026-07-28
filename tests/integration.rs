@@ -3340,3 +3340,97 @@ fn coalesced_pages_deploy_is_wired_through_the_reusable_workflow() {
         "publish-branch reaches a refs/heads/ lookup, so validate it at the boundary"
     );
 }
+
+/// Execute the coalesced deploy's no-op detection against a REAL local git
+/// remote. Only the remote URL is substituted; the ref lookup and the
+/// published/not-published decision are the shipped shell.
+///
+/// This is the step that keeps a healthy re-run of an unchanged gallery from
+/// waiting out the gate's budget and then blaming the caller's Pages source:
+/// peaceiris pushes no commit when the bytes match, so no build starts.
+#[cfg(unix)]
+#[test]
+fn coalesced_deploy_detects_a_push_that_published_nothing() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let action = std::fs::read_to_string(root.join("visual-docs-pages/action.yml")).unwrap();
+    let dir = TempDir::new().unwrap();
+    let remote = dir.path().join("gallery");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("index.html"), "gallery").unwrap();
+
+    let git = |args: Vec<&str>| {
+        assert!(
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&remote)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    };
+    git(vec!["init", "-q"]);
+    git(vec!["config", "user.name", "Test"]);
+    git(vec!["config", "user.email", "test@example.com"]);
+    git(vec!["add", "."]);
+    git(vec!["commit", "-qm", "gallery"]);
+    git(vec!["branch", "-M", "gh-pages"]);
+
+    let script = action_step_script(&action, "Check whether anything was published").replace(
+        "\"https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git\"",
+        &format!("\"{}\"", remote.display()),
+    );
+    let head = |dir: &Path| {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let run = |before: &str, label: &str| {
+        let output_file = dir.path().join(format!("out-{label}"));
+        let result = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .env("REPO", "docs/galleries")
+            .env("BRANCH", "gh-pages")
+            .env("BEFORE", before)
+            .env("GH_TOKEN", "token")
+            .env("GITHUB_OUTPUT", &output_file)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        (
+            std::fs::read_to_string(&output_file).unwrap(),
+            String::from_utf8(result.stdout).unwrap(),
+        )
+    };
+
+    // The push moved nothing: no commit, so no Pages build, so nothing to gate.
+    let (outputs, stdout) = run(&head(&remote), "unchanged");
+    assert!(outputs.contains("published=false"), "{outputs}");
+    assert!(
+        stdout.contains("no commit, no build to gate on"),
+        "{stdout}"
+    );
+
+    // A real deploy moves the branch head, and only then is there a build to wait
+    // for.
+    let stale = head(&remote);
+    std::fs::write(remote.join("index.html"), "new gallery").unwrap();
+    git(vec!["add", "."]);
+    git(vec!["commit", "-qm", "deploy"]);
+    let (outputs, stdout) = run(&stale, "published");
+    assert!(outputs.contains("published=true"), "{outputs}");
+    assert!(stdout.contains("published gh-pages"), "{stdout}");
+
+    // A branch that does not exist yet (the very first deploy) reads as empty,
+    // which must still count as published rather than silently skipping the gate.
+    let (outputs, _) = run("", "first-deploy");
+    assert!(outputs.contains("published=true"), "{outputs}");
+}
