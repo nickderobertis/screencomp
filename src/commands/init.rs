@@ -306,6 +306,7 @@ on:
 permissions:
   contents: write       # push the gh-pages gallery
   pull-requests: write  # post the diff comment
+  pages: read           # gate the run on the Pages build the deploy triggers
 
 jobs:
   visual-docs:

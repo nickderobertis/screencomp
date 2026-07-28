@@ -30,8 +30,9 @@
 name: screencomp visual docs
 description: >-
   Classify a capture against the baseline digest manifest, build the gallery,
-  deploy GitHub Pages, and post the sticky before/after PR comment. Compose it in
-  your own job after your capture step.
+  deploy GitHub Pages and wait for the build that deploy triggers, and post the
+  sticky before/after PR comment. Compose it in your own job after your capture
+  step.
 author: screencomp contributors
 branding:
   icon: camera
@@ -117,6 +118,17 @@ inputs:
     default: ''
   pages-token:
     description: 'Token with contents:write on pages-repository. Required for external Pages hosting.'
+    required: false
+    default: ''
+  pages-artifact:
+    description: >-
+      Hand this lane's gallery off as an artifact of this name instead of pushing
+      it, so a later job can deploy every lane in ONE gh-pages commit (see the
+      `visual-docs-pages` action). Empty (the default) keeps the per-lane push, so
+      a caller composing this action on its own is unaffected. Coalescing matters
+      because every push to the gallery branch starts a GitHub Pages build and a
+      newer build kills the one in flight: N lanes pushing seconds apart leave the
+      site `errored` with the newest gallery unpublished.
     required: false
     default: ''
   github-token:
@@ -333,8 +345,78 @@ runs:
         fi
         screencomp gallery "${args[@]}"
 
+    # Coalesced mode: stage this lane's gallery under the exact path it would have
+    # been pushed to and hand it off. Merging every lane's artifact reconstructs
+    # the same tree the per-lane pushes would have produced, so one push at the
+    # branch root with keep_files is byte-for-byte equivalent to N pushes into N
+    # destination_dirs — minus the N-1 superseded Pages builds and commits.
+    - name: Stage the gallery for a coalesced deploy
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact != '' }}
+      shell: bash
+      env:
+        DEST: ${{ steps.cfg.outputs.dest }}
+        SUBPATH: ${{ steps.cfg.outputs.subpath }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          deploy_dir="pr-${PR_NUMBER}${SUBPATH}"
+        else
+          deploy_dir="$DEST"
+        fi
+        # A project-level layout on a push deploys to the branch root, so the
+        # staged tree is the gallery itself with no prefix.
+        staged="pages-upload${deploy_dir:+/$deploy_dir}"
+        mkdir -p "$staged"
+        cp -R site/. "$staged/"
+        echo "staged the gallery at ${deploy_dir:-<root>}"
+
+    - name: Hand the gallery off for a coalesced deploy
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.pages-artifact }}
+        path: pages-upload
+        if-no-files-found: error
+        retention-days: 1
+        include-hidden-files: true
+
+    # Direct mode (no hand-off): this lane pushes its own gallery, so it owns the
+    # Pages build that push triggers and must gate on it exactly as the coalesced
+    # deploy does — otherwise the only ungated way to publish a gallery would be
+    # the one a caller composing this action on its own uses. The three gate steps
+    # here are the SAME shell as `visual-docs-pages`, driving the same shipped
+    # script; `pages_build_gate_is_identical_on_both_deploy_paths` holds them
+    # byte-identical so the two paths cannot drift apart.
+    #
+    # Gating also makes a multi-lane direct caller safe rather than merely loud:
+    # a lane no longer returns with its build in flight, so the next lane's push
+    # has nothing to supersede.
+    #
+    # Read what is current BEFORE the push: the build id, so the gate can tell the
+    # build this deploy triggers apart from the one already published, and the
+    # branch head, so the gate can tell a real deploy from a no-op one.
+    - name: Record the current Pages build
+      id: before
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        # The deploy steps below leave peaceiris's `publish_branch` at its default,
+        # so that default IS this action's gallery branch. No input to thread.
+        BRANCH: gh-pages
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: |
+        set -euo pipefail
+        build="$(bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" record)"
+        echo "build=$build" >>"$GITHUB_OUTPUT"
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        echo "head=$head" >>"$GITHUB_OUTPUT"
+
     - name: Deploy canonical gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'push' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository == '' && github.event_name == 'push' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
@@ -345,7 +427,7 @@ runs:
         keep_files: true
 
     - name: Deploy PR preview gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository == '' && github.event_name == 'pull_request' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
@@ -354,7 +436,7 @@ runs:
         keep_files: true
 
     - name: Deploy canonical gallery externally
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'push' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository != '' && github.event_name == 'push' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         personal_token: ${{ inputs.pages-token }}
@@ -364,7 +446,7 @@ runs:
         keep_files: true
 
     - name: Deploy PR preview gallery externally
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository != '' && github.event_name == 'pull_request' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         personal_token: ${{ inputs.pages-token }}
@@ -373,8 +455,47 @@ runs:
         destination_dir: pr-${{ github.event.pull_request.number }}${{ steps.cfg.outputs.subpath }}
         keep_files: true
 
+    # A deploy that changed nothing pushes no commit and therefore starts no
+    # build. Without this the gate would wait for a build that is never coming and
+    # then warn about the Pages source — misleading advice for a healthy no-op,
+    # which is what a re-run of an unchanged gallery is.
+    - name: Check whether anything was published
+      id: published
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        BRANCH: gh-pages
+        BEFORE: ${{ steps.before.outputs.head }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: |
+        set -euo pipefail
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        if [ "$head" = "$BEFORE" ]; then
+          echo "published=false" >>"$GITHUB_OUTPUT"
+          echo "the gallery was already published byte for byte; no commit, no build to gate on"
+        else
+          echo "published=true" >>"$GITHUB_OUTPUT"
+          echo "published ${BRANCH} ${BEFORE:0:8} -> ${head:0:8}"
+        fi
+
+    # The gate. A build that ends `errored` means the newest gallery was never
+    # published, so the run must go red rather than pass silently.
+    - name: Wait for the Pages build
+      if: ${{ steps.published.outputs.published == 'true' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        PREVIOUS_BUILD: ${{ steps.before.outputs.build }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" verify
+
+    # The gate covers the build; this covers the URL. They are not the same
+    # thing, and a caller whose token cannot read the Pages API skips the gate
+    # with a warning and arrives here having waited for nothing.
     - name: Wait for the PR preview to go live
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && github.event_name == 'pull_request' }}
       shell: bash
       env:
         PREVIEW_URL: ${{ steps.cfg.outputs.preview_url }}

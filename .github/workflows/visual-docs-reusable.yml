@@ -40,8 +40,12 @@
 #     capture toolchain but NOT host tools (`gh`, a configured `git`, etc.).
 #   * `report` runs on the HOST runner (no container), where `gh`, `git`, and the
 #     screencomp binary are available. It does the reproducibility gate, classify,
-#     gallery, Pages deploy, PR comment, and manifest push — all via the
-#     `visual-docs` composable action, so this job is thin glue (see below).
+#     gallery, PR comment, and manifest push — all via the `visual-docs`
+#     composable action, so this job is thin glue (see below).
+# A run-wide `deploy-pages` job then publishes every lane's gallery in ONE
+# gh-pages commit and waits for the Pages build it triggers. Grant the caller
+# `pages: read` so it can gate on that build; without it the deploy still
+# coalesces and the gate degrades to a warning.
 # Putting a `gh pr comment` or `git push` step inside the capture container is the
 # bug this split exists to prevent.
 #
@@ -382,8 +386,10 @@ jobs:
     needs: [pages-preflight, arches, capture]
     runs-on: ubuntu-latest
     strategy:
-      # Report lanes write the shared PR and gh-pages branches. max-parallel: 1
-      # keeps those checkouts/pushes ordered while capture remains fully parallel.
+      # Report lanes write the shared PR branch (the sticky comment and, under CI
+      # auto-accept, the manifest push). max-parallel: 1 keeps those checkouts and
+      # pushes ordered while capture remains fully parallel. The gallery branch is
+      # no longer among them — deploy-pages writes it once, for the whole run.
       fail-fast: false
       max-parallel: 1
       matrix:
@@ -423,6 +429,40 @@ jobs:
           # In aggregated mode the per-lane comment is suppressed here; the
           # aggregate-comment job posts the single combined comment instead.
           comment-mode: ${{ inputs.comment-mode }}
+          pages-repository: ${{ inputs.pages-repository }}
+          pages-token: ${{ secrets.pages-token }}
+          # Hand the gallery to deploy-pages instead of pushing it here: one
+          # coalesced commit per run rather than one per lane (see that job).
+          pages-artifact: ${{ matrix.project && format('screencomp-gallery-{0}-{1}', matrix.project, matrix.arch) || format('screencomp-gallery-{0}', matrix.arch) }}
+          github-token: ${{ secrets.push-token || github.token }}
+
+  # Each report lane used to push its own gallery, and every push to the gallery
+  # branch starts a GitHub Pages build that kills whichever build is in flight —
+  # so a run with several projects left the site `errored` with the newest gallery
+  # unpublished, silently, because nothing observed the build. This job collects
+  # every lane's gallery artifact, publishes them in a single commit, and then
+  # WAITS for the resulting Pages build, failing the run if it errored. One lane
+  # is unaffected: one artifact, one commit, one build, exactly as before.
+  #
+  # `!cancelled()` rather than plain success: under the strict gate a drifted lane
+  # fails on purpose, and its gallery and PR comment must still publish — a red
+  # check a reviewer cannot see the diff on is the worst outcome. A run whose lanes
+  # all died before building a gallery hands off nothing, and the action no-ops.
+  deploy-pages:
+    needs: [pages-preflight, arches, report]
+    if: ${{ !cancelled() && inputs.pages && inputs.publish && needs.report.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    # Deliberately NO `permissions:` block, unlike every other job here. A called
+    # job's declared permissions must be a subset of what the caller granted, and
+    # exceeding it fails the whole run at parse time — so declaring the `pages:
+    # read` this job wants would break every existing caller the moment they
+    # upgrade. Taking the caller's token as granted instead means the deploy keeps
+    # working on the `contents: write` they already grant, and only the build gate
+    # notices the difference: with `pages: read` (which the `init` scaffold now
+    # grants) it fails the run on an errored build, without it it warns.
+    steps:
+      - uses: nickderobertis/screencomp/visual-docs-pages@v0
+        with:
           pages-repository: ${{ inputs.pages-repository }}
           pages-token: ${{ secrets.pages-token }}
           github-token: ${{ secrets.push-token || github.token }}

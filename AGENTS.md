@@ -185,7 +185,8 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
 - The CLI ships through several surfaces that must stay consistent: release
   binaries, the `scripts/install.sh` installer, crates.io, the GHCR image
   (`Dockerfile`), and the composite actions (`action.yml` install,
-  `visual-docs/action.yml` report, `gh-pages-maintenance/action.yml` upkeep). Both
+  `visual-docs/action.yml` report, `visual-docs-pages/action.yml` coalesced Pages
+  deploy, `gh-pages-maintenance/action.yml` upkeep). Both
   `install.sh` and the install action download release assets by name, so their
   constructed archive and `.sha256` names must match the release workflow's
   `archive` pattern; change the pattern and you change all three. `examples/` shows

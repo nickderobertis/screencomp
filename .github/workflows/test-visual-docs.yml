@@ -28,6 +28,8 @@ on:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
       - visual-docs/action.yml
+      - visual-docs-pages/action.yml
+      - scripts/visual-docs-pages-build.sh
       - action.yml
       - src/**
       - Cargo.toml
@@ -39,6 +41,8 @@ on:
       - .github/workflows/visual-docs-reusable.yml
       - .github/workflows/test-visual-docs.yml
       - visual-docs/action.yml
+      - visual-docs-pages/action.yml
+      - scripts/visual-docs-pages-build.sh
       - action.yml
       - src/**
       - Cargo.toml

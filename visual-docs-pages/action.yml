@@ -1,0 +1,201 @@
+# screencomp "coalesced Pages deploy" composite action — publish EVERY project
+# lane's gallery in one gh-pages commit, then gate the run on the GitHub Pages
+# build that commit triggers.
+#
+# Compose it in a HOST job that runs AFTER your per-project report lanes (run
+# those with the visual-docs action's `pages-artifact` set, so each lane hands its
+# built gallery off instead of pushing it):
+#
+#   jobs:
+#     deploy-pages:
+#       needs: report
+#       runs-on: ubuntu-latest
+#       permissions: { contents: write, pages: read }
+#       steps:
+#         - uses: nickderobertis/screencomp/visual-docs-pages@vX.Y.Z
+#
+# Why coalesce. Each push to the gallery branch starts its own GitHub Pages
+# build, and GitHub kills an in-flight build the instant a newer one is queued —
+# the superseded build is recorded `errored` with a bare `Page build failed.` and
+# duration 0. Report lanes push seconds apart, so a run with several projects
+# reliably left the site `errored` with the newest gallery unpublished, while the
+# run itself stayed green because nothing observed the build. Merging the lanes'
+# artifacts reproduces exactly the tree N pushes into N `destination_dir`s would
+# have produced, so one root push with keep_files is equivalent output — with one
+# commit and one build instead of N, which also stops the branch accreting N
+# commits' worth of PNG blobs per run.
+#
+# Coalescing removes the race a run creates for itself; it cannot remove one
+# created from outside it (a scheduled prune, a second repository deploying into
+# a shared gallery). So the deploy is still GATED on the resulting build: see
+# scripts/visual-docs-pages-build.sh, which waits for the build the push
+# triggered and fails the job if it ends `errored`.
+#
+# Gate the job itself on pages + publish: with either off no lane uploads a
+# gallery and there is nothing to download.
+# llmlint: ignore-file[changed_behavior_has_e2e] The peaceiris push cannot run in the offline Rust suite without mutating a real GitHub repository; actionlint and contract assertions cover its inputs, while the shipped build-gate shell is executed end to end against a stubbed GitHub API.
+name: screencomp coalesced pages deploy
+description: >-
+  Merge every project lane's gallery artifact and publish them in ONE gh-pages
+  commit, then wait for the GitHub Pages build it triggers and fail if that build
+  errored. Compose it after the per-project report lanes.
+author: screencomp contributors
+branding:
+  icon: upload-cloud
+  color: purple
+
+inputs:
+  artifact-pattern:
+    description: >-
+      Pattern matching the gallery artifacts the report lanes handed off (the
+      visual-docs action's `pages-artifact` names).
+    required: false
+    default: screencomp-gallery-*
+  pages-repository:
+    description: 'External owner/name repository that hosts the gallery. Empty uses the current repository.'
+    required: false
+    default: ''
+  pages-token:
+    description: 'Token with contents:write on pages-repository. Required for external Pages hosting.'
+    required: false
+    default: ''
+  publish-branch:
+    description: 'The published gallery branch (peaceiris''s default).'
+    required: false
+    default: gh-pages
+  github-token:
+    description: 'Token for deploying to this repository''s gallery branch.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the gallery host
+      id: cfg
+      shell: bash
+      env:
+        INPUT_PAGES_REPOSITORY: ${{ inputs.pages-repository }}
+        INPUT_PAGES_TOKEN: ${{ inputs.pages-token }}
+        INPUT_PUBLISH_BRANCH: ${{ inputs.publish-branch }}
+      run: |
+        set -euo pipefail
+        branch="$INPUT_PUBLISH_BRANCH"
+        # It is interpolated into a refs/heads/ lookup below; keep it a plain
+        # branch name rather than something that can reshape the ref.
+        if [[ ! "$branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$branch" == *..* ]]; then
+          echo "::error::publish-branch must be a plain branch name" >&2
+          exit 1
+        fi
+        pages_repo="$INPUT_PAGES_REPOSITORY"
+        if [[ -n "$pages_repo" && ! "$pages_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+          echo "::error::pages-repository must be an owner/name" >&2
+          exit 1
+        fi
+        if [ -n "$pages_repo" ] && [ -z "${INPUT_PAGES_TOKEN// }" ]; then
+          echo "::error::pages-token is required when pages-repository is configured; provide a token with contents:write on ${pages_repo}" >&2
+          exit 1
+        fi
+        [ -n "$pages_repo" ] || pages_repo='${{ github.repository }}'
+        echo "pages_repo=$pages_repo" >>"$GITHUB_OUTPUT"
+
+    # Every lane staged its gallery under the exact path it would have pushed to,
+    # so merging the artifacts rebuilds the whole tree and the push below needs no
+    # destination_dir.
+    # continue-on-error, not a hard failure: a run whose report lanes all died
+    # before building a gallery has nothing to hand off, and it is already red for
+    # the real reason. Downloading nothing must not add a second, misleading one.
+    - uses: actions/download-artifact@v4
+      continue-on-error: true
+      with:
+        pattern: ${{ inputs.artifact-pattern }}
+        merge-multiple: true
+        path: site
+
+    - name: Check for handed-off galleries
+      id: probe
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "$(ls -A site 2>/dev/null)" ]; then
+          echo "deploy=true" >>"$GITHUB_OUTPUT"
+        else
+          echo "deploy=false" >>"$GITHUB_OUTPUT"
+          echo "no gallery artifacts were handed off; nothing to deploy"
+        fi
+
+    # Read what is current BEFORE the push: the build id, so the gate can tell the
+    # build this deploy triggers apart from the one already published, and the
+    # branch head, so the gate can tell a real deploy from a no-op one.
+    - name: Record the current Pages build
+      id: before
+      if: ${{ steps.probe.outputs.deploy == 'true' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        BRANCH: ${{ inputs.publish-branch }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: |
+        set -euo pipefail
+        build="$(bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" record)"
+        echo "build=$build" >>"$GITHUB_OUTPUT"
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        echo "head=$head" >>"$GITHUB_OUTPUT"
+
+    - name: Deploy every gallery in one commit
+      if: ${{ steps.probe.outputs.deploy == 'true' && inputs.pages-repository == '' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        github_token: ${{ inputs.github-token }}
+        publish_dir: site
+        publish_branch: ${{ inputs.publish-branch }}
+        # No destination_dir: the merged artifacts already carry each lane's
+        # subpath. keep_files preserves galleries this run did not rebuild.
+        keep_files: true
+
+    - name: Deploy every gallery in one commit externally
+      if: ${{ steps.probe.outputs.deploy == 'true' && inputs.pages-repository != '' }}
+      uses: peaceiris/actions-gh-pages@v4
+      with:
+        personal_token: ${{ inputs.pages-token }}
+        external_repository: ${{ inputs.pages-repository }}
+        publish_dir: site
+        publish_branch: ${{ inputs.publish-branch }}
+        keep_files: true
+
+    # A deploy that changed nothing pushes no commit and therefore starts no
+    # build. Without this the gate would wait for a build that is never coming and
+    # then warn about the Pages source — misleading advice for a healthy no-op,
+    # which is what a re-run of an unchanged gallery is.
+    - name: Check whether anything was published
+      id: published
+      if: ${{ steps.probe.outputs.deploy == 'true' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        BRANCH: ${{ inputs.publish-branch }}
+        BEFORE: ${{ steps.before.outputs.head }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: |
+        set -euo pipefail
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        if [ "$head" = "$BEFORE" ]; then
+          echo "published=false" >>"$GITHUB_OUTPUT"
+          echo "the gallery was already published byte for byte; no commit, no build to gate on"
+        else
+          echo "published=true" >>"$GITHUB_OUTPUT"
+          echo "published ${BRANCH} ${BEFORE:0:8} -> ${head:0:8}"
+        fi
+
+    # The gate. A build that ends `errored` means the newest gallery was never
+    # published, so the run must go red rather than pass silently.
+    - name: Wait for the Pages build
+      if: ${{ steps.published.outputs.published == 'true' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        PREVIOUS_BUILD: ${{ steps.before.outputs.build }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" verify
