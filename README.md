@@ -281,7 +281,9 @@ can compose the same `visual-docs-aggregate` action after its own report lanes.
 It runs the reproducibility gate, classifies against the committed digest
 manifest (failing the job on drift under the default strict gate), builds the
 gallery, deploys a canonical gallery from the default branch and a per-PR
-`/pr-<n>/` preview on pull requests, waits for Pages to go live, and posts a
+`/pr-<n>/` preview on pull requests, waits for the Pages build that deploy
+triggers (see [above](#one-gh-pages-commit-per-run-gated-on-the-pages-build)),
+and posts a
 sticky before/after comment that sources "After" from the PR preview and "Before"
 from the canonical main gallery — and diffs against the PR base branch's manifest
 so the intended change still shows even when the committed baseline already
