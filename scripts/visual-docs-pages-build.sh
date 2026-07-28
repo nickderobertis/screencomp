@@ -34,7 +34,14 @@
 #                    (default: 12, so ~120s). Exhausting them means the branch
 #                    does not drive a Pages build at all, which warns not fails.
 #   SETTLE_ATTEMPTS  Extra polls to wait for a build to leave queued/building
-#                    (default: 90, so ~900s).
+#                    (default: 210, so ~35min). That looks generous next to a
+#                    healthy build's ~20-30s, and it is deliberate: a SUPERSEDED
+#                    build reports in seconds, but GitHub sits on a build it is
+#                    going to fail for content reasons — measured at 13 and 27
+#                    minutes on two runs of the e2e fixture. A budget shorter than
+#                    that turns an accurate "ended errored" into a vague timeout.
+#                    Both fail the job, so this only buys a better diagnosis, and
+#                    only in a run that is already failing.
 # The two budgets are counted in polls rather than seconds so the test suite can
 # drive every path with POLL_SECONDS=0 and still terminate.
 set -euo pipefail
@@ -42,7 +49,7 @@ set -euo pipefail
 GH_BIN="${GH_BIN:-gh}"
 POLL_SECONDS="${POLL_SECONDS:-10}"
 APPEAR_ATTEMPTS="${APPEAR_ATTEMPTS:-12}"
-SETTLE_ATTEMPTS="${SETTLE_ATTEMPTS:-90}"
+SETTLE_ATTEMPTS="${SETTLE_ATTEMPTS:-210}"
 
 die() {
   echo "::error::visual-docs-pages-build: $*" >&2
