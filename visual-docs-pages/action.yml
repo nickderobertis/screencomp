@@ -183,7 +183,7 @@ runs:
           "refs/heads/${BRANCH}" | cut -f1)"
         if [ "$head" = "$BEFORE" ]; then
           echo "published=false" >>"$GITHUB_OUTPUT"
-          echo "every gallery was already published byte for byte; no commit, no build to gate on"
+          echo "the gallery was already published byte for byte; no commit, no build to gate on"
         else
           echo "published=true" >>"$GITHUB_OUTPUT"
           echo "published ${BRANCH} ${BEFORE:0:8} -> ${head:0:8}"

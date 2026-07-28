@@ -474,7 +474,7 @@ runs:
           "refs/heads/${BRANCH}" | cut -f1)"
         if [ "$head" = "$BEFORE" ]; then
           echo "published=false" >>"$GITHUB_OUTPUT"
-          echo "every gallery was already published byte for byte; no commit, no build to gate on"
+          echo "the gallery was already published byte for byte; no commit, no build to gate on"
         else
           echo "published=true" >>"$GITHUB_OUTPUT"
           echo "published ${BRANCH} ${BEFORE:0:8} -> ${head:0:8}"
@@ -491,8 +491,8 @@ runs:
         GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
       run: bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" verify
 
-    # Belt to the gate's braces: the build finishing is not quite the preview URL
-    # answering, and a caller whose token cannot read the Pages API skips the gate
+    # The gate covers the build; this covers the URL. They are not the same
+    # thing, and a caller whose token cannot read the Pages API skips the gate
     # with a warning and arrives here having waited for nothing.
     - name: Wait for the PR preview to go live
       if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && github.event_name == 'pull_request' }}
