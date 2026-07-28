@@ -88,6 +88,13 @@ jobs:
   # ---- Report: screencomp's downstream half, on the HOST runner --------------
   # One composable action: reproducibility gate, classify, gallery, Pages deploy,
   # sticky PR comment, manifest push. Same action the reusable workflow calls.
+  #
+  # One project, so this lane deploys its own gallery — one push, one Pages build.
+  # Fan this job out over several projects and that stops being safe: each push
+  # starts a Pages build that kills the one in flight, leaving the site `errored`.
+  # Set `pages-artifact: screencomp-gallery-<project>` here and add a job after
+  # this one composing `nickderobertis/screencomp/visual-docs-pages@v0`, which
+  # publishes every lane in one commit and fails if that build errors.
   report:
     needs: capture
     runs-on: ubuntu-latest

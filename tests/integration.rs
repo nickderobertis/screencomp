@@ -2841,3 +2841,403 @@ fn doctor_env_quiet_suppresses_human_output() {
         "quiet env doctor stdout should be empty: {out}"
     );
 }
+
+/// Extract one composite-action step's `run:` block as a runnable bash script,
+/// undenting it and substituting the `github.*` expressions the runner would
+/// have expanded. The shipped shell is then executed verbatim.
+#[cfg(unix)]
+fn action_step_script(action: &str, step_name: &str) -> String {
+    let step = action
+        .find(&format!("    - name: {step_name}\n"))
+        .unwrap_or_else(|| panic!("no step named {step_name}"));
+    let run = action[step..].find("      run: |\n").unwrap() + step + "      run: |\n".len();
+    let end = action[run..]
+        .find("\n    - name:")
+        .map(|offset| run + offset)
+        .unwrap_or(action.len());
+    action[run..end]
+        .lines()
+        .map(|line| line.strip_prefix("        ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("${{ github.repository }}", "source/app")
+        .replace("${{ github.repository_owner }}", "source")
+        .replace("${{ github.event.repository.name }}", "app")
+        .replace("${{ github.event.pull_request.number }}", "17")
+}
+
+/// Run the `visual-docs` action's "Resolve config" step for one project/arch lane
+/// and return its `$GITHUB_OUTPUT` key/value lines.
+#[cfg(unix)]
+fn resolve_lane_config(action: &str, dir: &Path, lane: &str, project: &str, arch: &str) -> String {
+    let output = dir.join(format!("cfg-{lane}"));
+    let result = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(action_step_script(action, "Resolve config"))
+        .env("INPUT_ARCH", arch)
+        .env("INPUT_PROJECT", project)
+        .env("INPUT_MANIFEST", "")
+        .env("INPUT_GALLERY_URL", "")
+        .env("INPUT_BASELINE_URL", "")
+        .env("INPUT_PAGES", "true")
+        .env("INPUT_PUBLISH", "true")
+        .env("INPUT_PAGES_REPOSITORY", "")
+        .env("INPUT_PAGES_TOKEN", "")
+        .env("GITHUB_OUTPUT", &output)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    std::fs::read_to_string(&output).unwrap()
+}
+
+#[cfg(unix)]
+fn output_value(outputs: &str, key: &str) -> String {
+    outputs
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}=")))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Every report lane hands its gallery off staged under the exact subpath it
+/// would otherwise have pushed to, so merging the artifacts reconstructs the tree
+/// N per-lane pushes produced — the property that lets ONE commit replace N and
+/// take the superseded-Pages-build race with it.
+#[cfg(unix)]
+#[test]
+fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let stage = action_step_script(&action, "Stage the gallery for a coalesced deploy");
+    let dir = TempDir::new().unwrap();
+
+    // Two projects on one arch, plus the project-level layout that deploys to the
+    // branch root — the three destination shapes the action can produce.
+    let lanes = [
+        ("web", "web", "arm64"),
+        ("shop", "shop", "arm64"),
+        ("plain", "", ""),
+    ];
+    let merged = dir.path().join("merged");
+    std::fs::create_dir_all(&merged).unwrap();
+
+    for event in ["pull_request", "push"] {
+        for (lane, project, arch) in lanes {
+            let work = dir.path().join(format!("{event}-{lane}"));
+            std::fs::create_dir_all(work.join("site/img")).unwrap();
+            std::fs::write(work.join("site/index.html"), format!("gallery {lane}")).unwrap();
+            std::fs::write(work.join("site/img/home.png"), b"png").unwrap();
+
+            let outputs = resolve_lane_config(&action, dir.path(), lane, project, arch);
+            let staged = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(&stage)
+                .env("DEST", output_value(&outputs, "dest"))
+                .env("SUBPATH", output_value(&outputs, "subpath"))
+                .env("EVENT_NAME", event)
+                .env("PR_NUMBER", "17")
+                .current_dir(&work)
+                .output()
+                .unwrap();
+            assert!(
+                staged.status.success(),
+                "{}",
+                String::from_utf8_lossy(&staged.stderr)
+            );
+
+            // `actions/download-artifact` with merge-multiple unpacks every lane's
+            // upload into one directory; copying them over each other is that.
+            let unpack = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "cp -R {}/. {}/",
+                    work.join("pages-upload").display(),
+                    merged.display()
+                ))
+                .output()
+                .unwrap();
+            assert!(unpack.status.success());
+        }
+    }
+
+    // The PR event nests every lane under this PR's preview prefix; the push event
+    // publishes the canonical paths. Both land in the same tree, so one root push
+    // with keep_files deploys exactly what the per-lane pushes would have.
+    for path in [
+        "pr-17/web/arm64/index.html",
+        "pr-17/web/arm64/img/home.png",
+        "pr-17/shop/arm64/index.html",
+        "pr-17/index.html",
+        "web/arm64/index.html",
+        "shop/arm64/index.html",
+        "index.html",
+    ] {
+        assert!(merged.join(path).is_file(), "missing {path}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(merged.join("pr-17/shop/arm64/index.html")).unwrap(),
+        "gallery shop",
+        "each lane's gallery must survive the merge intact"
+    );
+}
+
+/// Drive the shipped Pages build gate against a stub `gh`: real script, real
+/// bash, only the GitHub API boundary replaced. The stub answers each
+/// `--jq` selector from a scripted list of "<build-id> <status>" polls and
+/// records rebuild requests, so the gate's decisions are the only thing under
+/// test.
+#[cfg(unix)]
+fn run_pages_build_gate(
+    dir: &Path,
+    label: &str,
+    polls: &[&str],
+    previous_build: &str,
+    subcommand: &str,
+) -> (std::process::Output, usize) {
+    let work = dir.join(label);
+    std::fs::create_dir_all(&work).unwrap();
+    let stub = work.join("gh");
+    std::fs::write(
+        &stub,
+        r#"#!/usr/bin/env bash
+set -uo pipefail
+filter=""; method=""; prev=""
+for arg in "$@"; do
+  case "$prev" in --jq) filter="$arg" ;; --method) method="$arg" ;; esac
+  prev="$arg"
+done
+if [ "$method" = POST ]; then echo rebuild >>"$WORK/posts"; exit 0; fi
+seen=$(cat "$WORK/cursor" 2>/dev/null || echo 0)
+poll=$(sed -n "$((seen + 1))p" "$WORK/polls")
+[ -n "$poll" ] || poll=$(tail -1 "$WORK/polls")
+[ "$poll" != unreadable ] || exit 1
+case "$filter" in
+  # `.url` and `.status` are read as one logical poll; only the second advances.
+  .url) printf 'https://api.github.com/repos/o/r/pages/builds/%s\n' "${poll%% *}" ;;
+  .status) echo $((seen + 1)) >"$WORK/cursor"; printf '%s\n' "${poll##* }" ;;
+  *) exit 1 ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &stub,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(work.join("polls"), format!("{}\n", polls.join("\n"))).unwrap();
+
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/visual-docs-pages-build.sh");
+    let output = std::process::Command::new("bash")
+        .arg(&script)
+        .arg(subcommand)
+        .env("WORK", &work)
+        .env("GH_BIN", &stub)
+        .env("REPO", "o/r")
+        .env("PREVIOUS_BUILD", previous_build)
+        .env("POLL_SECONDS", "0")
+        .env("APPEAR_ATTEMPTS", "3")
+        .env("SETTLE_ATTEMPTS", "3")
+        .output()
+        .unwrap();
+    let posts = std::fs::read_to_string(work.join("posts"))
+        .map(|log| log.lines().count())
+        .unwrap_or(0);
+    (output, posts)
+}
+
+/// A multi-project run must not finish green with the gallery unpublished. The
+/// gate passes only once the build the deploy triggered reaches `built`, retries
+/// a superseded one exactly once (the failure mode this change exists for), and
+/// fails loudly when it still errors.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
+    let dir = TempDir::new().unwrap();
+
+    // `record` names the build already published, so the gate can tell the one
+    // the deploy triggers apart from it.
+    let (recorded, _) = run_pages_build_gate(dir.path(), "record", &["100 built"], "", "record");
+    assert!(recorded.status.success());
+    assert_eq!(String::from_utf8_lossy(&recorded.stdout).trim(), "100");
+
+    // Happy path: a new build appears, finishes, and the run proceeds.
+    let (ok, posts) = run_pages_build_gate(
+        dir.path(),
+        "built",
+        &["101 building", "101 built"],
+        "100",
+        "verify",
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("pages build succeeded"));
+    assert_eq!(posts, 0, "a healthy build needs no rebuild");
+
+    // Superseded by an external writer: `errored` with the same commit, which
+    // rebuilds cleanly. Recovered, not failed — and rebuilt exactly once.
+    let (recovered, posts) = run_pages_build_gate(
+        dir.path(),
+        "superseded",
+        &["101 errored", "101 errored", "102 building", "102 built"],
+        "100",
+        "verify",
+    );
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&recovered.stdout).contains("succeeded for o/r after a rebuild")
+    );
+    assert_eq!(posts, 1);
+
+    // Genuinely broken: still errored after the rebuild, so the run goes red
+    // instead of leaving the site errored and the gallery stale.
+    let (failed, posts) = run_pages_build_gate(
+        dir.path(),
+        "errored",
+        &["101 errored", "101 errored", "102 errored"],
+        "100",
+        "verify",
+    );
+    assert!(
+        !failed.status.success(),
+        "an errored build must fail the run"
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("::error::") && stderr.contains("the published gallery is stale"),
+        "{stderr}"
+    );
+    assert_eq!(posts, 1);
+
+    // A token without pages:read cannot observe the build. The coalesced deploy
+    // still happened, so warn rather than failing every run of a caller that
+    // never granted the permission.
+    let (unreadable, posts) =
+        run_pages_build_gate(dir.path(), "unreadable", &["unreadable"], "", "verify");
+    assert!(
+        unreadable.status.success(),
+        "{}",
+        String::from_utf8_lossy(&unreadable.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&unreadable.stderr).contains("::warning::"),
+        "{}",
+        String::from_utf8_lossy(&unreadable.stderr)
+    );
+    assert_eq!(posts, 0);
+}
+
+/// The coalescing has to be wired end to end to be worth anything: report lanes
+/// must hand galleries off instead of pushing, exactly one job must push them,
+/// and that job must be able to observe the resulting Pages build.
+#[test]
+fn coalesced_pages_deploy_is_wired_through_the_reusable_workflow() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let reusable =
+        std::fs::read_to_string(root.join(".github/workflows/visual-docs-reusable.yml")).unwrap();
+    let report = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let deploy = std::fs::read_to_string(root.join("visual-docs-pages/action.yml")).unwrap();
+    let scaffold = {
+        let dir = TempDir::new().unwrap();
+        let (result, _) = invoke(&["screencomp", "init", "--dir", &path_str(dir.path())]);
+        assert_eq!(result.unwrap(), 0);
+        std::fs::read_to_string(dir.path().join(".github/workflows/visual-docs.yml")).unwrap()
+    };
+
+    // Each lane hands off under a name the deploy job's default pattern matches.
+    assert!(
+        reusable.contains("pages-artifact: ${{ matrix.project && format('screencomp-gallery-{0}-{1}', matrix.project, matrix.arch) || format('screencomp-gallery-{0}', matrix.arch) }}"),
+        "report lanes must hand their gallery off instead of pushing it"
+    );
+    assert!(
+        deploy.contains("default: screencomp-gallery-*"),
+        "the deploy action must collect the artifacts the lanes hand off"
+    );
+
+    // Nothing else may push: every per-lane deploy is gated on hand-off being off,
+    // which is also what keeps a caller composing `visual-docs` alone unaffected.
+    let per_lane_pushes = report
+        .match_indices("uses: peaceiris/actions-gh-pages@v4")
+        .count();
+    assert_eq!(per_lane_pushes, 4, "the four per-lane deploy steps");
+    assert_eq!(
+        report.match_indices("inputs.pages-artifact == ''").count(),
+        5,
+        "each per-lane deploy plus the preview wait must be gated on direct-deploy mode"
+    );
+
+    // One push for the whole run, at the branch root: the merged artifacts already
+    // carry each lane's subpath, so a destination_dir would nest them twice.
+    assert_eq!(
+        deploy
+            .match_indices("uses: peaceiris/actions-gh-pages@v4")
+            .count(),
+        2,
+        "same-repository and external hosting, one push each"
+    );
+    assert!(
+        !deploy.contains("\n        destination_dir:"),
+        "the coalesced push must publish at the branch root"
+    );
+    assert_eq!(deploy.match_indices("keep_files: true").count(), 2);
+
+    // The job runs even when a lane failed the strict drift gate — the gallery and
+    // the comment a reviewer needs must still publish.
+    assert!(
+        reusable.contains(
+            "if: ${{ !cancelled() && inputs.pages && inputs.publish && needs.report.result != 'skipped' }}"
+        ),
+        "a drifted lane must still get its gallery published"
+    );
+    assert!(
+        reusable.contains("needs: [pages-preflight, arches, report]")
+            && reusable.contains("uses: nickderobertis/screencomp/visual-docs-pages@v0"),
+        "the deploy job must run after every report lane"
+    );
+
+    // Observing the build needs pages:read, which only the CALLER can grant. A
+    // called job that declares a permission the caller withheld fails the whole
+    // run at parse time, so the deploy job must declare none and inherit — else
+    // every existing caller breaks on upgrade — while the scaffold grants it.
+    let deploy_job = reusable.split("  deploy-pages:").nth(1).unwrap();
+    let deploy_job = deploy_job
+        .split_once("    steps:")
+        .expect("the deploy job must have steps")
+        .0;
+    assert!(
+        !deploy_job
+            .lines()
+            .any(|line| line.trim_start().starts_with("permissions:")),
+        "declaring permissions on the deploy job breaks callers that granted less: {deploy_job}"
+    );
+    assert!(
+        scaffold.contains("pages: read"),
+        "the scaffolded caller must grant pages:read: {scaffold}"
+    );
+
+    // External hosting keeps working on the one token it already had.
+    assert!(
+        reusable.contains("pages-repository: ${{ inputs.pages-repository }}")
+            && reusable.contains("pages-token: ${{ secrets.pages-token }}")
+            && deploy.contains("personal_token: ${{ inputs.pages-token }}")
+            && deploy.contains("external_repository: ${{ inputs.pages-repository }}")
+    );
+    assert!(
+        deploy.contains("visual-docs-pages-build.sh\" record")
+            && deploy.contains("visual-docs-pages-build.sh\" verify"),
+        "the deploy must be gated on the Pages build it triggers"
+    );
+}

@@ -119,6 +119,17 @@ inputs:
     description: 'Token with contents:write on pages-repository. Required for external Pages hosting.'
     required: false
     default: ''
+  pages-artifact:
+    description: >-
+      Hand this lane's gallery off as an artifact of this name instead of pushing
+      it, so a later job can deploy every lane in ONE gh-pages commit (see the
+      `visual-docs-pages` action). Empty (the default) keeps the per-lane push, so
+      a caller composing this action on its own is unaffected. Coalescing matters
+      because every push to the gallery branch starts a GitHub Pages build and a
+      newer build kills the one in flight: N lanes pushing seconds apart leave the
+      site `errored` with the newest gallery unpublished.
+    required: false
+    default: ''
   github-token:
     description: 'Token for posting the PR comment and deploying Pages.'
     required: false
@@ -333,8 +344,45 @@ runs:
         fi
         screencomp gallery "${args[@]}"
 
+    # Coalesced mode: stage this lane's gallery under the exact path it would have
+    # been pushed to and hand it off. Merging every lane's artifact reconstructs
+    # the same tree the per-lane pushes would have produced, so one push at the
+    # branch root with keep_files is byte-for-byte equivalent to N pushes into N
+    # destination_dirs — minus the N-1 superseded Pages builds and commits.
+    - name: Stage the gallery for a coalesced deploy
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact != '' }}
+      shell: bash
+      env:
+        DEST: ${{ steps.cfg.outputs.dest }}
+        SUBPATH: ${{ steps.cfg.outputs.subpath }}
+        EVENT_NAME: ${{ github.event_name }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+      run: |
+        set -euo pipefail
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          deploy_dir="pr-${PR_NUMBER}${SUBPATH}"
+        else
+          deploy_dir="$DEST"
+        fi
+        # A project-level layout on a push deploys to the branch root, so the
+        # staged tree is the gallery itself with no prefix.
+        staged="pages-upload${deploy_dir:+/$deploy_dir}"
+        mkdir -p "$staged"
+        cp -R site/. "$staged/"
+        echo "staged the gallery at ${deploy_dir:-<root>}"
+
+    - name: Hand the gallery off for a coalesced deploy
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.pages-artifact }}
+        path: pages-upload
+        if-no-files-found: error
+        retention-days: 1
+        include-hidden-files: true
+
     - name: Deploy canonical gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'push' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository == '' && github.event_name == 'push' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
@@ -345,7 +393,7 @@ runs:
         keep_files: true
 
     - name: Deploy PR preview gallery
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository == '' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository == '' && github.event_name == 'pull_request' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         github_token: ${{ inputs.github-token }}
@@ -354,7 +402,7 @@ runs:
         keep_files: true
 
     - name: Deploy canonical gallery externally
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'push' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository != '' && github.event_name == 'push' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         personal_token: ${{ inputs.pages-token }}
@@ -364,7 +412,7 @@ runs:
         keep_files: true
 
     - name: Deploy PR preview gallery externally
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-repository != '' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && inputs.pages-repository != '' && github.event_name == 'pull_request' }}
       uses: peaceiris/actions-gh-pages@v4
       with:
         personal_token: ${{ inputs.pages-token }}
@@ -374,7 +422,7 @@ runs:
         keep_files: true
 
     - name: Wait for the PR preview to go live
-      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && github.event_name == 'pull_request' }}
+      if: ${{ inputs.pages == 'true' && inputs.publish == 'true' && inputs.pages-artifact == '' && github.event_name == 'pull_request' }}
       shell: bash
       env:
         PREVIEW_URL: ${{ steps.cfg.outputs.preview_url }}

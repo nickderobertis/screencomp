@@ -25,6 +25,7 @@
   release workflow's `archive` pattern.
 - The downstream half lives in composable actions, not inline workflow steps:
   `action.yml` (install), `visual-docs/action.yml` (gate/gallery/Pages/comment),
+  `visual-docs-pages/action.yml` (the run-wide coalesced Pages deploy),
   `gh-pages-maintenance/action.yml` (cleanup/prune). The reusable workflow is thin
   glue that `uses:` them, and a hand-rolled caller composes the SAME actions
   (`examples/visual-docs-custom.yml`), so the two paths can't diverge. Because

@@ -77,11 +77,12 @@ jobs:
           curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
           chmod +x hadolint
           ./hadolint Dockerfile
-      # The gh-pages maintenance script is shared by the reusable workflow and the
-      # maintenance test; actionlint only lints shell embedded in workflows, so
-      # lint the extracted script here (shellcheck ships on the runner image).
+      # The gh-pages maintenance and Pages build-gate scripts are shared by the
+      # reusable workflow and their tests; actionlint only lints shell embedded in
+      # workflows, so lint the extracted scripts here (shellcheck ships on the
+      # runner image).
       - name: shellcheck
-        run: shellcheck scripts/visual-docs-gh-pages.sh
+        run: shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh
 
   # Prove the end-user install path, separate from the dev gate: exercise the
   # composite action end to end — install from source, then use the binary it

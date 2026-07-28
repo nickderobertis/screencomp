@@ -201,9 +201,38 @@ may use any traversal-free relative path. The capture command receives
 `SCREENCOMP_PROJECT` and a project/arch-specific `SHOTS_OUT`. Every affected
 project gets its own reproducibility lane, baseline, gallery path, and sticky
 comment. Capture lanes run in parallel, while report lanes are serialized because
-they write shared PR and `gh-pages` branches. Projects absent from the runtime
+they write the shared PR branch. Projects absent from the runtime
 array are not captured or classified.
 An empty `projects` array preserves the original single-capture behavior.
+
+##### One `gh-pages` commit per run, gated on the Pages build
+
+Every push to `gh-pages` starts its own GitHub Pages build, and GitHub kills the
+build in flight the instant a newer one is queued — the superseded build is
+recorded `errored` with a bare `Page build failed.` and a duration of 0. Report
+lanes finish seconds apart, so a run with several projects used to leave the site
+`errored` with the newest gallery unpublished, silently: `keep_files` meant the
+*content* converged, but a reviewer following a comment link saw stale or missing
+screenshots with nothing gone red.
+
+So the lanes don't push. Each hands its gallery off as an artifact staged under
+the exact subpath it would have deployed to, and a run-wide `deploy-pages` job
+merges them and publishes **one** commit — the same tree N pushes into N
+`destination_dir`s produced, with one commit and one Pages build instead of N.
+That also stops the branch accreting a run's worth of PNG blobs per project. It
+then waits for that build and **fails the run if it errored**, retrying once
+first, since a superseded build is transient and the identical commit builds
+cleanly unraced. A single-project run is unaffected: one artifact, one commit,
+one build, exactly as before.
+
+Coalescing removes the race a run creates for itself, not one created from
+outside it (a scheduled prune, a second repository deploying into a shared
+gallery) — hence the gate as well. Observing a build needs `pages: read` on the
+deploying token, which the `init` scaffold grants; a caller that doesn't grant it
+still gets the coalesced single commit, and the gate degrades to a warning rather
+than failing every run. A [custom-steps caller](#when-your-capture-needs-custom-steps-the-composite-actions)
+composes the same `visual-docs-pages` action after its own report lanes, passing
+each lane's `pages-artifact` name to the `visual-docs` action.
 
 ##### One combined comment for many projects (`comment-mode: aggregated`)
 
@@ -351,7 +380,9 @@ A reusable workflow takes a `capture-command` *string*, so it can't host capture
 steps that must be GitHub Actions — private-registry OIDC auth, `aws-actions/*`,
 a vendored setup action. The reusable workflow is itself just thin glue over
 **composable actions** — `screencomp` (install), `screencomp/visual-docs` (the
-gate/gallery/Pages/comment half), and `screencomp/gh-pages-maintenance` (preview
+gate/gallery/Pages/comment half), `screencomp/visual-docs-pages` (the coalesced
+one-commit Pages deploy plus its build gate), and
+`screencomp/gh-pages-maintenance` (preview
 cleanup + history prune) — so for custom capture you write the same jobs yourself
 and inject whatever you need. "Add OIDC auth", "swap the registry", or "install an
 extra package" is just another step you control, no framework to reimplement.
