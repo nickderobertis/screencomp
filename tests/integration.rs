@@ -3011,7 +3011,11 @@ for arg in "$@"; do
   case "$prev" in --jq) filter="$arg" ;; --method) method="$arg" ;; esac
   prev="$arg"
 done
-if [ "$method" = POST ]; then echo rebuild >>"$WORK/posts"; exit 0; fi
+if [ "$method" = POST ]; then
+  echo rebuild >>"$WORK/posts"
+  [ ! -f "$WORK/deny-rebuild" ] || exit 1
+  exit 0
+fi
 seen=$(cat "$WORK/cursor" 2>/dev/null || echo 0)
 poll=$(sed -n "$((seen + 1))p" "$WORK/polls")
 [ -n "$poll" ] || poll=$(tail -1 "$WORK/polls")
@@ -3138,6 +3142,84 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
         String::from_utf8_lossy(&unreadable.stderr)
     );
     assert_eq!(posts, 0);
+
+    // Pages is readable but the branch drives no build (an Actions-sourced site,
+    // say), so the deploy simply goes unverified. Warn with the setting to change.
+    let (absent, posts) =
+        run_pages_build_gate(dir.path(), "absent", &["100 built"], "100", "verify");
+    assert!(
+        absent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&absent.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&absent.stderr).contains("Deploy from a branch"),
+        "{}",
+        String::from_utf8_lossy(&absent.stderr)
+    );
+    assert_eq!(posts, 0);
+
+    // A build that never settles leaves the gallery stale just as surely as one
+    // that errors, so it fails rather than timing out into a green run.
+    let (stuck, _) = run_pages_build_gate(dir.path(), "stuck", &["101 building"], "100", "verify");
+    assert!(!stuck.status.success());
+    assert!(
+        String::from_utf8_lossy(&stuck.stderr).contains("still running after 3 polls"),
+        "{}",
+        String::from_utf8_lossy(&stuck.stderr)
+    );
+
+    // Recovering from a supersede needs pages:write. When the rebuild is refused
+    // the gate cannot recover, so it fails and names the missing permission.
+    std::fs::create_dir_all(dir.path().join("denied")).unwrap();
+    std::fs::write(dir.path().join("denied/deny-rebuild"), "").unwrap();
+    let (denied, posts) = run_pages_build_gate(
+        dir.path(),
+        "denied",
+        &["101 errored", "101 errored"],
+        "100",
+        "verify",
+    );
+    assert!(!denied.status.success());
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("pages:write"),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    assert_eq!(posts, 1);
+
+    // A typo in the composing action must not look like a healthy deploy.
+    let (unknown, _) = run_pages_build_gate(dir.path(), "unknown", &["100 built"], "", "publish");
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8_lossy(&unknown.stderr).contains("want record|verify"),
+        "{}",
+        String::from_utf8_lossy(&unknown.stderr)
+    );
+
+    // The repository and the poll budget reach the API path, arithmetic, and
+    // `sleep`, so a malformed one is rejected up front instead of hanging or
+    // producing a nonsense request.
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/visual-docs-pages-build.sh");
+    for (repo, attempts, expected) in [
+        ("not-a-repository", "3", "REPO must be an owner/name"),
+        ("o/r", "many", "APPEAR_ATTEMPTS must be a non-negative"),
+    ] {
+        let rejected = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("verify")
+            .env("REPO", repo)
+            .env("APPEAR_ATTEMPTS", attempts)
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success(), "{repo} {attempts}");
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+    }
 }
 
 /// The coalescing has to be wired end to end to be worth anything: report lanes

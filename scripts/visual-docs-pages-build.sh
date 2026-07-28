@@ -54,6 +54,14 @@ warn() {
 }
 
 [ -n "${REPO:-}" ] || die "REPO is required"
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+  die "REPO must be an owner/name, got '${REPO}'"
+# The poll budget is interpolated into arithmetic and `sleep`, so reject anything
+# that is not a plain count before it becomes a hang or a shell error.
+for knob in POLL_SECONDS APPEAR_ATTEMPTS SETTLE_ATTEMPTS; do
+  [[ "${!knob}" =~ ^[0-9]+$ ]] ||
+    die "${knob} must be a non-negative whole number, got '${!knob}'"
+done
 
 # Echo "<build-id> <status>" for the newest Pages build, or nothing when the API
 # cannot be read — no pages:read on the token, Pages disabled, a Pages source
@@ -139,11 +147,11 @@ cmd_verify() {
       return 0
       ;;
     absent)
-      warn "no new Pages build appeared for ${REPO} after ${APPEAR_ATTEMPTS} polls; the gallery branch may not be the Pages source"
+      warn "no new Pages build appeared for ${REPO} after ${APPEAR_ATTEMPTS} polls, so the deploy went unverified; if the gallery should be published, set Settings -> Pages -> Source to 'Deploy from a branch: gh-pages /' on ${REPO}"
       return 0
       ;;
     stuck)
-      die "the Pages build for ${REPO} was still running after ${SETTLE_ATTEMPTS} polls; the published gallery is stale"
+      die "the Pages build for ${REPO} was still running after ${SETTLE_ATTEMPTS} polls; the published gallery is stale until it finishes — watch it at https://github.com/${REPO}/deployments and re-run this job once it settles"
       ;;
   esac
 
