@@ -436,7 +436,6 @@ jobs:
           pages-artifact: ${{ matrix.project && format('screencomp-gallery-{0}-{1}', matrix.project, matrix.arch) || format('screencomp-gallery-{0}', matrix.arch) }}
           github-token: ${{ secrets.push-token || github.token }}
 
-  # ---- Deploy: ONE gh-pages commit for the whole run ------------------------
   # Each report lane used to push its own gallery, and every push to the gallery
   # branch starts a GitHub Pages build that kills whichever build is in flight —
   # so a run with several projects left the site `errored` with the newest gallery

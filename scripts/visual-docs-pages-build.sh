@@ -60,6 +60,8 @@ warn() {
   echo "::warning::visual-docs-pages-build: $*" >&2
 }
 
+command -v "$GH_BIN" >/dev/null 2>&1 ||
+  die "GH_BIN '${GH_BIN}' is not an executable command"
 [ -n "${REPO:-}" ] || die "REPO is required"
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
   die "REPO must be an owner/name, got '${REPO}'"
