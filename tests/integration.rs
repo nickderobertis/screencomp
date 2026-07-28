@@ -3322,4 +3322,17 @@ fn coalesced_pages_deploy_is_wired_through_the_reusable_workflow() {
             && deploy.contains("visual-docs-pages-build.sh\" verify"),
         "the deploy must be gated on the Pages build it triggers"
     );
+
+    // peaceiris pushes no commit when the published bytes are unchanged, so no
+    // build starts. Gating on the branch head moving keeps a healthy no-op re-run
+    // from waiting for a build that never comes and then blaming the Pages source.
+    assert!(
+        deploy.contains("if: ${{ steps.published.outputs.published == 'true' }}"),
+        "the gate must only run when the deploy actually published a commit"
+    );
+    assert_eq!(
+        deploy.match_indices("refs/heads/${BRANCH}").count(),
+        2,
+        "the head is read before and after the push, on the branch peaceiris wrote"
+    );
 }

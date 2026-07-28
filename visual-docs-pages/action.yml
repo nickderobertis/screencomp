@@ -59,6 +59,10 @@ inputs:
     description: 'Token with contents:write on pages-repository. Required for external Pages hosting.'
     required: false
     default: ''
+  publish-branch:
+    description: 'The published gallery branch (peaceiris''s default).'
+    required: false
+    default: gh-pages
   github-token:
     description: 'Token for deploying to this repository''s gallery branch.'
     required: false
@@ -112,19 +116,24 @@ runs:
           echo "no gallery artifacts were handed off; nothing to deploy"
         fi
 
-    # Read the build that is current BEFORE the push, so the gate below can tell
-    # the build this deploy triggers apart from the one already published.
+    # Read what is current BEFORE the push: the build id, so the gate can tell the
+    # build this deploy triggers apart from the one already published, and the
+    # branch head, so the gate can tell a real deploy from a no-op one.
     - name: Record the current Pages build
       id: before
       if: ${{ steps.probe.outputs.deploy == 'true' }}
       shell: bash
       env:
         REPO: ${{ steps.cfg.outputs.pages_repo }}
+        BRANCH: ${{ inputs.publish-branch }}
         GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
       run: |
         set -euo pipefail
         build="$(bash "${GITHUB_ACTION_PATH}/../scripts/visual-docs-pages-build.sh" record)"
         echo "build=$build" >>"$GITHUB_OUTPUT"
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        echo "head=$head" >>"$GITHUB_OUTPUT"
 
     - name: Deploy every gallery in one commit
       if: ${{ steps.probe.outputs.deploy == 'true' && inputs.pages-repository == '' }}
@@ -132,6 +141,7 @@ runs:
       with:
         github_token: ${{ inputs.github-token }}
         publish_dir: site
+        publish_branch: ${{ inputs.publish-branch }}
         # No destination_dir: the merged artifacts already carry each lane's
         # subpath. keep_files preserves galleries this run did not rebuild.
         keep_files: true
@@ -143,12 +153,38 @@ runs:
         personal_token: ${{ inputs.pages-token }}
         external_repository: ${{ inputs.pages-repository }}
         publish_dir: site
+        publish_branch: ${{ inputs.publish-branch }}
         keep_files: true
+
+    # A deploy that changed nothing pushes no commit and therefore starts no
+    # build. Without this the gate would wait for a build that is never coming and
+    # then warn about the Pages source — misleading advice for a healthy no-op,
+    # which is what a re-run of an unchanged gallery is.
+    - name: Check whether anything was published
+      id: published
+      if: ${{ steps.probe.outputs.deploy == 'true' }}
+      shell: bash
+      env:
+        REPO: ${{ steps.cfg.outputs.pages_repo }}
+        BRANCH: ${{ inputs.publish-branch }}
+        BEFORE: ${{ steps.before.outputs.head }}
+        GH_TOKEN: ${{ inputs.pages-repository != '' && inputs.pages-token || inputs.github-token }}
+      run: |
+        set -euo pipefail
+        head="$(git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" \
+          "refs/heads/${BRANCH}" | cut -f1)"
+        if [ "$head" = "$BEFORE" ]; then
+          echo "published=false" >>"$GITHUB_OUTPUT"
+          echo "every gallery was already published byte for byte; no commit, no build to gate on"
+        else
+          echo "published=true" >>"$GITHUB_OUTPUT"
+          echo "published ${BRANCH} ${BEFORE:0:8} -> ${head:0:8}"
+        fi
 
     # The gate. A build that ends `errored` means the newest gallery was never
     # published, so the run must go red rather than pass silently.
     - name: Wait for the Pages build
-      if: ${{ steps.probe.outputs.deploy == 'true' }}
+      if: ${{ steps.published.outputs.published == 'true' }}
       shell: bash
       env:
         REPO: ${{ steps.cfg.outputs.pages_repo }}
