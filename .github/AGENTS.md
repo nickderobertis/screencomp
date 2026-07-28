@@ -72,11 +72,51 @@
   actions to that ref, not `@v0`: a brand-new action does not exist under `@v0`
   until it ships, so coalescing changes CANNOT be self-tested from this repo
   before release. `single-direct` vs `single-coalesced` upload published-tree
-  digests; diffing them is the single-project no-op proof. Re-run it whenever the
-  coalescing, the artifact staging, or the build gate changes.
+  digests; diffing them is the single-project no-op proof, and `single-direct`
+  additionally asserts, inside the lane, that its own Pages build had settled
+  before the action returned. Re-run it whenever the coalescing, the artifact
+  staging, or the build gate changes. Keep the repository public and undeleted:
+  it is the only live proof of any of this, and the galleries must be
+  anonymously fetchable.
+- The external `pages-repository` + PAT path is NOT proven live and cannot be
+  from here: it needs a second repository plus a token with `contents: write` on
+  it, and the only such token available (`SCREENCOMP_DEMO_PAT`) points at a real
+  consumer whose `gh-pages` must not be written by a test.
+  `nickderobertis/nick-derobertis-site` is the real user of it. What IS covered:
+  the gate's shell is identical whichever host it runs against (only `REPO` and
+  `GH_TOKEN` differ, both contract-asserted), and `pages-token` is validated at
+  the boundary. Residual risk: the `git ls-remote` the gate uses to tell a real
+  deploy from a no-op runs against the external repository, so a token that
+  cannot read its refs fails the lane one step earlier than it would otherwise
+  have failed — such a token could not have pushed the gallery either, which
+  bounds the exposure to the error message. A token that can push but cannot read
+  the Pages API degrades to a `::warning::` and passes, exactly as on the
+  same-repository path.
 - Sizing anything that waits on a FAILING Pages build: GitHub holds it in
   `building` for 13-27 minutes (measured), against ~20-30s for a healthy one. A
   superseded build is the exception and reports in seconds.
+- There are TWO ways a gallery reaches `gh-pages` — `visual-docs`'s direct
+  per-lane deploy (`pages-artifact` empty) and `visual-docs-pages`'s coalesced
+  one. Both must be gated on the Pages build they trigger, via the SAME three
+  steps driving `scripts/visual-docs-pages-build.sh`, or the defect the gate
+  exists for stays reachable on the ungated one.
+  `pages_build_gate_is_identical_on_both_deploy_paths` holds the two copies
+  byte-identical, so edit them together. The direct path reads `gh-pages` because
+  its deploy steps leave peaceiris's `publish_branch` at the default — do not
+  introduce an input that could configure the deploy and the gate out of step.
+- **Release-gated, because `uses:` cannot interpolate a ref.** The reusable
+  workflow and the `init` scaffold reach these actions through the floating `@v0`
+  tag, which only advances at release, so a change to a composite action is not
+  exercised on its real consumers until it ships. The `screencomp-pages-e2e`
+  fixture covers what it can pre-release by pinning the branch, but two things
+  cannot be: the reusable workflow's own `@v0` wiring, and `screencomp-demo`
+  (whose caller is `@v0`). After releasing a change to `visual-docs/action.yml`,
+  `visual-docs-pages/action.yml`, or `scripts/visual-docs-pages-build.sh`, run:
+  (1) `gh api repos/nickderobertis/screencomp-demo/pages/builds/latest --jq
+  .status` after the release's `sync-demo` run, expecting `built`; and (2) check
+  that demo run's `report`/`deploy-pages` job logs contain `pages build
+  succeeded`. A `::warning::` about `pages:read` there means the consumer's caller
+  predates the scaffold that grants it.
 - `screencomp-demo`'s entire source is managed HERE, in the `demo/` subdir (the
   source of truth): its static pages, the Playwright config + spec that capture
   them, `screencomp.toml`, and the caller workflow under `demo/.github/`. A CLI

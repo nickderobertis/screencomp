@@ -89,12 +89,13 @@ jobs:
   # One composable action: reproducibility gate, classify, gallery, Pages deploy,
   # sticky PR comment, manifest push. Same action the reusable workflow calls.
   #
-  # One project, so this lane deploys its own gallery — one push, one Pages build.
-  # Fan this job out over several projects and that stops being safe: each push
-  # starts a Pages build that kills the one in flight, leaving the site `errored`.
-  # Set `pages-artifact: screencomp-gallery-<project>` here and add a job after
+  # One project, so this lane deploys its own gallery — one push, one Pages build,
+  # which the action then waits for and fails the job on if it errored.
+  # Fan this job out over several projects and each lane still gates, but you pay
+  # for N commits and N serialized builds. Set
+  # `pages-artifact: screencomp-gallery-<project>` here instead and add a job after
   # this one composing `nickderobertis/screencomp/visual-docs-pages@v0`, which
-  # publishes every lane in one commit and fails if that build errors.
+  # publishes every lane in one commit and gates on that single build.
   report:
     needs: capture
     runs-on: ubuntu-latest

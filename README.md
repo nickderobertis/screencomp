@@ -234,6 +234,14 @@ than failing every run. A [custom-steps caller](#when-your-capture-needs-custom-
 composes the same `visual-docs-pages` action after its own report lanes, passing
 each lane's `pages-artifact` name to the `visual-docs` action.
 
+Leaving `pages-artifact` empty keeps the direct per-lane deploy, and **that path
+is gated too** — the same shipped script, so a lane never returns with its own
+Pages build still in flight. So a caller composing `visual-docs` on its own is
+never on an ungated route, and a caller that does fan the action out over several
+projects without coalescing gets lanes that serialize on their builds instead of
+superseding one another. Coalescing is still what you want there: it turns N
+commits and N builds into one.
+
 ##### One combined comment for many projects (`comment-mode: aggregated`)
 
 By default every project posts its own sticky comment, so a monorepo with a dozen

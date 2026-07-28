@@ -2842,25 +2842,37 @@ fn doctor_env_quiet_suppresses_human_output() {
     );
 }
 
-/// Extract one composite-action step's `run:` block as a runnable bash script,
+/// Extract one composite-action step's `run:` as a runnable bash script,
 /// undenting it and substituting the `github.*` expressions the runner would
-/// have expanded. The shipped shell is then executed verbatim.
+/// have expanded. The shipped shell is then executed verbatim. Both a `run: |`
+/// block and a one-line `run:` are supported.
 #[cfg(unix)]
 fn action_step_script(action: &str, step_name: &str) -> String {
-    let step = action
+    let start = action
         .find(&format!("    - name: {step_name}\n"))
         .unwrap_or_else(|| panic!("no step named {step_name}"));
-    let run = action[step..].find("      run: |\n").unwrap() + step + "      run: |\n".len();
-    let end = action[run..]
-        .find("\n    - name:")
-        .map(|offset| run + offset)
-        .unwrap_or(action.len());
-    action[run..end]
-        .lines()
-        .map(|line| line.strip_prefix("        ").unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .replace("${{ github.repository }}", "source/app")
+    // Bound the slice to this step first: a step whose `run:` is a single line
+    // would otherwise pick up a later step's block.
+    let step = &action[start..];
+    let step = step
+        .split_once("\n    - name:")
+        .map_or(step, |(head, _)| head);
+    let body = match step.split_once("      run: |\n") {
+        Some((_, block)) => block
+            .lines()
+            .map(|line| line.strip_prefix("        ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        None => step
+            .split_once("      run: ")
+            .unwrap_or_else(|| panic!("step {step_name} has no run:"))
+            .1
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+    };
+    body.replace("${{ github.repository }}", "source/app")
         .replace("${{ github.repository_owner }}", "source")
         .replace("${{ github.event.repository.name }}", "app")
         .replace("${{ github.event.pull_request.number }}", "17")
@@ -2986,21 +2998,13 @@ fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
     );
 }
 
-/// Drive the shipped Pages build gate against a stub `gh`: real script, real
-/// bash, only the GitHub API boundary replaced. The stub answers each
+/// Write a stub `gh` that replaces only the GitHub API boundary: it answers each
 /// `--jq` selector from a scripted list of "<build-id> <status>" polls and
-/// records rebuild requests, so the gate's decisions are the only thing under
-/// test.
+/// records rebuild requests, so the shipped script's decisions — real bash, real
+/// script — are the only thing under test. `$WORK` must point at `work`.
 #[cfg(unix)]
-fn run_pages_build_gate(
-    dir: &Path,
-    label: &str,
-    polls: &[&str],
-    previous_build: &str,
-    subcommand: &str,
-) -> (std::process::Output, usize) {
-    let work = dir.join(label);
-    std::fs::create_dir_all(&work).unwrap();
+fn write_gh_stub(work: &Path, polls: &[&str]) -> PathBuf {
+    std::fs::create_dir_all(work).unwrap();
     let stub = work.join("gh");
     std::fs::write(
         &stub,
@@ -3035,7 +3039,28 @@ esac
     )
     .unwrap();
     std::fs::write(work.join("polls"), format!("{}\n", polls.join("\n"))).unwrap();
+    stub
+}
 
+/// Count the rebuild requests the stub recorded for one work directory.
+#[cfg(unix)]
+fn gh_stub_rebuilds(work: &Path) -> usize {
+    std::fs::read_to_string(work.join("posts"))
+        .map(|log| log.lines().count())
+        .unwrap_or(0)
+}
+
+/// Run one subcommand of the shipped Pages build gate against that stub.
+#[cfg(unix)]
+fn run_pages_build_gate(
+    dir: &Path,
+    label: &str,
+    polls: &[&str],
+    previous_build: &str,
+    subcommand: &str,
+) -> (std::process::Output, usize) {
+    let work = dir.join(label);
+    let stub = write_gh_stub(&work, polls);
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/visual-docs-pages-build.sh");
     let output = std::process::Command::new("bash")
@@ -3050,9 +3075,7 @@ esac
         .env("SETTLE_ATTEMPTS", "3")
         .output()
         .unwrap();
-    let posts = std::fs::read_to_string(work.join("posts"))
-        .map(|log| log.lines().count())
-        .unwrap_or(0);
+    let posts = gh_stub_rebuilds(&work);
     (output, posts)
 }
 
@@ -3257,8 +3280,8 @@ fn coalesced_pages_deploy_is_wired_through_the_reusable_workflow() {
     assert_eq!(per_lane_pushes, 4, "the four per-lane deploy steps");
     assert_eq!(
         report.match_indices("inputs.pages-artifact == ''").count(),
-        5,
-        "each per-lane deploy plus the preview wait must be gated on direct-deploy mode"
+        7,
+        "each per-lane deploy, its build gate, and the preview wait must be gated on direct-deploy mode"
     );
 
     // One push for the whole run, at the branch root: the merged artifacts already
@@ -3380,14 +3403,6 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
         "\"https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git\"",
         &format!("\"{}\"", remote.display()),
     );
-    let head = |dir: &Path| {
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        String::from_utf8(out.stdout).unwrap().trim().to_string()
-    };
     let run = |before: &str, label: &str| {
         let output_file = dir.path().join(format!("out-{label}"));
         let result = std::process::Command::new("bash")
@@ -3412,7 +3427,7 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
     };
 
     // The push moved nothing: no commit, so no Pages build, so nothing to gate.
-    let (outputs, stdout) = run(&head(&remote), "unchanged");
+    let (outputs, stdout) = run(&head_of(&remote), "unchanged");
     assert!(outputs.contains("published=false"), "{outputs}");
     assert!(
         stdout.contains("no commit, no build to gate on"),
@@ -3421,7 +3436,7 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
 
     // A real deploy moves the branch head, and only then is there a build to wait
     // for.
-    let stale = head(&remote);
+    let stale = head_of(&remote);
     std::fs::write(remote.join("index.html"), "new gallery").unwrap();
     git(vec!["add", "."]);
     git(vec!["commit", "-qm", "deploy"]);
@@ -3433,4 +3448,218 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
     // which must still count as published rather than silently skipping the gate.
     let (outputs, _) = run("", "first-deploy");
     assert!(outputs.contains("published=true"), "{outputs}");
+}
+
+/// A caller composing `visual-docs` on its own still deploys per lane, and that
+/// path pushed and returned without ever observing the Pages build it started —
+/// the original defect, on the route the coalesced deploy does not take. Gating it
+/// through the SAME shipped script is what keeps the two from diverging, so hold
+/// the shell byte-identical: an edit to one path that skips the other fails here.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_is_identical_on_both_deploy_paths() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let direct = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let coalesced = std::fs::read_to_string(root.join("visual-docs-pages/action.yml")).unwrap();
+
+    for step in [
+        "Record the current Pages build",
+        "Check whether anything was published",
+        "Wait for the Pages build",
+    ] {
+        assert_eq!(
+            action_step_script(&direct, step),
+            action_step_script(&coalesced, step),
+            "the '{step}' step must be the same shell on both deploy paths"
+        );
+    }
+
+    // Order is the contract: read the build id and branch head BEFORE the push,
+    // compare and wait after it. A gate that ran before its own deploy would
+    // observe the previous run's build and pass on a broken one.
+    let index = |needle: &str| direct.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert!(
+        index("    - name: Record the current Pages build")
+            < index("    - name: Deploy canonical gallery")
+            && index("    - name: Deploy PR preview gallery externally")
+                < index("    - name: Check whether anything was published")
+            && index("    - name: Check whether anything was published")
+                < index("    - name: Wait for the Pages build"),
+        "the direct deploy must be sandwiched by its build gate"
+    );
+    // The build settling is what the preview URL is waiting on, so gate first.
+    assert!(
+        index("    - name: Wait for the Pages build")
+            < index("    - name: Wait for the PR preview to go live")
+    );
+    // The gate reads the branch peaceiris writes, and the direct deploys leave
+    // `publish_branch` at its default — so no new input, and no way to configure
+    // the two out of step.
+    assert!(
+        !direct.contains("publish_branch:") && direct.contains("BRANCH: gh-pages"),
+        "the direct deploy's gallery branch is peaceiris's default"
+    );
+}
+
+/// Drive the direct per-lane deploy's gate end to end: the shipped step scripts,
+/// a real local git remote for the branch-head reads, and a stub `gh` for the
+/// build status. An errored build must fail the lane rather than let it return
+/// green with the gallery unpublished.
+#[cfg(unix)]
+#[test]
+fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
+    let dir = TempDir::new().unwrap();
+    let remote = dir.path().join("gallery");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("index.html"), "gallery").unwrap();
+
+    let git = |args: Vec<&str>| {
+        assert!(
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&remote)
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    };
+    git(vec!["init", "-q"]);
+    git(vec!["config", "user.name", "Test"]);
+    git(vec!["config", "user.email", "test@example.com"]);
+    git(vec!["add", "."]);
+    git(vec!["commit", "-qm", "gallery"]);
+    git(vec!["branch", "-M", "gh-pages"]);
+
+    // Only the remote URL is substituted; every decision below is the shipped
+    // shell. `$GITHUB_ACTION_PATH` is where the runner unpacks the action, which
+    // is how it reaches the sibling script.
+    let local = |step: &str| {
+        action_step_script(&action, step).replace(
+            "\"https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git\"",
+            &format!("\"{}\"", remote.display()),
+        )
+    };
+    let step = |script: &str, label: &str, polls: &[&str], envs: &[(&str, &str)]| {
+        let work = dir.path().join(label);
+        let stub = write_gh_stub(&work, polls);
+        let output_file = dir.path().join(format!("out-{label}"));
+        std::fs::write(&output_file, "").unwrap();
+        let mut command = std::process::Command::new("bash");
+        command
+            .arg("-c")
+            .arg(script)
+            .env("WORK", &work)
+            .env("GH_BIN", &stub)
+            .env("GITHUB_ACTION_PATH", root.join("visual-docs"))
+            .env("REPO", "docs/galleries")
+            .env("BRANCH", "gh-pages")
+            .env("GH_TOKEN", "token")
+            .env("POLL_SECONDS", "0")
+            .env("APPEAR_ATTEMPTS", "3")
+            .env("SETTLE_ATTEMPTS", "3")
+            .env("GITHUB_OUTPUT", &output_file);
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let result = command.output().unwrap();
+        (
+            result,
+            std::fs::read_to_string(&output_file).unwrap(),
+            gh_stub_rebuilds(&work),
+        )
+    };
+
+    // Before the push: the build already published, plus the branch head.
+    let (recorded, outputs, _) = step(
+        &local("Record the current Pages build"),
+        "before",
+        &["100 built"],
+        &[],
+    );
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    assert!(outputs.contains("build=100"), "{outputs}");
+    let before = output_value(&outputs, "head");
+    assert!(!before.is_empty(), "{outputs}");
+
+    // peaceiris pushes this lane's gallery.
+    std::fs::write(remote.join("index.html"), "new gallery").unwrap();
+    git(vec!["add", "."]);
+    git(vec!["commit", "-qm", "deploy"]);
+
+    let (checked, outputs, _) = step(
+        &local("Check whether anything was published"),
+        "published",
+        &["100 built"],
+        &[("BEFORE", &before)],
+    );
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+    assert!(outputs.contains("published=true"), "{outputs}");
+
+    // The gate. A build that errors even after the one retry means this lane's
+    // gallery was never published, so the lane must go red.
+    let (failed, _, rebuilds) = step(
+        &local("Wait for the Pages build"),
+        "errored",
+        &["101 errored", "101 errored", "102 errored"],
+        &[("PREVIOUS_BUILD", "100")],
+    );
+    assert!(
+        !failed.status.success(),
+        "a direct per-lane deploy must fail when its Pages build errors"
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("::error::") && stderr.contains("the published gallery is stale"),
+        "{stderr}"
+    );
+    assert_eq!(rebuilds, 1, "a superseded build is retried exactly once");
+
+    // The same wiring passes once the build settles, so the gate costs a healthy
+    // lane nothing but the wait.
+    let (ok, _, rebuilds) = step(
+        &local("Wait for the Pages build"),
+        "built",
+        &["101 building", "101 built"],
+        &[("PREVIOUS_BUILD", "100")],
+    );
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(String::from_utf8_lossy(&ok.stdout).contains("pages build succeeded"));
+    assert_eq!(rebuilds, 0);
+
+    // A re-run that publishes nothing pushes no commit, so there is no build to
+    // wait for and the gate is skipped rather than blaming the Pages source.
+    let (noop, outputs, _) = step(
+        &local("Check whether anything was published"),
+        "noop",
+        &["100 built"],
+        &[("BEFORE", &head_of(&remote))],
+    );
+    assert!(noop.status.success());
+    assert!(outputs.contains("published=false"), "{outputs}");
+}
+
+/// The current commit of a local git repository.
+#[cfg(unix)]
+fn head_of(repo: &Path) -> String {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
