@@ -3335,4 +3335,8 @@ fn coalesced_pages_deploy_is_wired_through_the_reusable_workflow() {
         2,
         "the head is read before and after the push, on the branch peaceiris wrote"
     );
+    assert!(
+        deploy.contains("publish-branch must be a plain branch name"),
+        "publish-branch reaches a refs/heads/ lookup, so validate it at the boundary"
+    );
 }

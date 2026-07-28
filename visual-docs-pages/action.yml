@@ -77,8 +77,16 @@ runs:
       env:
         INPUT_PAGES_REPOSITORY: ${{ inputs.pages-repository }}
         INPUT_PAGES_TOKEN: ${{ inputs.pages-token }}
+        INPUT_PUBLISH_BRANCH: ${{ inputs.publish-branch }}
       run: |
         set -euo pipefail
+        branch="$INPUT_PUBLISH_BRANCH"
+        # It is interpolated into a refs/heads/ lookup below; keep it a plain
+        # branch name rather than something that can reshape the ref.
+        if [[ ! "$branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ || "$branch" == *..* ]]; then
+          echo "::error::publish-branch must be a plain branch name" >&2
+          exit 1
+        fi
         pages_repo="$INPUT_PAGES_REPOSITORY"
         if [[ -n "$pages_repo" && ! "$pages_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
           echo "::error::pages-repository must be an owner/name" >&2

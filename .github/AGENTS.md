@@ -63,22 +63,20 @@
   single static concurrency group (`test-gh-pages-maintenance`, not keyed by ref,
   `cancel-in-progress: false`) serializes every run so two never mutate the shared
   demo repo at once and an in-flight run always finishes its branch cleanup.
-- `screencomp-pages-e2e` is the fixture that proves the COALESCED Pages deploy
-  against a real Pages site. Nothing in this repo can: the offline suite executes
-  the shipped shell and stubs the GitHub API, but a composite action, the
-  artifact hand-off between report lanes and `deploy-pages`, the peaceiris push,
-  and a real Pages build only exist on GitHub. That fixture holds its own driver
-  workflow (`pages-e2e.yml`); `scenario.txt` picks the proof (`multi`,
+- `screencomp-pages-e2e` is where the COALESCED Pages deploy is tested; nothing
+  here can test it (a composite action, the report->deploy artifact hand-off, the
+  peaceiris push, and a real Pages build only exist on GitHub). That fixture holds
+  its own driver workflow; `scenario.txt` picks the proof (`multi`,
   `single-direct`, `single-coalesced`, `errored`) and `screencomp-ref.txt` names
-  the screencomp ref under test, so a push to its `main` runs one scenario. It
-  pins the actions to that ref rather than calling the reusable workflow, because
-  the reusable workflow pins its actions to `@v0` and a brand-new action does not
-  exist under `@v0` until it ships — so a coalescing change CANNOT be self-tested
-  from here before release, and this fixture is how it gets tested at all. Its
-  `single-direct` vs `single-coalesced` scenarios upload the published tree's
-  digests so the two paths can be diffed: that comparison is the regression proof
-  that a single-project caller is unaffected. Re-run it whenever the deploy
+  the screencomp ref, so a push to its `main` runs one scenario. It pins the
+  actions to that ref, not `@v0`: a brand-new action does not exist under `@v0`
+  until it ships, so coalescing changes CANNOT be self-tested from this repo
+  before release. `single-direct` vs `single-coalesced` upload published-tree
+  digests; diffing them is the single-project no-op proof. Re-run it whenever the
   coalescing, the artifact staging, or the build gate changes.
+- Sizing anything that waits on a FAILING Pages build: GitHub holds it in
+  `building` for 13-27 minutes (measured), against ~20-30s for a healthy one. A
+  superseded build is the exception and reports in seconds.
 - `screencomp-demo`'s entire source is managed HERE, in the `demo/` subdir (the
   source of truth): its static pages, the Playwright config + spec that capture
   them, `screencomp.toml`, and the caller workflow under `demo/.github/`. A CLI
