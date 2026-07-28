@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/nickderobertis/screencomp/compare/v0.4.5...v0.4.6) - 2026-07-28
+
+### Fixed
+
+- publish every project's gallery in one gh-pages commit and gate both deploy paths on the Pages build ([#90](https://github.com/nickderobertis/screencomp/pull/90))
+
 ## [0.4.5](https://github.com/nickderobertis/screencomp/compare/v0.4.4...v0.4.5) - 2026-07-26
 
 ### Added
