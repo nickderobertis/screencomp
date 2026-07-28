@@ -157,7 +157,9 @@ cmd_verify() {
 
   # A superseded build errors with duration 0 and rebuilds cleanly, so ask for
   # one more before calling the gallery broken.
-  echo "pages build for ${REPO} ended '${status}'; requesting a rebuild"
+  # A warning, not progress chatter: something raced this deploy, which is worth
+  # surfacing even when the rebuild recovers it. stdout keeps one success line.
+  warn "pages build for ${REPO} ended '${status}', so something raced this deploy; requesting a rebuild"
   PREVIOUS_BUILD="$(cmd_record)"
   if ! "$GH_BIN" api --method POST "repos/${REPO}/pages/builds" >/dev/null 2>&1; then
     die "the Pages build for ${REPO} ended '${status}' and a rebuild could not be requested; grant the deploy token pages:write to recover from a superseded build"

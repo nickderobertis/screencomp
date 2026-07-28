@@ -386,8 +386,10 @@ jobs:
     needs: [pages-preflight, arches, capture]
     runs-on: ubuntu-latest
     strategy:
-      # Report lanes write the shared PR and gh-pages branches. max-parallel: 1
-      # keeps those checkouts/pushes ordered while capture remains fully parallel.
+      # Report lanes write the shared PR branch (the sticky comment and, under CI
+      # auto-accept, the manifest push). max-parallel: 1 keeps those checkouts and
+      # pushes ordered while capture remains fully parallel. The gallery branch is
+      # no longer among them — deploy-pages writes it once, for the whole run.
       fail-fast: false
       max-parallel: 1
       matrix:
