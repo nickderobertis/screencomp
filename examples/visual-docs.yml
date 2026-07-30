@@ -107,8 +107,11 @@ jobs:
         with:
           version: latest
 
-      # Replace with your real capture; it MUST write $SHOTS_OUT/captures.json
-      # (the index) plus the PNGs it references, computing each shot's hash.
+      # Replace with your real capture; it MUST leave $SHOTS_OUT/captures.json
+      # (the index) beside the PNGs it references. Either hash the shots in the
+      # capture itself, or write only the PNGs and let the CLI author the index —
+      # screencomp is installed in this job, so `index` is available here:
+      #   screencomp index --input "$SHOTS_OUT" --toggles-from-path
       - name: Capture screenshots
         run: |
           npm ci

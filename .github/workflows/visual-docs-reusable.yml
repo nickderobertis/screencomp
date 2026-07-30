@@ -351,7 +351,9 @@ jobs:
           echo "::endgroup::"
 
       # Your capture writes $SHOTS_OUT/captures.json plus its PNGs. No host tools are
-      # used here, so the container needs only your capture toolchain.
+      # used here, so the container needs only your capture toolchain — a capture
+      # that would rather not hash its own shots can install this CLI in the
+      # container and end with `screencomp index --input "$SHOTS_OUT"`.
       - name: Capture screenshots
         run: ${{ inputs.capture-command }}
 

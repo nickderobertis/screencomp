@@ -137,7 +137,9 @@ fn write_human(
         "\nNext steps:\n\
          1. Wire your real capture into .github/workflows/visual-docs.yml and\n   \
          .githooks/pre-push so each writes shots/current/{arch}/captures.json plus\n   \
-         the PNGs it references (each shot's name, toggles, hash, and image path).\n\
+         the PNGs it references (each shot's name, toggles, hash, and image path).\n   \
+         A capture that writes only PNGs can have screencomp author that index:\n   \
+         screencomp index --input shots/current --toggles-from-path\n\
          2. {step_2}\n\
          3. Seed the baseline once on {arch} and commit it:\n   \
          screencomp manifest --input shots/current \\\n     \
@@ -336,9 +338,12 @@ jobs:
       # stay under the 1/255 quantization step instead of flipping — the usual fix.
       # It is ~4x the bytes, so apply it to text-dense lanes, not pure-graphical
       # UIs. See the screencomp README \"Cross-CPU\" troubleshooting.
-      # Replace with your real capture. It MUST write $SHOTS_OUT/captures.json
-      # (each shot's name, toggles, hash, and image path) plus the PNGs it
+      # Replace with your real capture. It MUST leave $SHOTS_OUT/captures.json
+      # (each shot's name, toggles, hash, and image path) beside the PNGs it
       # references ($SHOTS_OUT is exported as shots/current/<arch> for each lane).
+      # The capture runs in the container with no host tools, so to have the CLI
+      # author that index instead, install screencomp in the container and end with:
+      #   screencomp index --input \"$SHOTS_OUT\" --toggles-from-path
       capture-command: |
         npm ci
         npx playwright install --with-deps chromium

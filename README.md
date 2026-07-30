@@ -18,6 +18,10 @@ plus a map of *toggles* (e.g. `theme=dark`, `viewport=desktop`), so the old fixe
 "project" dimension is gone — screen size and the like are now just toggles. From
 two such captures, `screencomp`:
 
+- **`index`** — the sanctioned form of that capture-side step: point it at the
+  directory your capture filled with PNGs and it hashes each one and writes the
+  `captures.json` (see [Author the capture index](#author-the-capture-index-index)),
+  so a capture step need not hand-roll hashing and index writing.
 - **`classify`** — compares `current` against `baseline` and labels each
   shot `added` / `changed` / `removed` / `unchanged` (by content hash).
 - **`gallery`** — renders a self-contained `index.html` index of a capture, or a
@@ -163,6 +167,20 @@ jobs:
         npx playwright test
     secrets:
       push-token: ${{ secrets.VISUAL_DOCS_PUSH_TOKEN }}   # optional; see below
+```
+
+The capture lane runs inside your pinned container with no host tools, so the
+command has to leave the index there itself. Either compute the hashes in your
+capture (as the [demo spec](demo/tests/screenshots.spec.ts) does), or install this
+CLI in that container and finish the command with
+[`screencomp index`](#author-the-capture-index-index):
+
+```yaml
+      capture-command: |
+        npm ci
+        npx playwright install --with-deps chromium
+        npx playwright test                       # writes only the PNGs
+        screencomp index --input "$SHOTS_OUT" --toggles-from-path
 ```
 
 The workflow takes no arch input: it reads `[capture].arches` from the committed
@@ -446,6 +464,7 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" \
 
 ```sh
 screencomp --help
+screencomp index --input path/to/current
 screencomp classify --baseline path/to/baseline --current path/to/current
 ```
 
@@ -485,6 +504,49 @@ capture into both the workflow and the hook, seed the baseline once and commit i
 (the `init` output prints the exact command). The gate is strict by default; to
 switch to [CI auto-accept](#pick-your-gate) set `fail-on-drift: false` and
 `update-manifest: true` in the workflow.
+
+### Author the capture index (`index`)
+
+The capture step owns the `captures.json` index, and `index` is the sanctioned way
+to write it: point it at the directory your capture filled with PNGs and it hashes
+each one and writes the index beside them.
+
+```sh
+# Flat capture: one shot per PNG, named after its relative path.
+screencomp index --input shots/current
+
+# Toggles encoded in the tree: home/viewport=mobile.png becomes
+# `home [viewport=mobile]`, so both viewports land on one gallery card.
+screencomp index --input shots/current --toggles-from-path
+
+# A toggle every shot of this pass shares (e.g. one capture pass per theme).
+screencomp index --input shots/current --toggle theme=dark
+```
+
+- A shot's name is its path relative to the capture root minus `.png`
+  (`checkout/step-2.png` → `checkout/step-2`). Anything that is not a `.png` is
+  ignored, so re-indexing a directory that already holds a `captures.json` — or a
+  rendered gallery — is safe and rewrites a byte-identical index when nothing
+  changed.
+- `--toggles-from-path` consumes any `key=value` path segment as a toggle instead
+  of making it part of the name, whether it is a directory or the filename, so
+  `theme=dark/home.png` and `home/theme=dark.png` both describe `home
+  [theme=dark]`. Repeat `--toggle KEY=VALUE` for dimensions the tree does not
+  encode; the two compose, and one key given two different values — whether by two
+  `--toggle` flags or by a path segment contradicting one — is an error rather
+  than a silent winner.
+- `--arch` resolves exactly as it does for every other command: with
+  `[capture].arches` configured, `--input shots/current` writes
+  `shots/current/<host arch>/captures.json`, the layout the capture lanes and
+  `classify` expect.
+- Two screenshots that resolve to one name and toggle map, or a directory with no
+  PNGs at all, are hard errors — never a silently short index that would later
+  read as "those shots were removed".
+- Each digest is the hex SHA-256 of the PNG's bytes, exactly what `sha256sum`
+  prints, so `index` and a capture step that hashes its own shots stay
+  interchangeable. The trust model is unchanged: hashing still happens on the
+  capture side, and every other command still compares only the hashes recorded in
+  `captures.json`, never the images.
 
 Given two captures — each a directory with a `captures.json` index plus its
 PNGs — that resolve to these shots:
@@ -1079,7 +1141,9 @@ no committed baseline to pass the gate yet. Seed it once, in the **same arch
 container CI uses**, then commit:
 
 ```sh
-# 1. Capture into shots/current/<arch>/captures.json (your real capture, in the pinned container).
+# 1. Capture into shots/current/<arch>/ (your real capture, in the pinned container).
+#    If the capture writes only PNGs, author its index:
+screencomp index --input shots/current --arch auto --toggles-from-path
 # 2. Confirm the capture is deterministic before you trust it as a baseline:
 screencomp verify --first shots/current --second shots/verify --arch auto
 # 3. Record the digests as the committed baseline and commit the .json file:

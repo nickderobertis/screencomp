@@ -10,14 +10,18 @@ comments, commit messages, or one-off notes.
 `screencomp` — a CLI for the visual-docs framework with deterministic,
 network-free operations over a *capture*: a `captures.json` index (each shot's
 `name`, `toggles`, content `hash`, and `image` path) plus the PNGs it references,
-optionally scoped under a `<root>/<arch>/` layer. Commands: `classify`, `gallery`
+optionally scoped under a `<root>/<arch>/` layer. Commands: `index` (author that
+index from a directory of PNGs), `classify`, `gallery`
 (renders user-defined toggle controls — theme, viewport, … — so one screen is one
 card you toggle through), `comment`, `manifest` (an image-free digest baseline),
 `verify` (the reproducibility gate — two captures of one build must be
 byte-identical), `doctor` (preflight the arch subtree and the index), and `arches`
 (print the configured `[capture].arches` for the CI matrix). Shots are compared by
 the `hash` recorded in `captures.json` — the hash IS the source of truth and
-nothing decodes (or re-hashes) images; the capture step owns producing it.
+nothing decodes images; the capture step owns producing the index, and `index` is
+that step's optional helper (the ONE command that reads image bytes, to hash them —
+hex SHA-256, matching `sha256sum`). Every other command reads only the recorded
+hash and must never re-hash.
 
 A shot's identity is its `name` plus its toggle map; there is no fixed `project`
 dimension — "screen size" and the like are just toggles, declared once in

@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `index` subcommand: author a capture's `captures.json` from the PNGs on disk, so
+  a capture step no longer hand-rolls SHA-256 hashing and index writing. Shot names
+  come from each PNG's relative path; `--toggles-from-path` recovers toggles from
+  `key=value` path segments and `--toggle KEY=VALUE` applies one to every shot.
+  `--arch` resolves like every other command.
+
 ## [0.4.6](https://github.com/nickderobertis/screencomp/compare/v0.4.5...v0.4.6) - 2026-07-28
 
 ### Fixed

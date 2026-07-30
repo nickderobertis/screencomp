@@ -31,6 +31,11 @@ pub struct Cli {
 /// Top-level subcommands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Write the `captures.json` index for a directory of captured PNGs: hash
+    /// each one and record its name, toggles, and relative path. The sanctioned
+    /// form of the capture step's index-writing half.
+    Index(IndexArgs),
+
     /// Classify a current capture against a baseline (added/changed/removed/unchanged).
     Classify(ClassifyArgs),
 
@@ -78,6 +83,36 @@ pub enum OutputFormat {
     Json,
 }
 
+/// Arguments for [`Command::Index`].
+#[derive(Debug, clap::Args)]
+pub struct IndexArgs {
+    /// Capture root holding the PNGs to index. `captures.json` is written inside
+    /// it (replacing any existing one), so every recorded image path stays
+    /// relative to the index.
+    #[arg(long, value_name = "DIR")]
+    pub input: Utf8PathBuf,
+
+    /// Index one CPU-arch subtree (`<root>/<arch>/...`) of `--input`, writing
+    /// `<root>/<arch>/captures.json`. `auto` detects the host arch. When omitted,
+    /// defaults to the host arch if `[capture].arches` is configured, else indexes
+    /// the root directly — the same resolution every other command uses.
+    #[arg(long, value_name = "ARCH")]
+    pub arch: Option<String>,
+
+    /// Toggle to record on *every* shot, as `KEY=VALUE`. Repeat for several
+    /// dimensions. For a capture pass that varies a dimension without encoding it
+    /// in the tree (e.g. one pass per theme into its own root).
+    #[arg(long = "toggle", value_name = "KEY=VALUE")]
+    pub toggles: Vec<KeyValue>,
+
+    /// Read toggles from `KEY=VALUE` path segments instead of treating them as
+    /// part of the name, so `theme=dark/home.png` and `home/theme=dark.png` both
+    /// describe `home [theme=dark]`. Without it a shot's name is its whole
+    /// relative path minus `.png`.
+    #[arg(long)]
+    pub toggles_from_path: bool,
+}
+
 /// Arguments for [`Command::Classify`].
 #[derive(Debug, clap::Args)]
 #[command(group(ArgGroup::new("classify_baseline").required(true).args(["baseline", "baseline_manifest"])))]
@@ -120,34 +155,51 @@ pub struct ClassifyArgs {
     pub exit_code: bool,
 }
 
-/// A validated toggle selector used to scope `classify`.
+/// A validated `KEY=VALUE` argument naming one toggle dimension and value —
+/// a selector to `classify --include`, an assignment to `index --toggle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IncludeSelector {
+pub struct KeyValue {
     key: String,
     value: String,
 }
 
-impl IncludeSelector {
+/// Historical name for [`KeyValue`], kept so `classify --include`'s argument type
+/// stays as published.
+pub type IncludeSelector = KeyValue;
+
+impl KeyValue {
     pub(crate) fn matches(&self, key: &str, value: &str) -> bool {
         self.key == key && self.value == value
     }
+
+    /// The toggle dimension key.
+    pub(crate) fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The value assigned to that dimension.
+    pub(crate) fn value(&self) -> &str {
+        &self.value
+    }
 }
 
-impl FromStr for IncludeSelector {
+impl FromStr for KeyValue {
     type Err = String;
 
-    fn from_str(selector: &str) -> Result<Self, Self::Err> {
-        let Some((key, value)) = selector.split_once('=') else {
-            return Err("include must be KEY=VALUE".to_owned());
+    // Clap names the offending flag in the error it wraps this in, so the reasons
+    // stay flag-neutral and read correctly for every KEY=VALUE argument.
+    fn from_str(pair: &str) -> Result<Self, Self::Err> {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err("expected KEY=VALUE".to_owned());
         };
         if key.is_empty() || value.is_empty() {
-            return Err("include key and value must not be empty".to_owned());
+            return Err("key and value must not be empty".to_owned());
         }
         if !key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err("include key must match [A-Za-z0-9_-]".to_owned());
+            return Err("key must match [A-Za-z0-9_-]".to_owned());
         }
         Ok(Self {
             key: key.to_owned(),
