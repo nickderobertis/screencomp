@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.7](https://github.com/nickderobertis/screencomp/compare/v0.4.6...v0.4.7) - 2026-07-30
+
+### Added
+
+- add index subcommand to build captures.json from PNGs ([#92](https://github.com/nickderobertis/screencomp/pull/92))
+
 ### Added
 
 - `index` subcommand: author a capture's `captures.json` from the PNGs on disk, so
