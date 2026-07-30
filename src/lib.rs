@@ -4,6 +4,8 @@
 //! `captures.json` index (each shot's toggles, content hash, and image path),
 //! optionally scoped under a `<root>/<arch>/` layer:
 //!
+//! - **index** author a capture's `captures.json` from the PNGs on disk (the one
+//!   command that hashes images, so a capture step need not hand-roll it),
 //! - **classify** a current capture against a baseline (added/changed/removed/unchanged),
 //! - **gallery** render a static HTML index of a capture, with user-defined toggle
 //!   controls (theme, viewport, …) so one screen is one card you toggle through,
@@ -60,6 +62,7 @@ pub fn run(cli: Cli, out: &mut dyn Write) -> Result<i32, AppError> {
         config,
     };
     match cli.command {
+        Command::Index(args) => commands::index::run(&args, &ctx, out),
         Command::Classify(args) => commands::classify::run(&args, &ctx, out),
         Command::Gallery(args) => commands::gallery::run(&args, &ctx, out),
         Command::Comment(args) => commands::comment::run(&args, &ctx, out),

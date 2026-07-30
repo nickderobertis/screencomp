@@ -7,6 +7,7 @@ pub(crate) mod classify;
 pub(crate) mod comment;
 pub(crate) mod doctor;
 pub(crate) mod gallery;
+pub(crate) mod index;
 pub(crate) mod init;
 pub(crate) mod manifest;
 pub(crate) mod scope;

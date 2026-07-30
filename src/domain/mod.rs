@@ -5,9 +5,11 @@
 
 pub(crate) mod classify;
 pub(crate) mod comment;
+pub(crate) mod digest;
 pub(crate) mod gallery;
 pub(crate) mod index;
 pub(crate) mod layout;
+pub(crate) mod naming;
 pub(crate) mod preflight;
 pub(crate) mod scope;
 pub(crate) mod snapshot;

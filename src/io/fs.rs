@@ -5,7 +5,9 @@ use std::fs;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
+use crate::domain::digest;
 use crate::domain::index::CaptureIndex;
+use crate::domain::naming;
 use crate::domain::snapshot::Snapshot;
 use crate::errors::AppError;
 
@@ -60,6 +62,73 @@ fn read_index_file(path: &Utf8Path) -> Result<Snapshot, AppError> {
             path: path.to_owned(),
             reason,
         })
+}
+
+/// Every PNG beneath `dir`, as `/`-separated paths relative to `dir` in sorted
+/// order.
+///
+/// The tree `index` turns into an index: directories are walked depth-first and
+/// anything that is not a `.png` (the `captures.json` it is about to write, a
+/// rendered gallery, a stray note) is ignored, so re-indexing a directory the tool
+/// itself has written to is safe. Symlinked directories are not followed — a
+/// capture is a plain tree, and following them risks a cycle. Sorting makes the
+/// resulting index independent of directory-read order.
+///
+/// Segments are joined with `/` rather than the platform separator, since these
+/// paths become the index's `image` values: one capture must describe the same
+/// shots whether it was indexed on Linux or Windows.
+pub(crate) fn find_pngs(dir: &Utf8Path) -> Result<Vec<String>, AppError> {
+    if !dir.is_dir() {
+        return Err(AppError::NotADirectory {
+            path: dir.to_owned(),
+        });
+    }
+    let mut found = Vec::new();
+    collect_pngs(dir, "", &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+/// Append every PNG under `<root>/<prefix>` to `found`, relative to `root`.
+fn collect_pngs(root: &Utf8Path, prefix: &str, found: &mut Vec<String>) -> Result<(), AppError> {
+    let dir = if prefix.is_empty() {
+        root.to_owned()
+    } else {
+        root.join(prefix)
+    };
+    let entries = fs::read_dir(&dir).map_err(|e| AppError::io(format!("reading {dir}"), e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::io(format!("reading {dir}"), e))?;
+        let name = entry.file_name();
+        // A non-UTF-8 name cannot be recorded in the index (which is JSON text),
+        // so it is a hard error rather than a lossy guess.
+        let Some(name) = name.to_str() else {
+            return Err(AppError::InvalidLayout {
+                path: dir.clone(),
+                reason: format!("entry {name:?} is not valid UTF-8"),
+            });
+        };
+        let relative = if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let kind = entry
+            .file_type()
+            .map_err(|e| AppError::io(format!("inspecting {dir}/{name}"), e))?;
+        if kind.is_dir() {
+            collect_pngs(root, &relative, found)?;
+        } else if naming::is_png(name) {
+            found.push(relative);
+        }
+    }
+    Ok(())
+}
+
+/// Hex SHA-256 of the file at `path` — the digest a `captures.json` entry records.
+pub(crate) fn hash_file(path: &Utf8Path) -> Result<String, AppError> {
+    let bytes = fs::read(path).map_err(|e| AppError::io(format!("reading {path}"), e))?;
+    Ok(digest::hex_sha256(&bytes))
 }
 
 /// Image paths in `snapshot` whose PNG is absent under `dir`, sorted and unique.
@@ -322,6 +391,55 @@ mod tests {
             snap.digest(&ShotKey::with("home", &[("theme", "dark")])),
             Some(hash.as_str())
         );
+    }
+
+    #[test]
+    fn find_pngs_walks_recursively_ignoring_everything_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = Utf8Path::from_path(tmp.path()).unwrap();
+        fs::create_dir_all(dir.join("home")).unwrap();
+        fs::write(dir.join("home/mobile.png"), b"m").unwrap();
+        fs::write(dir.join("home/desktop.PNG"), b"d").unwrap();
+        fs::write(dir.join("about.png"), b"a").unwrap();
+        // Not screenshots: the index this walk feeds, a rendered gallery, a note.
+        fs::write(dir.join(CAPTURES_FILE), b"{}").unwrap();
+        fs::write(dir.join("index.html"), b"<html>").unwrap();
+        fs::write(dir.join("notes"), b"x").unwrap();
+
+        let found = find_pngs(dir).unwrap();
+        assert_eq!(
+            found,
+            vec![
+                "about.png".to_owned(),
+                // `/`-joined on every platform, since these become index paths.
+                "home/desktop.PNG".to_owned(),
+                "home/mobile.png".to_owned(),
+            ],
+            "sorted, relative, PNGs only"
+        );
+    }
+
+    #[test]
+    fn find_pngs_missing_dir_is_not_a_directory() {
+        assert!(matches!(
+            find_pngs(Utf8Path::new("/no/such/capture")).unwrap_err(),
+            AppError::NotADirectory { .. }
+        ));
+    }
+
+    #[test]
+    fn hash_file_is_the_hex_sha256_of_the_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8Path::from_path(tmp.path()).unwrap().join("shot.png");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            hash_file(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(matches!(
+            hash_file(&path.with_file_name("gone.png")).unwrap_err(),
+            AppError::Io { .. }
+        ));
     }
 
     #[test]

@@ -95,6 +95,7 @@ fn help_lists_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Usage: screencomp"))
+        .stdout(predicate::str::contains("index"))
         .stdout(predicate::str::contains("classify"))
         .stdout(predicate::str::contains("gallery"))
         .stdout(predicate::str::contains("comment"))
@@ -1218,6 +1219,265 @@ fn manifest_baseline_journey_replaces_committed_images() {
         .stderr(predicate::str::is_empty());
 }
 
+/// Write PNGs into `dir` the way a capture step leaves them: files only, with no
+/// `captures.json` beside them yet.
+fn write_pngs(dir: &Path, shots: &[(&str, &[u8])]) {
+    for (relative, bytes) in shots {
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+}
+
+/// The capture a capture step produces: two screens at two viewports, encoded as
+/// `<name>/viewport=<value>.png` so `--toggles-from-path` recovers the dimension.
+const CAPTURED: [(&str, &[u8]); 4] = [
+    ("home/viewport=desktop.png", b"home-desktop"),
+    ("home/viewport=mobile.png", b"home-mobile"),
+    ("about/viewport=desktop.png", b"about-desktop"),
+    ("about/viewport=mobile.png", b"about-mobile"),
+];
+
+#[test]
+fn index_authors_a_capture_the_other_commands_consume_unchanged() {
+    // The journey a consumer replaces its hand-rolled hashing with: capture PNGs,
+    // `index` them, then run the rest of the tool against that index untouched.
+    let dir = TempDir::new().unwrap();
+    let current = dir.path().join("current");
+    write_pngs(&current, &CAPTURED);
+    // The dimension the capture encodes in its paths, declared as the gallery
+    // control it should become.
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(
+        &cfg,
+        "[[toggle]]\nkey = \"viewport\"\nvalues = [\"desktop\", \"mobile\"]\n",
+    )
+    .unwrap();
+
+    bin()
+        .args(["index", "--input"])
+        .arg(&current)
+        .arg("--toggles-from-path")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("captures.json"))
+        .stdout(predicate::str::contains("4 shots"))
+        .stderr(predicate::str::is_empty());
+
+    // The index is a real captures.json: schema, names collapsed onto the screen,
+    // the toggle recovered from the path, and image paths relative to the index.
+    let index = std::fs::read_to_string(current.join("captures.json")).unwrap();
+    assert!(index.contains("\"schema\": 1"), "{index}");
+    assert!(index.contains("\"viewport\": \"desktop\""), "{index}");
+    assert!(
+        index.contains("\"image\": \"home/viewport=mobile.png\""),
+        "{index}"
+    );
+
+    // Classifying the capture against itself sees no drift at all — the hashes
+    // `index` wrote are exactly what classify treats as the content digest.
+    bin()
+        .args(["classify", "--baseline"])
+        .arg(&current)
+        .arg("--current")
+        .arg(&current)
+        .args(["--exit-code"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "added 0 changed 0 removed 0 unchanged 4",
+        ));
+
+    // It feeds `manifest` (an image-free baseline) …
+    let manifest = dir.path().join("baseline.json");
+    bin()
+        .args(["manifest", "--input"])
+        .arg(&current)
+        .arg("--output")
+        .arg(&manifest)
+        .assert()
+        .success();
+    let baseline = std::fs::read_to_string(&manifest).unwrap();
+    assert!(baseline.contains("\"name\": \"home\""), "{baseline}");
+    assert!(!baseline.contains("\"image\""), "{baseline}");
+
+    // … and `gallery`, which copies each indexed image beside the page and turns
+    // the recovered toggle into a control.
+    let gallery = dir.path().join("public");
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["gallery", "--input"])
+        .arg(&current)
+        .arg("--output")
+        .arg(&gallery)
+        .assert()
+        .success();
+    assert!(gallery.join("index.html").is_file());
+    assert!(gallery.join("home/viewport=mobile.png").is_file());
+    let page = std::fs::read_to_string(gallery.join("index.html")).unwrap();
+    assert!(
+        page.contains("desktop") && page.contains("mobile"),
+        "{page}"
+    );
+
+    // Doctor accepts the layout with no problems: every toggle `index` recorded is
+    // one the project declares.
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["doctor", "--input"])
+        .arg(&current)
+        .arg("--exit-code")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shots: 4"))
+        .stdout(predicate::str::contains("viewport [desktop, mobile]"));
+}
+
+#[test]
+fn index_makes_two_captures_of_one_build_verify_clean_and_a_changed_png_classify_changed() {
+    // The reproducibility gate over indexes this command authored: two captures of
+    // the same build hash identically, and a single changed PNG shows up as exactly
+    // one `changed` shot once its tree is re-indexed.
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("current");
+    let second = dir.path().join("verify");
+    write_pngs(&first, &CAPTURED);
+    write_pngs(&second, &CAPTURED);
+
+    for capture in [&first, &second] {
+        bin()
+            .args(["index", "--input"])
+            .arg(capture)
+            .arg("--toggles-from-path")
+            .assert()
+            .success();
+    }
+
+    bin()
+        .args(["verify", "--first"])
+        .arg(&first)
+        .arg("--second")
+        .arg(&second)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reproducible: 4 shots"));
+
+    // Re-capture one screen differently, re-index, and the gate flags just it.
+    write_pngs(
+        &second,
+        &[("home/viewport=mobile.png", b"home-mobile-redesigned")],
+    );
+    bin()
+        .args(["index", "--input"])
+        .arg(&second)
+        .arg("--toggles-from-path")
+        .assert()
+        .success();
+    bin()
+        .args(["classify", "--baseline"])
+        .arg(&first)
+        .arg("--current")
+        .arg(&second)
+        .arg("--exit-code")
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("changed home [viewport=mobile]"))
+        .stdout(predicate::str::contains(
+            "added 0 changed 1 removed 0 unchanged 3",
+        ));
+}
+
+#[test]
+fn index_writes_the_arch_lane_the_other_commands_read() {
+    // A capture lane writes into `<root>/<arch>/`; `index` resolves the arch from
+    // `[capture].arches` exactly as classify does, so the two agree on the subtree.
+    let dir = TempDir::new().unwrap();
+    let cfg = dir.path().join("screencomp.toml");
+    std::fs::write(&cfg, "[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
+    let current = dir.path().join("current");
+    write_pngs(
+        &current.join("x86_64"),
+        &[("home/desktop.png", b"x86-home")],
+    );
+
+    // `wrote <path>` names a file on this host, so it carries the host separator;
+    // build the expectation the same way rather than assuming `/`.
+    let lane_index = current.join("x86_64").join("captures.json");
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["index", "--input"])
+        .arg(&current)
+        .args(["--arch", "x86_64"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(lane_index.to_str().unwrap()));
+    assert!(lane_index.is_file());
+    assert!(!current.join("captures.json").exists());
+
+    // A shot's identity is not host-dependent: the name and image path the lane's
+    // index records are `/`-separated whatever separator this host walks with.
+    let index = std::fs::read_to_string(&lane_index).unwrap();
+    assert!(index.contains("\"name\": \"home/desktop\""), "{index}");
+    assert!(index.contains("\"image\": \"home/desktop.png\""), "{index}");
+
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["classify", "--baseline"])
+        .arg(&current)
+        .arg("--current")
+        .arg(&current)
+        .args(["--arch", "x86_64"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "added 0 changed 0 removed 0 unchanged 1",
+        ));
+
+    // The arch lane that captured nothing fails loudly instead of writing an
+    // empty index that would later read as "every shot removed".
+    bin()
+        .args(["--config"])
+        .arg(&cfg)
+        .args(["index", "--input"])
+        .arg(&current)
+        .args(["--arch", "arm64"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("arm64"));
+}
+
+#[test]
+fn index_reports_an_unindexable_capture_on_stderr() {
+    let dir = TempDir::new().unwrap();
+    let empty = dir.path().join("current");
+    std::fs::create_dir_all(&empty).unwrap();
+
+    bin()
+        .args(["index", "--input"])
+        .arg(&empty)
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no .png files"));
+
+    // A malformed --toggle is a usage error, like every other KEY=VALUE argument.
+    bin()
+        .args(["index", "--input"])
+        .arg(&empty)
+        .args(["--toggle", "theme"])
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("expected KEY=VALUE"));
+}
+
 #[test]
 fn classify_include_scopes_an_affected_only_capture_without_hiding_real_drift() {
     let dir = TempDir::new().unwrap();
@@ -1318,10 +1578,10 @@ fn classify_include_scopes_an_affected_only_capture_without_hiding_real_drift() 
 #[test]
 fn classify_include_rejects_malformed_selectors() {
     for (selector, message) in [
-        ("project", "include must be KEY=VALUE"),
-        ("=a", "include key and value must not be empty"),
-        ("project=", "include key and value must not be empty"),
-        ("project.name=a", "include key must match [A-Za-z0-9_-]"),
+        ("project", "expected KEY=VALUE"),
+        ("=a", "key and value must not be empty"),
+        ("project=", "key and value must not be empty"),
+        ("project.name=a", "key must match [A-Za-z0-9_-]"),
     ] {
         bin()
             .args(["classify", "--baseline"])

@@ -630,6 +630,260 @@ fn capture_dir_without_index_is_invalid_layout() {
     assert!(reason.contains("captures.json"), "{reason}");
 }
 
+/// Write `bytes` to `<dir>/<relative>`, creating parent directories: a captured
+/// PNG as a capture step leaves it, with no index beside it yet.
+fn write_png(dir: &Path, relative: &str, bytes: &[u8]) {
+    let path = dir.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, bytes).unwrap();
+}
+
+/// Read the index `index` wrote under `dir`.
+fn read_index(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("captures.json")).expect("index was written")
+}
+
+#[test]
+fn index_names_flat_shots_after_their_relative_path() {
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "home.png", b"home-bytes");
+    write_png(&cur, "checkout/step-2.png", b"step-bytes");
+    // Not a screenshot: ignored rather than indexed as a shot.
+    write_png(&cur, "notes.txt", b"ignore me");
+
+    let (code, out) = invoke(&["screencomp", "index", "--input", cur.to_str().unwrap()]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(
+        out.contains("captures.json") && out.contains("2 shots"),
+        "{out}"
+    );
+
+    let index = read_index(&cur);
+    assert!(index.contains("\"name\": \"home\""), "{index}");
+    assert!(index.contains("\"name\": \"checkout/step-2\""), "{index}");
+    assert!(
+        index.contains("\"image\": \"checkout/step-2.png\""),
+        "{index}"
+    );
+    assert!(!index.contains("notes"), "{index}");
+    // Each digest is the plain hex SHA-256 of the file's bytes, so a capture step
+    // that keeps hashing its own screenshots (`sha256sum`, `createHash('sha256')`)
+    // stays interchangeable with this command.
+    assert!(
+        index.contains(
+            "\"hash\": \"1891a401bb3964f6ec7f7f05cd69cc073e8ce89b456185b04941331d60b2c77b\""
+        ),
+        "sha256 of home-bytes: {index}"
+    );
+    assert!(
+        index.contains(
+            "\"hash\": \"5aafe9fee23bd36796f85d19817cd1ae3284d5ded8e38dd16d67bb6aa937a530\""
+        ),
+        "sha256 of step-bytes: {index}"
+    );
+}
+
+#[test]
+fn index_reads_toggles_from_path_segments() {
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "theme=dark/home.png", b"dark-home");
+    write_png(&cur, "home/viewport=mobile.png", b"mobile-home");
+
+    let (code, _) = invoke(&[
+        "screencomp",
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+        "--toggles-from-path",
+        "--toggle",
+        "project=shop",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+
+    // Both shots collapse onto the name `home`, each carrying its path toggle plus
+    // the fixed one every shot gets.
+    let index = read_index(&cur);
+    assert_eq!(index.matches("\"name\": \"home\"").count(), 2, "{index}");
+    assert!(index.contains("\"theme\": \"dark\""), "{index}");
+    assert!(index.contains("\"viewport\": \"mobile\""), "{index}");
+    assert_eq!(index.matches("\"project\": \"shop\"").count(), 2, "{index}");
+}
+
+#[test]
+fn index_rejects_two_paths_that_name_one_shot() {
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "theme=dark/home.png", b"one");
+    write_png(&cur, "home/theme=dark.png", b"two");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+        "--toggles-from-path",
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected InvalidLayout, got {result:?}");
+    };
+    assert!(reason.contains("home [theme=dark]"), "{reason}");
+}
+
+#[test]
+fn index_rejects_a_path_toggle_that_contradicts_a_fixed_one() {
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "theme=light/home.png", b"one");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+        "--toggles-from-path",
+        "--toggle",
+        "theme=dark",
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected InvalidLayout, got {result:?}");
+    };
+    assert!(reason.contains("set twice"), "{reason}");
+}
+
+#[test]
+fn index_rejects_one_toggle_key_given_two_values() {
+    // Last-one-wins would index a pass the caller never meant to describe.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "home.png", b"one");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+        "--toggle",
+        "theme=dark",
+        "--toggle",
+        "theme=light",
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected InvalidLayout, got {result:?}");
+    };
+    assert!(reason.contains("twice"), "{reason}");
+
+    // Repeating the same assignment is harmless.
+    let (code, _) = invoke(&[
+        "screencomp",
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+        "--toggle",
+        "theme=dark",
+        "--toggle",
+        "theme=dark",
+    ]);
+    assert_eq!(code.unwrap(), 0);
+}
+
+#[test]
+fn index_of_a_tree_without_screenshots_is_invalid_layout() {
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    std::fs::create_dir_all(&cur).unwrap();
+
+    let (result, _) = invoke(&["screencomp", "index", "--input", cur.to_str().unwrap()]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected InvalidLayout, got {result:?}");
+    };
+    assert!(reason.contains("no .png files"), "{reason}");
+}
+
+#[test]
+fn index_of_a_missing_root_is_not_a_directory_error() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("nope");
+
+    let (result, _) = invoke(&["screencomp", "index", "--input", missing.to_str().unwrap()]);
+    assert!(
+        matches!(result, Err(AppError::NotADirectory { .. })),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn index_defaults_to_the_host_arch_subtree_from_config() {
+    // With `[capture].arches` configured, `index` resolves the arch exactly like
+    // every other command: it writes `<root>/<arch>/captures.json`.
+    let dir = TempDir::new().unwrap();
+    let cfg = write_arches_config(dir.path(), &[&host_arch()]);
+    let cur = dir.path().join("current");
+    write_png(&cur.join(host_arch()), "home.png", b"host-bytes");
+
+    let (code, out) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+    ]);
+    assert_eq!(code.unwrap(), 0);
+    assert!(out.contains(&host_arch()), "{out}");
+    assert!(cur.join(host_arch()).join("captures.json").is_file());
+    assert!(!cur.join("captures.json").exists(), "root stays index-free");
+}
+
+#[test]
+fn index_missing_arch_subtree_explains_the_layout() {
+    // The capture wrote its PNGs flat at the root while the config expects an
+    // arch subtree — the mistake the arch layer invites.
+    let dir = TempDir::new().unwrap();
+    let cfg = write_arches_config(dir.path(), &[&host_arch()]);
+    let cur = dir.path().join("current");
+    write_png(&cur, "home.png", b"flat");
+
+    let (result, _) = invoke(&[
+        "screencomp",
+        "--config",
+        &cfg,
+        "index",
+        "--input",
+        cur.to_str().unwrap(),
+    ]);
+    let Err(AppError::InvalidLayout { reason, .. }) = result else {
+        panic!("expected an InvalidLayout hint, got {result:?}");
+    };
+    assert!(reason.contains(&host_arch()), "{reason}");
+    assert!(reason.contains("--arch"), "{reason}");
+}
+
+#[test]
+fn index_is_byte_stable_across_runs() {
+    // Re-indexing an unchanged capture rewrites an identical file, so an index
+    // committed alongside a capture never churns.
+    let dir = TempDir::new().unwrap();
+    let cur = dir.path().join("current");
+    write_png(&cur, "b.png", b"bee");
+    write_png(&cur, "a.png", b"ay");
+
+    invoke(&["screencomp", "index", "--input", cur.to_str().unwrap()])
+        .0
+        .unwrap();
+    let first = read_index(&cur);
+    invoke(&["screencomp", "index", "--input", cur.to_str().unwrap()])
+        .0
+        .unwrap();
+    assert_eq!(first, read_index(&cur));
+    // Shots are emitted in name order regardless of directory-read order.
+    assert!(
+        first.find("\"a\"").unwrap() < first.find("\"b\"").unwrap(),
+        "{first}"
+    );
+}
+
 #[test]
 fn comment_marker_and_title_flags_override_config() {
     // Distinct markers are how a multi-arch run keeps one sticky comment per arch

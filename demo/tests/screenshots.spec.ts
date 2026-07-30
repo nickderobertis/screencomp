@@ -12,6 +12,10 @@
 // The reusable workflow exports SHOTS_OUT (e.g. shots/current/x86_64); locally it
 // defaults to shots/current. This spec is the canonical reference for how a
 // consumer emits the captures.json schema (schema, name, toggles, hash, image).
+// It stays hand-rolled on purpose: the capture runs in the Playwright container,
+// where screencomp is not installed. A capture that does have the CLI available
+// can write only the PNGs and author the index with
+// `screencomp index --input "$SHOTS_OUT" --toggles-from-path` instead.
 import { test } from '@playwright/test';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';

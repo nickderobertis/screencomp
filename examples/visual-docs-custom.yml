@@ -63,8 +63,11 @@ jobs:
         run: aws codeartifact login --tool npm --domain my-domain --repository my-repo
       # --------------------------------------------------------------------------
 
-      # Replace with your real capture; it MUST write $SHOTS_OUT/captures.json
-      # (the index) plus the PNGs it references, computing each shot's hash.
+      # Replace with your real capture; it MUST leave $SHOTS_OUT/captures.json
+      # (the index) beside the PNGs it references. Either hash the shots in the
+      # capture itself, or install screencomp in this container too (the install
+      # action works here) and let the CLI author the index from the PNGs:
+      #   screencomp index --input "$SHOTS_OUT" --toggles-from-path
       - name: Capture screenshots
         run: |
           npm ci

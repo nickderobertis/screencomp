@@ -119,7 +119,20 @@ impl CaptureIndex {
 /// Image paths are dropped (a baseline commits no PNGs) and shots are emitted in
 /// `(name, toggles)` order, so the output is byte-stable and diffs cleanly.
 pub(crate) fn render_baseline(snapshot: &Snapshot) -> String {
-    let index = CaptureIndex::from_snapshot(snapshot, false);
+    render(snapshot, false)
+}
+
+/// Render `snapshot` as a live `captures.json`, keeping each shot's image path.
+///
+/// What `index` writes beside the PNGs it hashed. Byte-stable like a baseline, so
+/// re-indexing an unchanged capture rewrites an identical file.
+pub(crate) fn render_capture(snapshot: &Snapshot) -> String {
+    render(snapshot, true)
+}
+
+/// Render `snapshot` as pretty-printed JSON, with or without image paths.
+fn render(snapshot: &Snapshot, with_images: bool) -> String {
+    let index = CaptureIndex::from_snapshot(snapshot, with_images);
     // BTreeMap toggles serialize in key order; the shot order is already
     // normalized, so the only nondeterminism would be a trailing newline — add one.
     let mut json = serde_json::to_string_pretty(&index).expect("index serializes");
@@ -228,6 +241,28 @@ mod tests {
                 .get(&ShotKey::with("home", &[("theme", "light")]))
                 .and_then(|s| s.image.as_deref()),
             None
+        );
+    }
+
+    #[test]
+    fn capture_round_trips_with_images_and_is_stable() {
+        let mut snap = Snapshot::new();
+        let hash = "3".repeat(64);
+        snap.insert(
+            ShotKey::with("home", &[("theme", "dark")]),
+            Shot::new(hash.clone(), Some("home/dark.png".to_owned())),
+        );
+
+        let rendered = render_capture(&snap);
+        assert!(rendered.ends_with('\n'));
+        assert_eq!(rendered, render_capture(&snap), "render is byte-stable");
+
+        let reparsed = parse(&rendered).expect("capture re-parses");
+        let key = ShotKey::with("home", &[("theme", "dark")]);
+        assert_eq!(reparsed.digest(&key), Some(hash.as_str()));
+        assert_eq!(
+            reparsed.get(&key).and_then(|s| s.image.as_deref()),
+            Some("home/dark.png")
         );
     }
 }
