@@ -1397,8 +1397,14 @@ fn index_writes_the_arch_lane_the_other_commands_read() {
     let cfg = dir.path().join("screencomp.toml");
     std::fs::write(&cfg, "[capture]\narches = [\"x86_64\", \"arm64\"]\n").unwrap();
     let current = dir.path().join("current");
-    write_pngs(&current.join("x86_64"), &[("home.png", b"x86-home")]);
+    write_pngs(
+        &current.join("x86_64"),
+        &[("home/desktop.png", b"x86-home")],
+    );
 
+    // `wrote <path>` names a file on this host, so it carries the host separator;
+    // build the expectation the same way rather than assuming `/`.
+    let lane_index = current.join("x86_64").join("captures.json");
     bin()
         .args(["--config"])
         .arg(&cfg)
@@ -1407,9 +1413,15 @@ fn index_writes_the_arch_lane_the_other_commands_read() {
         .args(["--arch", "x86_64"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("x86_64/captures.json"));
-    assert!(current.join("x86_64/captures.json").is_file());
+        .stdout(predicate::str::contains(lane_index.to_str().unwrap()));
+    assert!(lane_index.is_file());
     assert!(!current.join("captures.json").exists());
+
+    // A shot's identity is not host-dependent: the name and image path the lane's
+    // index records are `/`-separated whatever separator this host walks with.
+    let index = std::fs::read_to_string(&lane_index).unwrap();
+    assert!(index.contains("\"name\": \"home/desktop\""), "{index}");
+    assert!(index.contains("\"image\": \"home/desktop.png\""), "{index}");
 
     bin()
         .args(["--config"])
