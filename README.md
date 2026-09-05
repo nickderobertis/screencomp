@@ -492,9 +492,12 @@ scaffold matches the machine it is generated on. This scaffolds the
   it once per clone with `git config core.hooksPath .githooks` — or pass
   `screencomp init --enable-hook` to have `init` run that for you (it otherwise just
   prints the command, and a scaffolded-but-unenabled guard runs nothing). The hook
-  passes your host CA bundle into the capture container and masks `node_modules`
-  with an anonymous volume, so it survives TLS-intercepting proxies and matches CI's
-  clean install.
+  runs the capture container as your host user (`--user "$(id -u):$(id -g)"`), so
+  what it writes through the bind mount stays yours instead of landing root-owned,
+  and passes your host CA bundle into it so it survives TLS-intercepting proxies.
+  Under that mapping the `node_modules` mask and `HOME` are host directories the
+  hook creates and removes — see
+  [the capture-container form](#capturing-in-a-containerized-remote-or-proxied-environment).
 - the `.gitignore` lines that commit the tiny digest baselines while ignoring
   generated PNGs and galleries.
 
@@ -1068,10 +1071,34 @@ guard is enabled and Docker is reachable. Then:
   container and re-export it, a no-op when no such bundle is set. If you hand-roll
   the `docker run`, add `-v "$NODE_EXTRA_CA_CERTS:/host-ca.crt:ro" -e
   NODE_EXTRA_CA_CERTS=/host-ca.crt`.
-- **`node_modules` churn.** The hook mounts an anonymous volume at
-  `/work/node_modules` so `npm ci` installs cleanly inside the container, matching
-  CI's fresh checkout instead of colliding with a host `node_modules` built for a
-  different platform.
+- **Root-owned files after a capture.** The container bind-mounts your working
+  tree, so running it as root leaves everything it writes there owned by root and
+  undeletable without sudo. Run it as yourself. Three things must come with that
+  mapping — this is the form the scaffolded hook and
+  [`examples/pre-push`](examples/pre-push) generate, and hand-rolled `docker run`s
+  should match it:
+
+  ```sh
+  scratch="$(mktemp -d)"; trap 'rm -rf "$scratch"' EXIT
+  mkdir -p "$scratch/node_modules" "$scratch/home" node_modules
+  docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
+    --user "$(id -u):$(id -g)" \
+    -v "$PWD:/work" -v "$scratch:/scratch" \
+    -v "$scratch/node_modules:/work/node_modules" \
+    -e HOME=/scratch/home -w /work \
+    mcr.microsoft.com/playwright:v1.60.0-noble \
+    bash -lc 'npm ci && SHOTS_OUT=shots/current/x86_64 npx playwright test'
+  ```
+
+  Dropping any one of the four breaks the other three: an anonymous
+  `-v /work/node_modules` volume is created root-owned, so `npm ci` cannot install
+  into it; without `HOME` npm has no writable home, because the mapped uid has no
+  entry in the image's passwd file; and the scratch is yours to remove. The bare
+  `node_modules` in the `mkdir` is the mountpoint in your tree — Docker creates a
+  missing bind-mount destination as root, which is the residue being avoided.
+- **`node_modules` churn.** That `node_modules` mask also keeps `npm ci` inside
+  the container, matching CI's fresh checkout instead of colliding with a host
+  `node_modules` built for a different platform.
 - **`install.sh` 403.** Resolving `latest` hits the unauthenticated GitHub API,
   which 403s on shared/proxied IPs. Set `GITHUB_TOKEN`, or pin `--version vX.Y.Z`.
 

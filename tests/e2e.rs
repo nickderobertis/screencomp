@@ -2049,9 +2049,12 @@ fn init_hook_survives_proxies_and_matches_ci_clean_install() {
         .assert()
         .success();
     let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    // Anonymous node_modules volume: `npm ci` installs cleanly inside the
-    // container instead of churning the bind-mounted host tree.
-    assert!(hook.contains("-v /work/node_modules"), "{hook}");
+    // node_modules is masked so `npm ci` installs cleanly inside the container
+    // instead of churning the bind-mounted host tree — by a host directory the
+    // hook creates, never an anonymous volume (which under the `--user` mapping
+    // is created root-owned and unwritable). The four-part container-user
+    // contract itself is checked in `integration.rs`.
+    assert!(hook.contains(":/work/node_modules\""), "{hook}");
     // Host CA pass-through so a TLS-intercepting proxy doesn't break `npm ci`.
     assert!(hook.contains("NODE_EXTRA_CA_CERTS"), "{hook}");
     assert!(hook.contains("ca_args"), "{hook}");

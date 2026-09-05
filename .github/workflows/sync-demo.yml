@@ -149,6 +149,19 @@ jobs:
             local probe
             probe="$(mktemp -d)"
             printf '{"schema":1,"shots":[]}' >"$probe/captures.json"
+            # Run the capture container as the runner user, never root: it
+            # bind-mounts this clone, so a root capture leaves the checkout
+            # root-owned and the steps after it (git add, the push) fail. The
+            # mapping needs a host-side node_modules mask (an anonymous volume
+            # would be created root-owned and npm could not install into it, and
+            # a missing bind-mount destination is materialized by Docker as root)
+            # and a writable HOME (the mapped uid has no passwd entry in the
+            # image).
+            # The runner reclaims this scratch with the rest of the job.
+            local host_user scratch
+            host_user="$(id -u):$(id -g)"
+            scratch="$(mktemp -d)"
+            mkdir -p "$scratch/node_modules" "$scratch/home" node_modules
             local arch manifest stale rc platform
             while IFS= read -r arch; do
               if [ "$arch" != "$host" ]; then
@@ -177,7 +190,10 @@ jobs:
               platform="linux/amd64"
               if [ "$arch" = "arm64" ]; then platform="linux/arm64"; fi
               docker run --rm --platform="$platform" --ipc=host --shm-size=2g \
-                -v "$PWD:/work" -v /work/node_modules -w /work \
+                --user "$host_user" \
+                -v "$PWD:/work" -v "$scratch:/scratch" \
+                -v "$scratch/node_modules:/work/node_modules" \
+                -e HOME=/scratch/home -w /work \
                 "$CAPTURE_IMAGE" \
                 bash -lc "SHOTS_OUT=shots/current/${arch} bash capture.sh"
               screencomp manifest --input shots/current --arch "$arch" --output "$manifest"
