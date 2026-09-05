@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.8](https://github.com/nickderobertis/screencomp/compare/v0.4.7...v0.4.8) - 2026-09-05
+
+### Fixed
+
+- run every capture container as the invoking user, not root ([#95](https://github.com/nickderobertis/screencomp/pull/95))
+
 ## [0.4.7](https://github.com/nickderobertis/screencomp/compare/v0.4.6...v0.4.7) - 2026-07-30
 
 ### Added
