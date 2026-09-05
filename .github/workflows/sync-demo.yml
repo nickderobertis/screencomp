@@ -158,10 +158,12 @@ jobs:
             # and a writable HOME (the mapped uid has no passwd entry in the
             # image).
             # The runner reclaims this scratch with the rest of the job.
+            # llmlint: ignore-block[changed_behavior_has_e2e] The host side of the same container invocation below: no offline test starts a capture container, and this scratch is proven by the demo journey AGENTS.md requires before release (demo/ through the pinned image as the invoking uid: writable node_modules and HOME, nothing root-owned under the bind mount) and held to the four-part contract with the `docker run` in tests/integration.rs.
             local host_user scratch
             host_user="$(id -u):$(id -g)"
             scratch="$(mktemp -d)"
             mkdir -p "$scratch/node_modules" "$scratch/home" node_modules
+            # llmlint: ignore-end[changed_behavior_has_e2e]
             local arch manifest stale rc platform
             while IFS= read -r arch; do
               if [ "$arch" != "$host" ]; then
