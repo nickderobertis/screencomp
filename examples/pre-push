@@ -188,6 +188,7 @@ fi
 #   * the scratch is removed however this hook exits, on drift or on error.
 # The CA mounts above (if any) ride along via "${ca_args[@]}" (the +-guard keeps
 # it safe under `set -u`).
+# llmlint: ignore-block[changed_behavior_has_e2e] the capture container cannot run in this repository's offline, tempdir-isolated suite; the mapped run is proven end to end before release by the demo journey AGENTS.md requires (demo/ through the pinned image: install, capture, PNG bytes identical to the root-running form, every file under the bind mount owned by the invoking uid), and the four-part contract itself is held here by the checks over all five shipped copies in tests/integration.rs.
 host_user="$(id -u):$(id -g)"
 capture_scratch="$(mktemp -d)"
 trap 'rm -rf "$capture_scratch"' EXIT
@@ -200,6 +201,7 @@ docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
   ${ca_args[@]+"${ca_args[@]}"} \
   mcr.microsoft.com/playwright:v1.60.0-noble \
   bash -lc "npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 # ------------------------------------------------------------------------------
 
 # --- 4. Classify the capture against the committed baseline manifest ---------
