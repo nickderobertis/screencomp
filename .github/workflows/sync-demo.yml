@@ -190,6 +190,7 @@ jobs:
               rm -f shots/baseline/*.sha256   # drop the obsolete pre-JSON baseline
               platform="linux/amd64"
               if [ "$arch" = "arm64" ]; then platform="linux/arm64"; fi
+              # llmlint: ignore-block[changed_behavior_has_e2e] No offline test runs a capture container; this reseed form is the one the demo journey AGENTS.md requires drives before release (demo/ through the pinned image as the invoking uid: install, capture, byte-identical PNGs, nothing root-owned under the bind mount), and tests/integration.rs holds it to the four-part contract.
               docker run --rm --platform="$platform" --ipc=host --shm-size=2g \
                 --user "$host_user" \
                 -v "$PWD:/work" -v "$scratch:/scratch" \
@@ -197,6 +198,7 @@ jobs:
                 -e HOME=/scratch/home -w /work \
                 "$CAPTURE_IMAGE" \
                 bash -lc "SHOTS_OUT=shots/current/${arch} bash capture.sh"
+              # llmlint: ignore-end[changed_behavior_has_e2e]
               screencomp manifest --input shots/current --arch "$arch" --output "$manifest"
               echo "reseeded $manifest"
             done < <(echo "$arches" | jq -r '.[]')

@@ -4256,7 +4256,7 @@ fn sync_demo_capture() -> CaptureCopy {
 }
 
 #[test]
-fn every_shipped_capture_copy_runs_as_the_host_user() {
+fn the_workflow_and_documented_copies_run_as_the_host_user() {
     // The two executable hooks have their own tests above; these three are the
     // copies a reader or a runner follows instead, and they drift from the hooks
     // the same way — silently, one file at a time.

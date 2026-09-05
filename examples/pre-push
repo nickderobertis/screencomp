@@ -171,24 +171,18 @@ fi
 # SAME pinned container and flags as examples/visual-docs.yml, so local bytes match
 # CI. Your capture step writes captures.json and each shot's hash.
 #
-# The container runs as YOU (--user), because it bind-mounts your working tree:
-# a root-running capture leaves everything it writes there — the capture output,
-# and any build cache your stack drops beside it — owned by root, which you then
-# cannot delete without sudo. Three things must come with that mapping or the
-# container has nowhere to write, and all four stand or fall together:
-#   * node_modules is masked by a directory YOU created on the host. It still
-#     keeps `npm ci` inside the container, matching CI's fresh checkout instead
-#     of churning (or colliding with) your host node_modules — but an anonymous
-#     `-v /work/node_modules` volume is created root-owned, so under --user the
-#     install would fail outright with EACCES. The mountpoint in YOUR tree is
-#     created here too: Docker materializes a missing bind-mount destination as
-#     root, which is the very residue this is here to prevent.
-#   * HOME points into that same host scratch. Your uid has no entry in the
-#     image's passwd file, so npm resolves no home and cannot write its cache.
+# The container runs as YOU: it bind-mounts your tree, and as root it would leave
+# everything it writes there undeletable without sudo. Three things come with that
+# mapping, and all four stand or fall together:
+#   * node_modules is masked by a host directory you created — an anonymous
+#     `-v /work/node_modules` volume is root-owned, so `npm ci` would hit EACCES.
+#     The mountpoint in your tree is created here too, since Docker materializes a
+#     missing one as root. Masking still keeps the install inside the container.
+#   * HOME points into that scratch: your uid has no passwd entry in the image.
 #   * the scratch is removed however this hook exits, on drift or on error.
 # The CA mounts above (if any) ride along via "${ca_args[@]}" (the +-guard keeps
 # it safe under `set -u`).
-# llmlint: ignore-block[changed_behavior_has_e2e] the capture container cannot run in this repository's offline, tempdir-isolated suite; the mapped run is proven end to end before release by the demo journey AGENTS.md requires (demo/ through the pinned image: install, capture, PNG bytes identical to the root-running form, every file under the bind mount owned by the invoking uid), and the four-part contract itself is held here by the checks over all five shipped copies in tests/integration.rs.
+# llmlint: ignore-block[changed_behavior_has_e2e] the capture container cannot run in this repository's offline, tempdir-isolated suite; it is covered by the demo journey AGENTS.md requires before release (demo/ through the pinned image, checking ownership under the bind mount and byte-identical PNGs) and by the contract checks over all five shipped copies in tests/integration.rs.
 host_user="$(id -u):$(id -g)"
 capture_scratch="$(mktemp -d)"
 trap 'rm -rf "$capture_scratch"' EXIT

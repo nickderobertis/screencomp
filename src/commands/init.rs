@@ -362,7 +362,7 @@ jobs:
 /// distinguishes "a path matched" (exit 3) from "the check errored" (any other
 /// non-zero) — an error skips rather than forcing a slow capture, since CI is the
 /// backstop. The capture block is clearly marked for the consumer to adapt.
-// llmlint: ignore-block[changed_behavior_has_e2e] This function is the shell template alone — the capture container cannot run in this repository's offline, tempdir-isolated suite; the mapped run is proven end to end before release by the demo journey AGENTS.md requires (demo/ through the pinned image: install, capture, PNG bytes identical to the root-running form, every file under the bind mount owned by the invoking uid), and the four-part contract itself is held here by the checks over all five shipped copies in tests/integration.rs.
+// llmlint: ignore-block[changed_behavior_has_e2e] This function is the shell template alone: the capture container cannot run in this repository's offline, tempdir-isolated suite; it is covered by the demo journey AGENTS.md requires before release (demo/ through the pinned image, checking ownership under the bind mount and byte-identical PNGs) and by the contract checks over all five shipped copies in tests/integration.rs.
 fn render_hook() -> String {
     "\
 #!/usr/bin/env bash
@@ -481,17 +481,14 @@ if [ -n \"$host_ca\" ] && [ -f \"$host_ca\" ]; then
 fi
 
 # ---- adapt this to YOUR stack (same image/flags as visual-docs.yml) ----------
-# The container runs as YOU, not root: it bind-mounts this working tree, so a
-# root-running capture leaves every file it writes there owned by root and
-# unremovable without sudo. Three things have to come with that mapping or the
-# container has nowhere to write:
+# The container runs as YOU: it bind-mounts this tree, and as root it would leave
+# every file it writes there unremovable without sudo. Three things come with that
+# mapping:
 #   * node_modules is masked by a host directory you created (an anonymous
-#     `-v /work/node_modules` volume would be created root-owned and `npm ci`
-#     could not install into it). It still keeps the install inside the
-#     container, matching CI's fresh checkout. Its mountpoint has to exist here
-#     too, or Docker creates that one root-owned inside your tree.
-#   * HOME points at a host directory you own — your uid has no entry in the
-#     image's passwd file, so npm would otherwise have no writable home.
+#     `-v /work/node_modules` volume is root-owned, so `npm ci` would hit EACCES),
+#     which still keeps the install inside the container. Its mountpoint has to
+#     exist here too, or Docker creates that one root-owned inside your tree.
+#   * HOME points at a host directory you own: your uid has no passwd entry.
 #   * the scratch holding both is removed however this hook exits.
 host_user=\"$(id -u):$(id -g)\"
 capture_scratch=\"$(mktemp -d)\"
