@@ -102,6 +102,7 @@ jobs:
           CAPTURE_IMAGE: mcr.microsoft.com/playwright:v1.60.0-noble
         run: |
           set -euo pipefail
+          # llmlint: ignore[live_tier_compiles_and_requires_credential] Not a test tier: this job publishes the scaffold to the demo repo, and a checkout without the PAT has no demo to publish to.
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "no SCREENCOMP_DEMO_PAT configured; skipping demo sync"
             exit 0
@@ -263,6 +264,7 @@ jobs:
           SYNCED_SHA: ${{ needs.sync.outputs.sha }}
         run: |
           set -euo pipefail
+          # llmlint: ignore[live_tier_compiles_and_requires_credential] Not a test tier: this job watches the demo repo's own run, which without the PAT it cannot reach.
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "no SCREENCOMP_DEMO_PAT configured; cannot verify the demo (skipping)"
             exit 0

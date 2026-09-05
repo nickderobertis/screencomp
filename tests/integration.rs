@@ -3918,12 +3918,8 @@ fn head_of(repo: &Path) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-// --- The capture container's user mapping ------------------------------------
-//
-// Every containerized capture this repo ships bind-mounts the consumer's working
-// tree. Run as root, everything it writes there lands root-owned and the consumer
-// cannot delete it without sudo. So it runs as the invoking user — and that
-// mapping only works as a package of four:
+// A capture container bind-mounts the consumer's working tree, so it runs as the
+// invoking user rather than root. That mapping works only as a package of four:
 //
 //   1. `--user <uid>:<gid>` from the host;
 //   2. the `/work/node_modules` mask is a host directory the caller created (an
@@ -3932,10 +3928,10 @@ fn head_of(repo: &Path) -> String {
 //      no passwd entry in the image, so npm resolves no writable home);
 //   4. whatever created that scratch removes it however it exits.
 //
-// `render_hook()` and `examples/pre-push` are two copies of one script that
-// nothing reconciles, and they have already drifted in prose, formatting and
-// diagnostics — so the check below holds each to the contract, never to the
-// other's text.
+// Five files publish that invocation and nothing reconciles them, so the checks
+// below hold each to the contract rather than to another copy's text. The
+// container boundary itself is proven by the demo journey AGENTS.md requires
+// before release; this suite runs none.
 
 /// Shell logical lines: comments dropped (they quote the *old* form as the
 /// anti-pattern) and `\`-continuations joined, so one `docker run` is one line.
@@ -3962,6 +3958,38 @@ fn shell_logical_lines(script: &str) -> Vec<String> {
         lines.push(pending);
     }
     lines
+}
+
+/// Split a `docker run` line into flags and values, keeping a `$(...)`
+/// substitution whole: `--user "$(id -u):$(id -g)"` is one value, not three.
+fn docker_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut depth = 0usize;
+    let mut previous = ' ';
+    for c in line.chars() {
+        match c {
+            '(' if previous == '$' => {
+                depth += 1;
+                token.push(c);
+            }
+            ')' if depth > 0 => {
+                depth -= 1;
+                token.push(c);
+            }
+            _ if c.is_whitespace() && depth == 0 => {
+                if !token.is_empty() {
+                    tokens.push(std::mem::take(&mut token));
+                }
+            }
+            _ => token.push(c),
+        }
+        previous = c;
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
 }
 
 fn unquote(token: &str) -> String {
@@ -4021,20 +4049,30 @@ fn host_dirs_created(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Who removes the host scratch a copy creates: the script itself, or the caller
+/// it hands the tree back to — a CI runner that discards its whole workspace, or
+/// a reader following a commented example in their own shell.
+#[derive(Clone, Copy)]
+enum Scratch {
+    RemovedByTheScript,
+    ReclaimedByTheCaller,
+}
+
 /// Hold one capture script to the four-part contract above. Semantic, not
 /// textual: variable names, ordering, wording and mount points are all the
 /// copy's own choice — losing any of the four parts is what fails.
-fn assert_capture_runs_as_the_host_user(label: &str, script: &str) {
+fn assert_capture_runs_as_the_host_user(label: &str, script: &str, scratch_owner: Scratch) {
     let lines = shell_logical_lines(script);
-    let docker: Vec<String> = lines
-        .iter()
-        .find(|line| line.contains("docker run"))
-        .unwrap_or_else(|| panic!("{label}: no `docker run` capture invocation"))
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect();
+    let docker = docker_tokens(
+        lines
+            .iter()
+            .find(|line| line.contains("docker run"))
+            .unwrap_or_else(|| panic!("{label}: no `docker run` capture invocation")),
+    );
 
-    // 1. The container runs as the invoking host user.
+    // 1. The mapping may be written inline or reached through a variable the
+    //    script assigns, so follow one level of assignment before concluding it
+    //    is not the host's ids.
     let users = flag_values(&docker, "--user");
     let user = match users.as_slice() {
         [only] => only.clone(),
@@ -4114,14 +4152,17 @@ fn assert_capture_runs_as_the_host_user(label: &str, script: &str) {
          so Docker creates it root-owned: {created:?}"
     );
 
-    // 4. Whatever created the scratch removes it, however the script exits.
+    // 4. Whatever created the scratch removes it, however the script exits —
+    //    except where the caller reclaims the whole tree around it instead.
+    if matches!(scratch_owner, Scratch::ReclaimedByTheCaller) {
+        return;
+    }
     assert!(
         lines.iter().any(|line| {
-            let line = line.trim_start();
-            line.starts_with("trap")
+            line.contains("trap")
                 && line.contains("rm -rf")
                 && line.contains(&scratch)
-                && line.ends_with("EXIT")
+                && line.trim_end().ends_with("EXIT")
         }),
         "{label}: ${scratch} is not removed on exit"
     );
@@ -4133,7 +4174,11 @@ fn scaffolded_hook_captures_as_the_host_user() {
     let root = path_str(dir.path());
     invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
     let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    assert_capture_runs_as_the_host_user("the hook `screencomp init` scaffolds", &hook);
+    assert_capture_runs_as_the_host_user(
+        "the hook `screencomp init` scaffolds",
+        &hook,
+        Scratch::RemovedByTheScript,
+    );
 }
 
 #[test]
@@ -4143,5 +4188,119 @@ fn example_hook_captures_as_the_host_user() {
     let example = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/pre-push");
     let hook = std::fs::read_to_string(&example)
         .expect("the copy-paste hook template must exist in this repo");
-    assert_capture_runs_as_the_host_user("examples/pre-push", &hook);
+    assert_capture_runs_as_the_host_user("examples/pre-push", &hook, Scratch::RemovedByTheScript);
+}
+
+/// A file this repository ships, read from the checkout rather than a fixture:
+/// the copies below are held to the contract as they are published.
+fn repo_file(relative: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{relative}: {err}"))
+}
+
+/// The shipped text from `start` through `end`, lifted out of the column its
+/// file keeps it in — YAML block indentation, the `#` of a commented example, or
+/// a fenced snippet's margin — so what is left is the shell the copy publishes.
+fn shipped_block(source: &str, start: &str, end: &str) -> String {
+    let start_at = source
+        .find(start)
+        .unwrap_or_else(|| panic!("no shipped block starting `{start}`"));
+    let line_at = source[..start_at]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let margin = &source[line_at..start_at];
+    let block = &source[line_at..];
+    let end_at = block
+        .find(end)
+        .unwrap_or_else(|| panic!("no shipped block ending `{end}`"))
+        + end.len();
+    block[..end_at]
+        .lines()
+        .map(|line| {
+            line.strip_prefix(margin)
+                .unwrap_or_else(|| line.trim_start())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One shipped copy of the capture invocation: the shell it publishes, whatever
+/// its file sets around that shell, and who owns the scratch it creates.
+struct CaptureCopy {
+    label: &'static str,
+    script: String,
+    scratch_owner: Scratch,
+}
+
+/// The reseed capture in `sync-demo.yml`, composed from the two places the
+/// workflow keeps it: the setup runs once, the `docker run` once per arch inside
+/// the loop between them.
+fn sync_demo_capture() -> CaptureCopy {
+    let workflow = repo_file(".github/workflows/sync-demo.yml");
+    let setup = shipped_block(
+        &workflow,
+        r#"host_user="$(id -u):$(id -g)""#,
+        r#""$scratch/home" node_modules"#,
+    );
+    let capture = shipped_block(
+        &workflow,
+        r#"docker run --rm --platform="$platform""#,
+        r#"bash capture.sh""#,
+    );
+    CaptureCopy {
+        label: ".github/workflows/sync-demo.yml",
+        script: format!("{setup}\n{capture}"),
+        // A reseed runs in a throwaway job workspace the runner discards whole.
+        scratch_owner: Scratch::ReclaimedByTheCaller,
+    }
+}
+
+#[test]
+fn every_shipped_capture_copy_runs_as_the_host_user() {
+    // The two executable hooks have their own tests above; these three are the
+    // copies a reader or a runner follows instead, and they drift from the hooks
+    // the same way — silently, one file at a time.
+    let readme = repo_file("README.md");
+    let example_workflow = repo_file("examples/visual-docs.yml");
+    let copies = [
+        sync_demo_capture(),
+        CaptureCopy {
+            label: "README.md",
+            script: shipped_block(
+                &readme,
+                r#"scratch="$(mktemp -d)"; trap"#,
+                "npx playwright test'",
+            ),
+            scratch_owner: Scratch::RemovedByTheScript,
+        },
+        CaptureCopy {
+            label: "examples/visual-docs.yml",
+            script: shipped_block(
+                &example_workflow,
+                r#"scratch="$(mktemp -d)""#,
+                r#"rm -rf "$scratch""#,
+            ),
+            // A reader pastes this into their own shell and removes the scratch
+            // with the `rm -rf` the example ends on.
+            scratch_owner: Scratch::ReclaimedByTheCaller,
+        },
+    ];
+    for copy in &copies {
+        assert_capture_runs_as_the_host_user(copy.label, &copy.script, copy.scratch_owner);
+    }
+}
+
+#[test]
+fn the_in_container_capture_script_needs_no_root() {
+    // demo/capture.sh runs *inside* the capture container, which now runs under
+    // the caller's uid: an install step that shells out to the system package
+    // manager (`playwright install --with-deps`) would fail there, and the pinned
+    // image already ships the browser and its dependencies.
+    let script = shell_logical_lines(&repo_file("demo/capture.sh")).join("\n");
+    for root_only in ["--with-deps", "sudo ", "apt-get", "apt "] {
+        assert!(
+            !script.contains(root_only),
+            "demo/capture.sh runs as the invoking uid inside the container, which cannot `{root_only}`: {script}"
+        );
+    }
 }
