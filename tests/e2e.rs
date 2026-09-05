@@ -2049,9 +2049,9 @@ fn init_hook_survives_proxies_and_matches_ci_clean_install() {
         .assert()
         .success();
     let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    // Anonymous node_modules volume: `npm ci` installs cleanly inside the
-    // container instead of churning the bind-mounted host tree.
-    assert!(hook.contains("-v /work/node_modules"), "{hook}");
+    // A host directory masks node_modules, so `npm ci` installs inside the
+    // container without churning the bind-mounted tree.
+    assert!(hook.contains(":/work/node_modules\""), "{hook}");
     // Host CA pass-through so a TLS-intercepting proxy doesn't break `npm ci`.
     assert!(hook.contains("NODE_EXTRA_CA_CERTS"), "{hook}");
     assert!(hook.contains("ca_args"), "{hook}");

@@ -208,15 +208,29 @@ jobs:
 # Rosetta ("Use Rosetta for x86_64/amd64 emulation"); the swiftshader render path
 # can crash Chromium under the QEMU fallback (`qemu: uncaught target signal`).
 #
-# The anonymous -v /work/node_modules volume keeps `npm ci` inside the container
-# (matching CI's clean checkout). Behind a TLS-intercepting proxy, also mount your
-# host CA so `npm ci` doesn't die with SELF_SIGNED_CERT_IN_CHAIN — add, when
-# "$NODE_EXTRA_CA_CERTS" is set:  -v "$NODE_EXTRA_CA_CERTS:/host-ca.crt:ro"
+# Run the container as YOURSELF, not root: it bind-mounts your working tree, so a
+# root capture leaves everything it writes there owned by root and undeletable
+# without sudo. Three things come with that mapping. A host directory you created
+# masks node_modules — it still keeps `npm ci` inside the container (matching CI's
+# clean checkout), but an anonymous `-v /work/node_modules` volume is created
+# root-owned and the install would fail with EACCES. Its mountpoint is created in
+# the tree too, since Docker materializes a missing one as root. HOME points into the same
+# scratch, because your uid has no entry in the image's passwd file and npm needs
+# somewhere to write. And you remove the scratch when you are done with it.
+# Behind a TLS-intercepting proxy, also mount your host CA so `npm ci` doesn't die
+# with SELF_SIGNED_CERT_IN_CHAIN — add, when "$NODE_EXTRA_CA_CERTS" is set:
+# -v "$NODE_EXTRA_CA_CERTS:/host-ca.crt:ro"
 # -e NODE_EXTRA_CA_CERTS=/host-ca.crt   (examples/pre-push does this automatically).
 #
+#   scratch="$(mktemp -d)"
+#   mkdir -p "$scratch/node_modules" "$scratch/home" node_modules
 #   docker run --rm --platform=linux/amd64 --ipc=host --shm-size=2g \
-#     -v "$PWD:/work" -v /work/node_modules -w /work \
+#     --user "$(id -u):$(id -g)" \
+#     -v "$PWD:/work" -v "$scratch:/scratch" \
+#     -v "$scratch/node_modules:/work/node_modules" \
+#     -e HOME=/scratch/home -w /work \
 #     mcr.microsoft.com/playwright:v1.60.0-noble \
 #     bash -lc 'npm ci && SHOTS_OUT=shots/current/x86_64 npx playwright test'
+#   rm -rf "$scratch"
 #   screencomp classify --baseline-manifest shots/baseline/x86_64.json \
 #     --current shots/current --arch x86_64 --exit-code

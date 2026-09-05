@@ -169,16 +169,33 @@ fi
 # ---- adapt this to YOUR stack (clearly marked, like visual-docs.yml) ---------
 # Capture into $CURRENT/$ARCH/captures.json (plus the PNGs it references) using the
 # SAME pinned container and flags as examples/visual-docs.yml, so local bytes match
-# CI. Your capture step writes captures.json and each shot's hash. The anonymous
-# `-v /work/node_modules` volume masks the bind-mounted host tree so `npm ci`
-# installs into the container cleanly — matching CI's fresh checkout instead of
-# churning (or colliding with) your host node_modules. The CA mounts above (if
-# any) ride along via "${ca_args[@]}" (the +-guard keeps it safe under `set -u`).
+# CI. Your capture step writes captures.json and each shot's hash.
+#
+# The container runs as YOU: it bind-mounts your tree, and as root it would leave
+# everything it writes there undeletable without sudo. Three things come with that
+# mapping, and all four stand or fall together:
+#   * node_modules is masked by a host directory you created — an anonymous
+#     `-v /work/node_modules` volume is root-owned, so `npm ci` would hit EACCES.
+#     The mountpoint in your tree is created here too, since Docker materializes a
+#     missing one as root. Masking still keeps the install inside the container.
+#   * HOME points into that scratch: your uid has no passwd entry in the image.
+#   * the scratch is removed however this hook exits, on drift or on error.
+# The CA mounts above (if any) ride along via "${ca_args[@]}" (the +-guard keeps
+# it safe under `set -u`).
+# llmlint: ignore-block[changed_behavior_has_e2e] the capture container cannot run in this repository's offline, tempdir-isolated suite; it is covered by the demo journey AGENTS.md requires before release (demo/ through the pinned image, checking ownership under the bind mount and byte-identical PNGs) and by the contract checks over all five shipped copies in tests/integration.rs.
+host_user="$(id -u):$(id -g)"
+capture_scratch="$(mktemp -d)"
+trap 'rm -rf "$capture_scratch"' EXIT
+mkdir -p "$capture_scratch/node_modules" "$capture_scratch/home" node_modules
 docker run --rm --platform="$DOCKER_PLATFORM" --ipc=host --shm-size=2g \
-  -v "$PWD:/work" -v /work/node_modules -w /work \
+  --user "$host_user" \
+  -v "$PWD:/work" -v "$capture_scratch:/scratch" \
+  -v "$capture_scratch/node_modules:/work/node_modules" \
+  -e HOME=/scratch/home -w /work \
   ${ca_args[@]+"${ca_args[@]}"} \
   mcr.microsoft.com/playwright:v1.60.0-noble \
   bash -lc "npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 # ------------------------------------------------------------------------------
 
 # --- 4. Classify the capture against the committed baseline manifest ---------

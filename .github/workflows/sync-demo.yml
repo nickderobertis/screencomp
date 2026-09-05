@@ -149,6 +149,21 @@ jobs:
             local probe
             probe="$(mktemp -d)"
             printf '{"schema":1,"shots":[]}' >"$probe/captures.json"
+            # Run the capture container as the runner user, never root: it
+            # bind-mounts this clone, so a root capture leaves the checkout
+            # root-owned and the steps after it (git add, the push) fail. The
+            # mapping needs a host-side node_modules mask (an anonymous volume
+            # would be created root-owned and npm could not install into it, and
+            # a missing bind-mount destination is materialized by Docker as root)
+            # and a writable HOME (the mapped uid has no passwd entry in the
+            # image).
+            # The runner reclaims this scratch with the rest of the job.
+            # llmlint: ignore-block[changed_behavior_has_e2e] The host side of the same container invocation below: no offline test starts a capture container, and this scratch is proven by the demo journey AGENTS.md requires before release (demo/ through the pinned image as the invoking uid: writable node_modules and HOME, nothing root-owned under the bind mount) and held to the four-part contract with the `docker run` in tests/integration.rs.
+            local host_user scratch
+            host_user="$(id -u):$(id -g)"
+            scratch="$(mktemp -d)"
+            mkdir -p "$scratch/node_modules" "$scratch/home" node_modules
+            # llmlint: ignore-end[changed_behavior_has_e2e]
             local arch manifest stale rc platform
             while IFS= read -r arch; do
               if [ "$arch" != "$host" ]; then
@@ -176,10 +191,15 @@ jobs:
               rm -f shots/baseline/*.sha256   # drop the obsolete pre-JSON baseline
               platform="linux/amd64"
               if [ "$arch" = "arm64" ]; then platform="linux/arm64"; fi
+              # llmlint: ignore-block[changed_behavior_has_e2e] No offline test runs a capture container; this reseed form is the one the demo journey AGENTS.md requires drives before release (demo/ through the pinned image as the invoking uid: install, capture, byte-identical PNGs, nothing root-owned under the bind mount), and tests/integration.rs holds it to the four-part contract.
               docker run --rm --platform="$platform" --ipc=host --shm-size=2g \
-                -v "$PWD:/work" -v /work/node_modules -w /work \
+                --user "$host_user" \
+                -v "$PWD:/work" -v "$scratch:/scratch" \
+                -v "$scratch/node_modules:/work/node_modules" \
+                -e HOME=/scratch/home -w /work \
                 "$CAPTURE_IMAGE" \
                 bash -lc "SHOTS_OUT=shots/current/${arch} bash capture.sh"
+              # llmlint: ignore-end[changed_behavior_has_e2e]
               screencomp manifest --input shots/current --arch "$arch" --output "$manifest"
               echo "reseeded $manifest"
             done < <(echo "$arches" | jq -r '.[]')
