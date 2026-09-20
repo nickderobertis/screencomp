@@ -6,5 +6,11 @@
   exit code, stdout/stderr separation, file effects, JSON/Markdown contracts.
 - Add an e2e case for every user-visible change; a smoke test alone is not
   enough.
+- Spawn every subprocess through the suite's `command()` helper, never
+  `std::process::Command::new` directly. The pre-push hook runs these suites and
+  Git exports `GIT_DIR` to a hook, so an inheriting `git` — or a shipped shell
+  script that calls one — operates on the repository being pushed instead of the
+  tempdir: it has staged every tracked file's removal, committed it, and renamed
+  the branch. `command()` drops those variables.
 - `fixtures/` are opaque byte blobs (not rendered PNGs); keep them in sync with
   asserted expectations. Tests stay deterministic, tempdir-isolated, and offline.
