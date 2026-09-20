@@ -10,6 +10,47 @@ use std::process::Command;
 
 use camino::Utf8Path;
 
+/// Environment variables through which Git overrides where the repository is.
+/// Git exports `GIT_DIR` (and, for some hooks, `GIT_INDEX_FILE` and friends) to
+/// every hook it runs, and a child `git` honours them over `-C <dir>` — so a
+/// `screencomp init --enable-hook` launched from inside a hook would configure
+/// the hook's repository, not `dir`'s. Every spawn here drops them so `-C <dir>`
+/// alone decides which repository is read or written.
+///
+/// Git owns this list (`git rev-parse --local-env-vars`); it is spelled out here
+/// so a spawn never depends on a second `git` call succeeding first, and
+/// `repository_env_covers_what_git_reports` is the gate that fails when the
+/// installed Git reports a name this copy is missing. A name Git has since
+/// dropped may stay: clearing an unset variable does nothing.
+const REPOSITORY_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// `git -C <dir> …` with the repository-locating environment cleared, so the
+/// command acts on `dir` regardless of what a surrounding hook exported.
+fn git_in(dir: &Utf8Path) -> Command {
+    let mut command = Command::new("git");
+    command.args(["-C", dir.as_str()]);
+    for var in REPOSITORY_ENV {
+        command.env_remove(var);
+    }
+    command
+}
+
 /// Outcome of trying to enable the committed hooks directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HookEnable {
@@ -29,8 +70,8 @@ pub(crate) enum HookEnable {
 /// reported, not raised, so `init`'s scaffold still succeeds and the user gets a
 /// clear next step instead of a failed command.
 pub(crate) fn set_hooks_path(dir: &Utf8Path, value: &str) -> HookEnable {
-    let output = Command::new("git")
-        .args(["-C", dir.as_str(), "config", "core.hooksPath", value])
+    let output = git_in(dir)
+        .args(["config", "core.hooksPath", value])
         .output();
     match output {
         Ok(out) if out.status.success() => HookEnable::Set,
@@ -46,8 +87,8 @@ pub(crate) fn set_hooks_path(dir: &Utf8Path, value: &str) -> HookEnable {
 /// for preflight purposes. The value is whatever Git resolves (local, global, or
 /// system config), so a globally enabled hook is detected too.
 pub(crate) fn hooks_path(dir: &Utf8Path) -> Option<String> {
-    let output = Command::new("git")
-        .args(["-C", dir.as_str(), "config", "--get", "core.hooksPath"])
+    let output = git_in(dir)
+        .args(["config", "--get", "core.hooksPath"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -92,15 +133,32 @@ mod tests {
         if Command::new("git").arg("--version").output().is_err() {
             return;
         }
-        assert!(
-            Command::new("git")
-                .args(["-C", dir.as_str(), "init", "-q"])
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(git_in(dir).args(["init", "-q"]).status().unwrap().success());
         assert_eq!(set_hooks_path(dir, ".githooks"), HookEnable::Set);
         assert_eq!(hooks_path(dir), Some(".githooks".to_owned()));
+    }
+
+    #[test]
+    fn repository_env_covers_what_git_reports() {
+        // Skip silently if git is not installed in the test environment.
+        let Ok(out) = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+        else {
+            return;
+        };
+        assert!(out.status.success());
+        let reported = String::from_utf8(out.stdout).expect("git prints UTF-8 names");
+        let missing = reported
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .filter(|name| !REPOSITORY_ENV.contains(name))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "git calls these repository-local but REPOSITORY_ENV does not clear them: {missing:?}"
+        );
     }
 
     #[test]

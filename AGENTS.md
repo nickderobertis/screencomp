@@ -116,6 +116,12 @@ documented reason here.
 - Add dependencies only with a concrete need; keep features minimal. Mutate
   dependencies only through `just upgrade`, then re-run the gate.
 - No async runtime, network client, or image codec — none are needed.
+- `.cargo/config.toml` holds the build settings that must reach every cargo
+  invocation under the clone rather than only this manifest — the shared
+  `target-dir` and the dev/test debuginfo level. It is a cross-repository
+  contract (the `create-repo` skill is its source); keep both keys as written
+  and never point `target-dir` outside the clone, or concurrent worktrees
+  would share one target directory.
 
 ## Architecture rules
 

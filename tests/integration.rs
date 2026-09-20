@@ -11,6 +11,9 @@ use clap::Parser as _;
 use screencomp::{AppError, Cli, run};
 use tempfile::TempDir;
 
+mod common;
+use common::command;
+
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
@@ -2410,7 +2413,7 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
         r#"[{"id":"shop"},{"id":"shop"}]"#,
     ] {
         assert!(
-            !std::process::Command::new("bash")
+            !command("bash")
                 .arg("-c")
                 .arg(&validation_script)
                 .env("PROJECTS_INPUT", projects)
@@ -2421,7 +2424,7 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
         );
     }
     assert!(
-        std::process::Command::new("bash")
+        command("bash")
             .arg("-c")
             .arg(&validation_script)
             .env(
@@ -2472,7 +2475,7 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
         "#!/usr/bin/env bash\nscreencomp() {{ printf '%s\\n' \"$@\" >\"$CALLS\"; }}\n{gallery_script}"
     );
     assert!(
-        std::process::Command::new("bash")
+        command("bash")
             .arg("-c")
             .arg(&executable)
             .env("CALLS", &calls)
@@ -2491,7 +2494,7 @@ fn reusable_workflow_preserves_independent_affected_project_lanes() {
     assert!(!args.lines().any(|arg| arg == "--baseline"));
 
     assert!(
-        std::process::Command::new("bash")
+        command("bash")
             .arg("-c")
             .arg(&executable)
             .env("CALLS", &calls)
@@ -2586,7 +2589,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
             .env("GITHUB_OUTPUT", &output);
     };
 
-    let mut missing = std::process::Command::new("bash");
+    let mut missing = command("bash");
     missing.arg("-c").arg(&config_script);
     base_env(&mut missing);
     let failure = missing
@@ -2600,7 +2603,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         "{}",
         String::from_utf8_lossy(&failure.stderr)
     );
-    let mut invalid = std::process::Command::new("bash");
+    let mut invalid = command("bash");
     invalid.arg("-c").arg(&config_script);
     base_env(&mut invalid);
     let failure = invalid
@@ -2613,7 +2616,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         String::from_utf8_lossy(&failure.stderr).contains("pages-repository must be an owner/name")
     );
 
-    let mut external = std::process::Command::new("bash");
+    let mut external = command("bash");
     external.arg("-c").arg(&config_script);
     base_env(&mut external);
     let success = external
@@ -2655,7 +2658,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         vec!["branch", "-M", "gh-pages"],
     ] {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(args)
                 .current_dir(&remote)
                 .status()
@@ -2682,7 +2685,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
             &format!("\"{}\"", remote.display()),
         );
     let fetch_output = dir.path().join("fetch-output");
-    let fetch = std::process::Command::new("bash")
+    let fetch = command("bash")
         .arg("-c")
         .arg(&fetch_script)
         .env("PAGES_REPO", "docs/galleries")
@@ -2712,7 +2715,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
     );
 
     let missing_output = dir.path().join("missing-output");
-    let missing_index = std::process::Command::new("bash")
+    let missing_index = command("bash")
         .arg("-c")
         .arg(&fetch_script)
         .env("PAGES_REPO", "docs/galleries")
@@ -2744,7 +2747,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         vec!["commit", "-qm", "seed"],
     ] {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(args)
                 .current_dir(&no_branch)
                 .status()
@@ -2757,7 +2760,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         &no_branch.display().to_string(),
     );
     let no_branch_output = dir.path().join("no-branch-output");
-    let branch_absent = std::process::Command::new("bash")
+    let branch_absent = command("bash")
         .arg("-c")
         .arg(no_branch_script)
         .env("PAGES_REPO", "docs/galleries")
@@ -2804,7 +2807,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         ("docs/galleries", "", false),
         ("invalid", "token", false),
     ] {
-        let result = std::process::Command::new("bash")
+        let result = command("bash")
             .arg("-c")
             .arg(&script)
             .env("PAGES_REPOSITORY", repo)
@@ -2833,7 +2836,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
         .map(|line| line.strip_prefix("        ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n");
-    let invalid_aggregate = std::process::Command::new("bash")
+    let invalid_aggregate = command("bash")
         .arg("-c")
         .arg(aggregate_script)
         .env("COMMENT_BASE_REF", "")
@@ -2930,10 +2933,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.
 fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok()
+    command("git").arg("--version").output().is_ok()
 }
 
 #[test]
@@ -3019,14 +3019,14 @@ fn doctor_env_reports_a_custom_hooks_path() {
     let path = dir.path().to_str().unwrap();
     // A repo wired to a different hook manager (no committed .githooks/pre-push).
     assert!(
-        std::process::Command::new("git")
+        command("git")
             .args(["-C", path, "init", "-q"])
             .status()
             .unwrap()
             .success()
     );
     assert!(
-        std::process::Command::new("git")
+        command("git")
             .args(["-C", path, "config", "core.hooksPath", "my-hooks"])
             .status()
             .unwrap()
@@ -3056,7 +3056,7 @@ fn init_enable_hook_json_reports_enabled_in_a_repo() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().to_str().unwrap();
     assert!(
-        std::process::Command::new("git")
+        command("git")
             .args(["-C", path, "init", "-q"])
             .status()
             .unwrap()
@@ -3137,7 +3137,7 @@ fn action_step_script(action: &str, step_name: &str) -> String {
 #[cfg(unix)]
 fn resolve_lane_config(action: &str, dir: &Path, lane: &str, project: &str, arch: &str) -> String {
     let output = dir.join(format!("cfg-{lane}"));
-    let result = std::process::Command::new("bash")
+    let result = command("bash")
         .arg("-c")
         .arg(action_step_script(action, "Resolve config"))
         .env("INPUT_ARCH", arch)
@@ -3200,7 +3200,7 @@ fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
             std::fs::write(work.join("site/img/home.png"), b"png").unwrap();
 
             let outputs = resolve_lane_config(&action, dir.path(), lane, project, arch);
-            let staged = std::process::Command::new("bash")
+            let staged = command("bash")
                 .arg("-c")
                 .arg(&stage)
                 .env("DEST", output_value(&outputs, "dest"))
@@ -3218,7 +3218,7 @@ fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
 
             // `actions/download-artifact` with merge-multiple unpacks every lane's
             // upload into one directory; copying them over each other is that.
-            let unpack = std::process::Command::new("bash")
+            let unpack = command("bash")
                 .arg("-c")
                 .arg(format!(
                     "cp -R {}/. {}/",
@@ -3317,7 +3317,7 @@ fn run_pages_build_gate(
     let stub = write_gh_stub(&work, polls);
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/visual-docs-pages-build.sh");
-    let output = std::process::Command::new("bash")
+    let output = command("bash")
         .arg(&script)
         .arg(subcommand)
         .env("WORK", &work)
@@ -3483,7 +3483,7 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
         ("not-a-repository", "3", "REPO must be an owner/name"),
         ("o/r", "many", "APPEAR_ATTEMPTS must be a non-negative"),
     ] {
-        let rejected = std::process::Command::new("bash")
+        let rejected = command("bash")
             .arg(&script)
             .arg("verify")
             .env("REPO", repo)
@@ -3637,7 +3637,7 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
 
     let git = |args: Vec<&str>| {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(&args)
                 .current_dir(&remote)
                 .status()
@@ -3659,7 +3659,7 @@ fn coalesced_deploy_detects_a_push_that_published_nothing() {
     );
     let run = |before: &str, label: &str| {
         let output_file = dir.path().join(format!("out-{label}"));
-        let result = std::process::Command::new("bash")
+        let result = command("bash")
             .arg("-c")
             .arg(&script)
             .env("REPO", "docs/galleries")
@@ -3771,7 +3771,7 @@ fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
 
     let git = |args: Vec<&str>| {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(&args)
                 .current_dir(&remote)
                 .status()
@@ -3801,9 +3801,8 @@ fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
         let stub = write_gh_stub(&work, polls);
         let output_file = dir.path().join(format!("out-{label}"));
         std::fs::write(&output_file, "").unwrap();
-        let mut command = std::process::Command::new("bash");
-        command
-            .arg("-c")
+        let mut bash = command("bash");
+        bash.arg("-c")
             .arg(script)
             .env("WORK", &work)
             .env("GH_BIN", &stub)
@@ -3816,9 +3815,9 @@ fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
             .env("SETTLE_ATTEMPTS", "3")
             .env("GITHUB_OUTPUT", &output_file);
         for (key, value) in envs {
-            command.env(key, value);
+            bash.env(key, value);
         }
-        let result = command.output().unwrap();
+        let result = bash.output().unwrap();
         (
             result,
             std::fs::read_to_string(&output_file).unwrap(),
@@ -3910,7 +3909,7 @@ fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
 /// The current commit of a local git repository.
 #[cfg(unix)]
 fn head_of(repo: &Path) -> String {
-    let out = std::process::Command::new("git")
+    let out = command("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo)
         .output()
