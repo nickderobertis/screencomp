@@ -9,10 +9,8 @@
 - `common/mod.rs` is shared by both suites (`mod common;`); a subdirectory of
   `tests/` is not a test target, which is what makes that work.
 - Spawn every subprocess through `common::command`, never
-  `std::process::Command::new` directly. The pre-push hook runs these suites and
-  Git exports `GIT_DIR` to a hook, so an inheriting `git` — or a shipped shell
-  script that calls one — operates on the repository being pushed instead of the
-  tempdir: it has staged every tracked file's removal, committed it, and renamed
-  the branch. `command` drops the variables Git reports as repository-local.
+  `std::process::Command::new`. The pre-push hook runs these suites and Git
+  exports `GIT_DIR` to a hook, so an inheriting `git` — or a shipped script that
+  calls one — acts on the repository being pushed, not on the tempdir.
 - `fixtures/` are opaque byte blobs (not rendered PNGs); keep them in sync with
   asserted expectations. Tests stay deterministic, tempdir-isolated, and offline.
