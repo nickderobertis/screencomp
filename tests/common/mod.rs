@@ -3,6 +3,7 @@
 //! Not a test target of its own (a subdirectory of `tests/` is not compiled as
 //! one) — both suites pull it in with `mod common;`, so the subprocess
 //! discipline below has a single copy rather than one per suite.
+// llmlint: ignore-file[new_code_lands_in_a_project] There is no Nx workspace here to land in: the repo has no nx.json and no project.json, and AGENTS.md excludes the monorepo guidance because this is one root crate. `Cargo.toml` is the project definition, and it already covers this file exactly as it covers the `tests/e2e.rs` and `tests/integration.rs` beside it — the only `package.json`s the rule found, under `browser-tests/` and `demo/`, are npm packages for the browser harness and the consumer demo, not Rust targets this could belong to.
 
 use std::ffi::OsStr;
 use std::process::Command;
