@@ -10,46 +10,14 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+mod common;
+use common::command;
+
 fn bin() -> Command {
     let mut cmd = Command::cargo_bin("screencomp").expect("binary builds");
     // Keep tests hermetic regardless of the developer's environment.
     cmd.env_remove("SCREENCOMP_CONFIG");
     cmd
-}
-
-/// Environment variables through which Git relocates the repository
-/// (`git rev-parse --local-env-vars`). This suite runs under the pre-push hook,
-/// and Git exports `GIT_DIR` to a hook it runs — so a child `git` (or a shipped
-/// shell script calling one) working in a temp directory would otherwise act on
-/// the repository being pushed: staging every tracked file's removal, committing
-/// it, renaming the branch. Every subprocess spawn here goes through [`command`],
-/// which drops them.
-const GIT_REPOSITORY_ENV: &[&str] = &[
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CONFIG",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_COUNT",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_IMPLICIT_WORK_TREE",
-    "GIT_GRAFT_FILE",
-    "GIT_INDEX_FILE",
-    "GIT_NO_REPLACE_OBJECTS",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_PREFIX",
-    "GIT_SHALLOW_FILE",
-    "GIT_COMMON_DIR",
-];
-
-/// A subprocess with Git's repository-locating environment cleared, so `git`
-/// resolves the repository from its working directory alone.
-fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    let mut command = std::process::Command::new(program);
-    for var in GIT_REPOSITORY_ENV {
-        command.env_remove(var);
-    }
-    command
 }
 
 fn fixtures() -> PathBuf {

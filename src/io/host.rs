@@ -10,13 +10,18 @@ use std::process::Command;
 
 use camino::Utf8Path;
 
-/// Environment variables through which Git overrides where the repository is
-/// (`git rev-parse --local-env-vars`). Git exports `GIT_DIR` (and, for some
-/// hooks, `GIT_INDEX_FILE` and friends) to every hook it runs, and a child `git`
-/// honours them over `-C <dir>` — so a `screencomp init --enable-hook` launched
-/// from inside a hook would configure the hook's repository, not `dir`'s. Every
-/// spawn here drops them so `-C <dir>` alone decides which repository is read or
-/// written.
+/// Environment variables through which Git overrides where the repository is.
+/// Git exports `GIT_DIR` (and, for some hooks, `GIT_INDEX_FILE` and friends) to
+/// every hook it runs, and a child `git` honours them over `-C <dir>` — so a
+/// `screencomp init --enable-hook` launched from inside a hook would configure
+/// the hook's repository, not `dir`'s. Every spawn here drops them so `-C <dir>`
+/// alone decides which repository is read or written.
+///
+/// Git owns this list (`git rev-parse --local-env-vars`); it is spelled out here
+/// so a spawn never depends on a second `git` call succeeding first, and
+/// `repository_env_covers_what_git_reports` is the gate that fails when the
+/// installed Git reports a name this copy is missing. A name Git has since
+/// dropped may stay: clearing an unset variable does nothing.
 const REPOSITORY_ENV: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG",
@@ -131,6 +136,29 @@ mod tests {
         assert!(git_in(dir).args(["init", "-q"]).status().unwrap().success());
         assert_eq!(set_hooks_path(dir, ".githooks"), HookEnable::Set);
         assert_eq!(hooks_path(dir), Some(".githooks".to_owned()));
+    }
+
+    #[test]
+    fn repository_env_covers_what_git_reports() {
+        // Skip silently if git is not installed in the test environment.
+        let Ok(out) = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+        else {
+            return;
+        };
+        assert!(out.status.success());
+        let reported = String::from_utf8(out.stdout).expect("git prints UTF-8 names");
+        let missing = reported
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .filter(|name| !REPOSITORY_ENV.contains(name))
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "git calls these repository-local but REPOSITORY_ENV does not clear them: {missing:?}"
+        );
     }
 
     #[test]
