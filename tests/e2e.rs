@@ -17,6 +17,41 @@ fn bin() -> Command {
     cmd
 }
 
+/// Environment variables through which Git relocates the repository
+/// (`git rev-parse --local-env-vars`). This suite runs under the pre-push hook,
+/// and Git exports `GIT_DIR` to a hook it runs — so a child `git` (or a shipped
+/// shell script calling one) working in a temp directory would otherwise act on
+/// the repository being pushed: staging every tracked file's removal, committing
+/// it, renaming the branch. Every subprocess spawn here goes through [`command`],
+/// which drops them.
+const GIT_REPOSITORY_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// A subprocess with Git's repository-locating environment cleared, so `git`
+/// resolves the repository from its working directory alone.
+fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    for var in GIT_REPOSITORY_ENV {
+        command.env_remove(var);
+    }
+    command
+}
+
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
@@ -701,7 +736,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
     let canonical = dir.path().join("canonical-repository");
     std::fs::create_dir_all(&canonical).unwrap();
     assert!(
-        std::process::Command::new(&binary)
+        command(&binary)
             .args(["gallery", "--input"])
             .arg(baseline())
             .arg("--output")
@@ -719,7 +754,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
         ["branch", "-M", "gh-pages"].as_slice(),
     ] {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(args)
                 .current_dir(&canonical)
                 .status()
@@ -756,7 +791,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
     let preview_work = dir.path().join("preview-work");
     std::fs::create_dir_all(&preview_work).unwrap();
     let fetch_output = preview_work.join("fetch-output");
-    let fetched = std::process::Command::new("bash")
+    let fetched = command("bash")
         .arg("-c")
         .arg(&fetch_script)
         .current_dir(&preview_work)
@@ -778,7 +813,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
         .lines()
         .find_map(|line| line.strip_prefix("path="))
         .unwrap();
-    let built = std::process::Command::new("bash")
+    let built = command("bash")
         .arg("-c")
         .arg(&build_script)
         .current_dir(&preview_work)
@@ -820,7 +855,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
         ["commit", "-qm", "seed"].as_slice(),
     ] {
         assert!(
-            std::process::Command::new("git")
+            command("git")
                 .args(args)
                 .current_dir(&no_canonical)
                 .status()
@@ -836,7 +871,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
     std::fs::create_dir_all(&recovery_work).unwrap();
     let recovery_output = recovery_work.join("fetch-output");
     assert!(
-        std::process::Command::new("bash")
+        command("bash")
             .arg("-c")
             .arg(recovery_fetch)
             .current_dir(&recovery_work)
@@ -855,7 +890,7 @@ fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical()
         "found=false\n"
     );
     assert!(
-        std::process::Command::new("bash")
+        command("bash")
             .arg("-c")
             .arg(&build_script)
             .current_dir(&recovery_work)
@@ -2019,15 +2054,12 @@ fn comment_urls_resolve_to_real_gallery_files() {
 /// Whether `git` is installed, so git-dependent assertions can skip cleanly in a
 /// minimal environment rather than fail.
 fn git_available() -> bool {
-    std::process::Command::new("git")
-        .arg("--version")
-        .output()
-        .is_ok()
+    command("git").arg("--version").output().is_ok()
 }
 
 /// Run `git -C <dir> <args>`, asserting success.
 fn git(dir: &TempDir, args: &[&str]) {
-    let ok = std::process::Command::new("git")
+    let ok = command("git")
         .arg("-C")
         .arg(dir.path())
         .args(args)
@@ -2077,13 +2109,66 @@ fn init_enable_hook_wires_the_git_hooks_path() {
         .stdout(predicate::str::contains("Enabled the local pre-push guard"));
 
     // Git is now pointed at the committed hooks directory.
-    let out = std::process::Command::new("git")
+    let out = command("git")
         .arg("-C")
         .arg(dir.path())
         .args(["config", "--get", "core.hooksPath"])
         .output()
         .unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ".githooks");
+}
+
+#[test]
+fn init_and_doctor_from_inside_a_hook_act_on_the_named_dir_not_the_hooks_repo() {
+    if !git_available() {
+        return;
+    }
+    // Git exports `GIT_DIR` to every hook it runs, and a child `git` honours it
+    // over `-C <dir>`. A user running `screencomp init --enable-hook` from a
+    // hook (or this suite running under the pre-push hook) must still configure
+    // and read the repository named by `--dir`, never the hook's own.
+    let hooks_repo = TempDir::new().unwrap();
+    git(&hooks_repo, &["init", "-q"]);
+    git(
+        &hooks_repo,
+        &["config", "core.hooksPath", "hooks-repo-path"],
+    );
+    let hooks_git_dir = hooks_repo.path().join(".git");
+
+    let dir = TempDir::new().unwrap();
+    git(&dir, &["init", "-q"]);
+    bin()
+        .env("GIT_DIR", &hooks_git_dir)
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .args(["--arch", "auto", "--enable-hook", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""hook_enabled":"enabled""#));
+
+    let hooks_path = |repo: &TempDir| {
+        let out = command("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["config", "--get", "core.hooksPath"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert_eq!(hooks_path(&dir), ".githooks");
+    assert_eq!(hooks_path(&hooks_repo), "hooks-repo-path");
+
+    // The read side resolves the same way: `doctor --env` reports `--dir`'s
+    // enabled guard, not the custom `hooks-repo-path` the surrounding
+    // repository carries.
+    bin()
+        .env("GIT_DIR", &hooks_git_dir)
+        .args(["doctor", "--env", "--dir"])
+        .arg(dir.path())
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""pre_push_guard":"enabled""#));
 }
 
 #[test]
