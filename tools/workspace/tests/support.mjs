@@ -46,14 +46,32 @@ export function scratchCopy() {
   return dir;
 }
 
+// How long removeScratch keeps retrying a directory Windows still holds busy.
+// It must outlast the longest-lived process a test leaves in a scratch copy
+// (session-setup.test.mjs's HANG_SECONDS).
+export const REMOVE_BUDGET_MS = 30_000;
+
+const BUSY = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+
 /**
  * Windows refuses to remove a directory a live process still has as its cwd
  * (EBUSY), and a detached hand-off a test left running (the hung
- * setup-llmlint stand-in, for session-setup.test.mjs's HANG_SECONDS) holds the
- * scratch copy that way; retrying with backoff (up to ~21s in all) outlasts it.
+ * setup-llmlint stand-in) holds the scratch copy that way. `rmSync`'s own
+ * `maxRetries` cannot outlast it: its synchronous form retries file unlinks
+ * and a non-empty directory, but rethrows EBUSY from the final rmdir at once.
+ * So retry the whole removal until REMOVE_BUDGET_MS has passed.
  */
-export function removeScratch(dir) {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+export function removeScratch(dir, remove = rmSync) {
+  const until = Date.now() + REMOVE_BUDGET_MS;
+  for (;;) {
+    try {
+      remove(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      return;
+    } catch (error) {
+      if (!BUSY.has(error.code) || Date.now() >= until) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+  }
 }
 
 /**

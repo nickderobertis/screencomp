@@ -24,7 +24,7 @@ import { test } from "node:test";
 import { posixOnly, removeScratch, scratchCopy } from "./support.mjs";
 
 // How long the hung stand-in sleeps before recording that it finished. Within
-// support.mjs's removeScratch retry budget (~21s), which outlasts it on Windows.
+// support.mjs's REMOVE_BUDGET_MS, which outlasts it on Windows.
 const HANG_SECONDS = 15;
 
 const STAND_INS = {
