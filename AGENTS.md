@@ -172,15 +172,11 @@ than tracked as a badge. Lower it only with a documented reason here.
 
 ## Quality gate
 
-`just check` (aliases `full-check`, `gate`) runs `format-check lint typecheck
-test build doc coverage supply-chain release-check` through the Nx project graph
-(`nx.json`; Nx on bun from the root `bun.lock`; Cargo keeps the one
-`Cargo.lock`): over the affected projects (`nx affected` against NX_BASE, else
-`git merge-base origin/main HEAD`), or over every project with `just check all`.
-`test`, `test-e2e`, `test-cov`, `lint`, `format`, `fmt-check` and `typecheck`
-take the same trailing tier. "Release & git" says where each tier runs;
-`tools/AGENTS.md` holds the graph's rules (project roots, inputs, boundaries, the
-combined coverage). Browser suites (`just test-browser`) stay out of the gate.
+`just check` (aliases `full-check`, `gate`) is the one gate, run through the Nx
+project graph (`nx.json`; Nx on bun from the root `bun.lock`, Cargo keeping the
+one `Cargo.lock`): the affected projects by default, every project with `just
+check all`. "Release & git" says where each tier runs; `tools/AGENTS.md` holds
+the graph's rules. Browser suites stay out of the gate.
 
 The performance suite (`benches/`, the `bench*`/`profile` recipes, the perf CI
 job) is informational and stays out of `full-check`: its timings are

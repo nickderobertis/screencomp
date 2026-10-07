@@ -106,12 +106,6 @@ test("notignored is a review comment of its own, needed by no job and in no fixe
   }
 });
 
-/** The Conventional Commit header grammar the PR-title action validates against. */
-function titleAccepted(title, types) {
-  const header = /^(?<type>[a-z]+)(?:\((?<scope>[^()\r\n]+)\))?!?: (?<subject>\S.*)$/.exec(title);
-  return Boolean(header) && types.includes(header.groups.type);
-}
-
 test("pr-title admits exactly release-plz's commit types, on every title-changing event", () => {
   const workflow = workflows["pr-title.yml"];
   assert.deepEqual(workflow.on.pull_request.types, ["opened", "edited", "synchronize", "reopened", "ready_for_review"]);
@@ -126,13 +120,6 @@ test("pr-title admits exactly release-plz's commit types, on every title-changin
   const releasePlz = readFileSync(join(root, "release-plz.toml"), "utf8");
   const parsed = [...releasePlz.matchAll(/\{ message = "\^([a-z]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...types].sort(), [...parsed].sort());
-
-  for (const title of ["feat: add x", "fix(cli): handle y", "feat!: drop z", "chore: release v1.2.3"]) {
-    assert.ok(titleAccepted(title, types), title);
-  }
-  for (const title of ["Add x", "feature: add x", "feat add x", "feat:", "Fix: y"]) {
-    assert.ok(!titleAccepted(title, types), title);
-  }
 });
 
 test("llmlint validates, then requires the credential, then always runs the judged diff", () => {

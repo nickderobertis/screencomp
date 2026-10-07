@@ -6,7 +6,8 @@
 # subject. A mistitled change therefore ships nothing, silently; this check makes
 # the title malformed-or-not visible before merge. The admitted types are exactly
 # the ones release-plz.toml's changelog parsers name, a list a workflow-contract
-# test (tools/workspace/tests/workflows.test.mjs) holds in lockstep.
+# test (tools/workspace/tests/workflows.test.mjs) holds in lockstep; the title
+# grammar is the action's own.
 name: pr-title
 
 on:
