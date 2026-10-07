@@ -31,9 +31,10 @@ const PIN = /"packageManager": *"bun@([0-9.]+)"/.exec(readFileSync(join(root, "p
 /**
  * A directory holding node-modules.sh, package.json and bun.lock, plus a `bin`
  * of stand-ins: `bun` reporting `bunVersion` (absent when null) and `npm`, each
- * appending its argv to `calls` and exiting `status`.
+ * appending its argv to `calls` and exiting `status`, and `node` — the real one,
+ * or one reporting `nodeVersion` when that is set.
  */
-function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath = true }) {
+function installFixture({ bunVersion, status = 0, nodeOnPath = true, nodeVersion = null, npmOnPath = true }) {
   const dir = mkdtempSync(join(tmpdir(), "screencomp-node-modules-"));
   for (const file of ["tools/workspace/node-modules.sh", "package.json", "bun.lock", "browser-tests/package.json"]) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
@@ -52,7 +53,8 @@ function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath =
     standIn("bun", `if [ "$1" = "--version" ]; then echo ${bunVersion}; exit 0; fi\necho "bun $*" >> "${calls}"\n${install}`);
   }
   if (npmOnPath) standIn("npm", `echo "npm $*" >> "${calls}"\n${install}`);
-  if (nodeOnPath) symlinkSync(process.execPath, join(bin, "node"));
+  if (nodeVersion !== null) standIn("node", `echo ${nodeVersion}\n`);
+  else if (nodeOnPath) symlinkSync(process.execPath, join(bin, "node"));
   const run = () =>
     spawnSync("bash", [join(dir, "tools/workspace/node-modules.sh")], {
       encoding: "utf8",
@@ -119,6 +121,36 @@ test("a package.json pinning no bun fails with the next step", { skip: posixOnly
     assert.equal(run.status, 1);
     assert.match(run.stderr, /pins no bun version/);
     assert.match(run.stderr, /ACTION: /);
+    assert.deepEqual(fx.recorded(), []);
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+for (const pin of ["1..3", "latest", "1.2"]) {
+  test(`a bun pin of ${pin} is refused as not an exact version`, { skip: posixOnly }, () => {
+    const fx = installFixture({ bunVersion: PIN });
+    try {
+      const path = join(fx.dir, "package.json");
+      writeFileSync(path, readFileSync(path, "utf8").replace(/"bun@[^"]*"/, `"bun@${pin}"`));
+      const run = fx.run();
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, new RegExp(`pins bun@${pin.replaceAll(".", "\\.")} in "packageManager", not an exact version`));
+      assert.match(run.stderr, /ACTION: /);
+      assert.deepEqual(fx.recorded(), []);
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a Node.js older than 22 fails with the next step", { skip: posixOnly }, () => {
+  const fx = installFixture({ bunVersion: PIN, nodeVersion: "20.11.1" });
+  try {
+    const run = fx.run();
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /Node\.js 20\.11\.1 is older than 22/);
+    assert.match(run.stderr, /ACTION: install Node\.js 22 or newer/);
     assert.deepEqual(fx.recorded(), []);
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });

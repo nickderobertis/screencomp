@@ -18,11 +18,22 @@ if ! command -v node >/dev/null 2>&1; then
     echo "ACTION: install Node.js 22 or newer (https://nodejs.org), then re-run 'just bootstrap'" >&2
     exit 1
 fi
+node_version="$(node -p process.versions.node 2>/dev/null || true)"
+if ! [[ "$node_version" =~ ^([0-9]+)\. ]] || [ "${BASH_REMATCH[1]}" -lt 22 ]; then
+    echo "node-modules: Node.js ${node_version:-of unknown version} is older than 22, the oldest this workspace's Nx runs on" >&2
+    echo "ACTION: install Node.js 22 or newer (https://nodejs.org), then re-run 'just bootstrap'" >&2
+    exit 1
+fi
 
-version="$(sed -n 's/.*"packageManager": *"bun@\([0-9][0-9.]*\)".*/\1/p' package.json)"
+version="$(sed -n 's/.*"packageManager": *"bun@\([^"]*\)".*/\1/p' package.json)"
 if [ -z "$version" ]; then
     echo "node-modules: package.json pins no bun version in \"packageManager\"" >&2
     echo "ACTION: restore \"packageManager\": \"bun@<version>\" in package.json" >&2
+    exit 1
+fi
+if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "node-modules: package.json pins bun@$version in \"packageManager\", not an exact version" >&2
+    echo "ACTION: pin an exact release, e.g. \"packageManager\": \"bun@1.2.3\", in package.json" >&2
     exit 1
 fi
 
