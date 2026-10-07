@@ -116,18 +116,19 @@ fn init_caller_matches_the_reusable_workflow_interface() {
 #[test]
 fn reusable_workflow_floats_its_own_action_pins() {
     // The reusable workflow references screencomp's own actions (install,
-    // visual-docs, gh-pages-maintenance) by the floating major tag `@v0`, which
-    // each release advances to itself (release.yml). `uses:` can't interpolate a
-    // ref, so an exact `@vX.Y.Z` pin would silently go stale every release and a
-    // brand-new action can't be referenced before it ships — `@v0` sidesteps both.
-    // Guard against a regression back to exact pins.
+    // visual-docs, visual-docs-pages, visual-docs-aggregate, gh-pages-maintenance)
+    // by the floating major tag `@v0`, which each release advances to itself
+    // (release.yml). `uses:` can't interpolate a ref, so an exact `@vX.Y.Z` pin
+    // would silently go stale every release and a brand-new action can't be
+    // referenced before it ships — `@v0` sidesteps both. Guard against a
+    // regression back to exact pins.
     let reusable = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".github/workflows/visual-docs-reusable.yml"),
     )
     .unwrap();
 
-    let mut refs = 0;
+    let mut actions = std::collections::BTreeSet::new();
     for line in reusable.lines() {
         if line.trim_start().starts_with('#') {
             continue;
@@ -135,25 +136,32 @@ fn reusable_workflow_floats_its_own_action_pins() {
         let Some((_, after)) = line.split_once("uses: nickderobertis/screencomp") else {
             continue;
         };
-        let Some((_, ref_part)) = after.split_once('@') else {
+        let Some((action, ref_part)) = after.split_once('@') else {
             continue;
         };
         let pin: String = ref_part
             .chars()
             .take_while(|c| !c.is_whitespace())
             .collect();
-        refs += 1;
+        actions.insert(action.to_owned());
         assert_eq!(
             pin, "v0",
             "internal action ref `@{pin}` should float on `@v0`, not an exact pin \
              (which goes stale every release): {line}"
         );
     }
-    // install + visual-docs + cleanup + prune = 4 internal action references.
-    assert!(
-        refs >= 4,
-        "expected 4 internal screencomp action refs; found {refs}"
-    );
+    for action in [
+        "",
+        "/visual-docs",
+        "/visual-docs-pages",
+        "/visual-docs-aggregate",
+        "/gh-pages-maintenance",
+    ] {
+        assert!(
+            actions.contains(action),
+            "the reusable workflow no longer references screencomp{action}@v0; found {actions:?}"
+        );
+    }
 }
 
 // The reusable workflow's embedded validation shell runs only on GitHub's Linux

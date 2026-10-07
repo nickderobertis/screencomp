@@ -2,12 +2,10 @@
 # deterministic `check` gate. Scoped to what the pull request changed (the
 # merge-base diff with main), so each change pays for its own lines.
 #
-# It REQUIRES the harness credential and fails fast without it: it never passes
-# without running the model-backed diff lint, which would report unjudged files
-# as clean. The harness is codex (the primary in oneharness.toml's fallback
-# chain) and its credential is the repository secret OPENAI_API_KEY (AGENTS.md).
-# Fork pull requests are gated by the repository's require-approval-for-fork-
-# workflows setting, not by a no-op branch here.
+# It never passes without running the model-backed diff lint (a skip would report
+# unjudged files as clean), so it fails fast without codex's credential, the
+# OPENAI_API_KEY secret (AGENTS.md); fork pull requests, which get no secrets,
+# fail the same way.
 name: llmlint
 
 on:

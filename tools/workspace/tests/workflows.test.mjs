@@ -210,11 +210,14 @@ test("llmlint validates, then requires the credential, then always runs the judg
   assert.match(harnesses, /^"codex"/, "codex is the harness oneharness.toml tries first");
 });
 
-test("the credential check fails fast without OPENAI_API_KEY and authenticates codex with it", () => {
+test("the credential check fails fast without OPENAI_API_KEY or when codex rejects it, and authenticates codex with it", () => {
   const bin = mkdtempSync(join(tmpdir(), "screencomp-codex-"));
   try {
     const record = join(bin, "login");
-    writeFileSync(join(bin, "codex"), `#!/bin/sh\necho "$*" > "${record}"\ncat >> "${record}"\n`);
+    writeFileSync(
+      join(bin, "codex"),
+      `#!/bin/sh\necho "$*" > "${record}"\ncat >> "${record}"\n[ "$(tail -n 1 "${record}")" != sk-revoked ]\n`,
+    );
     chmodSync(join(bin, "codex"), 0o755);
     const run = (env) =>
       spawnSync("bash", ["scripts/llmlint-require-credential.sh"], {
@@ -228,6 +231,9 @@ test("the credential check fails fast without OPENAI_API_KEY and authenticates c
     const present = run({ OPENAI_API_KEY: "sk-test" });
     assert.equal(present.status, 0, present.stderr);
     assert.equal(readFileSync(record, "utf8"), "login --with-api-key\nsk-test\n");
+    const rejected = run({ OPENAI_API_KEY: "sk-revoked" });
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /codex rejected the OPENAI_API_KEY repository secret; replace it/);
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
