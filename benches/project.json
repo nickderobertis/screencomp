@@ -1,0 +1,30 @@
+{
+  "name": "screencomp-bench",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "//": "The Criterion benchmarks (`cargo bench --bench commands`), informational: `bench` is never a gate target. A leaf of its own so a benchmark-only change selects nothing else; its `lint` and `typecheck` compile it through the crate's `--all-targets` clippy and check.",
+  "projectType": "application",
+  "sourceRoot": "benches",
+  "tags": ["type:bench", "lang:rust"],
+  "implicitDependencies": ["screencomp-cli"],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node tools/workspace/check-project-boundaries.mjs screencomp-bench",
+          "just _rust-lint screencomp"
+        ],
+        "parallel": false
+      },
+      "inputs": ["default", "crate", "^default", "boundaries"]
+    },
+    "typecheck": {
+      "command": "just _rust-typecheck screencomp",
+      "inputs": ["default", "crate", "^default"]
+    },
+    "bench": {
+      "command": "just bench",
+      "inputs": ["default", "crate", "^default"]
+    }
+  }
+}

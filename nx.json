@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
-  "//": "A project owns the files under its root. Files that must stay where consumers or tools find them (the crate's Cargo.toml and tests/, the composite actions, the Dockerfile, demo/) are attached to their project through `{workspaceRoot}/...` inputs instead, which is also how Nx's affected detection maps a change to them onto that project.",
+  "//": "A project owns the files under its root. Files that must stay where consumers or tools find them (the crate's Cargo.toml and src/, its tests/, the composite actions, the Dockerfile, demo/) are attached to their project through `{workspaceRoot}/...` inputs instead, which is also how Nx's affected detection maps a change to them onto that project.",
   "defaultBase": "origin/main",
   "cacheDirectory": ".nx/cache",
   "namedInputs": {
@@ -19,9 +19,7 @@
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/Cargo.lock",
       "{workspaceRoot}/clippy.toml",
-      "{workspaceRoot}/rustfmt.toml",
-      "{workspaceRoot}/tests/**/*",
-      "{workspaceRoot}/benches/**/*"
+      "{workspaceRoot}/rustfmt.toml"
     ],
     "boundaries": [
       "{workspaceRoot}/nx.json",
@@ -29,10 +27,16 @@
     ]
   },
   "boundaries": {
-    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. Nothing depends on the browser suite, and only the `coverage` aggregate (which merges its profiles) on the binary-driving suite, so a change to either suite never selects another project; they are selected only by changes to what they test.",
+    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. Dependents reach the crate only through `screencomp-cli` (its sources and manifest); the crate's own suites (`screencomp`), its benchmarks, the binary-driving suite and the browser suite are leaves, which only the `coverage` aggregate may depend on (it merges the two instrumented suites' profiles), so a change to a suite never selects another project.",
     "allow": {
       "type:app": [],
       "type:consumer": [],
+      "type:suite": [
+        "type:app"
+      ],
+      "type:bench": [
+        "type:app"
+      ],
       "type:e2e": [
         "type:app"
       ],
@@ -49,7 +53,7 @@
         "type:app"
       ],
       "type:aggregate": [
-        "type:app",
+        "type:suite",
         "type:e2e"
       ]
     }

@@ -5,7 +5,7 @@
   "projectType": "application",
   "sourceRoot": "browser-tests/tests",
   "tags": ["type:browser-test", "lang:typescript"],
-  "implicitDependencies": ["screencomp"],
+  "implicitDependencies": ["screencomp-cli"],
   "targets": {
     "lint": {
       "command": "node tools/workspace/check-project-boundaries.mjs browser-tests",
@@ -14,7 +14,7 @@
     "browser-test": {
       "command": "just _browser-test",
       "inputs": ["default", "^default"],
-      "dependsOn": [{ "projects": ["screencomp"], "target": "build" }]
+      "dependsOn": [{ "projects": ["screencomp-cli"], "target": "build" }]
     }
   }
 }

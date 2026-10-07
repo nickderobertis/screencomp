@@ -12,7 +12,9 @@ import { removeScratch, root, scratchCopy } from "./support.mjs";
 
 const allow = JSON.parse(readFileSync(join(root, "nx.json"), "utf8")).boundaries.allow;
 const nodes = {
-  screencomp: { tags: ["type:app"] },
+  "screencomp-cli": { tags: ["type:app"] },
+  screencomp: { tags: ["type:suite"] },
+  "screencomp-bench": { tags: ["type:bench"] },
   "screencomp-e2e": { tags: ["type:e2e"] },
   "browser-tests": { tags: ["type:browser-test"] },
   "visual-docs-actions": { tags: ["type:actions"] },
@@ -31,10 +33,12 @@ test("nx.json's boundaries table is well formed", () => {
 test("the repository's edges are allowed", () => {
   assert.deepEqual(
     judge([
-      ["screencomp-e2e", "screencomp"],
-      ["browser-tests", "screencomp"],
-      ["visual-docs-actions", "screencomp"],
-      ["crate-checks", "screencomp"],
+      ["screencomp", "screencomp-cli"],
+      ["screencomp-bench", "screencomp-cli"],
+      ["screencomp-e2e", "screencomp-cli"],
+      ["browser-tests", "screencomp-cli"],
+      ["visual-docs-actions", "screencomp-cli"],
+      ["crate-checks", "screencomp-cli"],
       ["coverage", "screencomp"],
       ["coverage", "screencomp-e2e"],
     ]),
@@ -48,6 +52,10 @@ test("nothing but the coverage aggregate may depend on a test suite, and nothing
     ["coverage", "browser-tests"],
     ["workspace", "coverage"],
     ["screencomp", "screencomp-e2e"],
+    ["screencomp-e2e", "screencomp"],
+    ["visual-docs-actions", "screencomp"],
+    ["coverage", "screencomp-bench"],
+    ["screencomp-cli", "screencomp"],
     ["visual-docs-actions", "screencomp-e2e"],
     ["visual-docs-actions", "browser-tests"],
     ["workspace", "browser-tests"],
@@ -59,10 +67,13 @@ test("nothing but the coverage aggregate may depend on a test suite, and nothing
   }
 });
 
-test("a Cargo path dependency must also be an Nx edge", () => {
+test("a Cargo path dependency must also be an Nx edge, and is judged like one", () => {
+  // The `screencomp` crate's Nx project is the suites' leaf, so a library
+  // dependency on it is both an undeclared edge and a forbidden one.
   const problems = judge([], [["screencomp-e2e", "screencomp"]]);
-  assert.equal(problems.length, 1);
+  assert.equal(problems.length, 2);
   assert.match(problems[0], /Cargo edge screencomp-e2e -> screencomp is missing from the Nx graph/);
+  assert.match(problems[1], /^screencomp-e2e \(type:e2e\) -> screencomp \(type:suite\) is not allowed/);
 });
 
 test("every project carries exactly one declared type tag", () => {

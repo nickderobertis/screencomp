@@ -1,7 +1,9 @@
 // Which projects a change selects, as Nx's own affected detection computes it
 // over this repository's graph. The cases are the ones the graph exists for: a
 // change to an action reaches only the actions' project, never the crate's
-// suites; a change to the crate reaches every project built on it.
+// suites; a change to the crate's sources reaches every project built on it; a
+// change to a suite or the benchmarks reaches only that suite (and the coverage
+// aggregate over it).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
@@ -13,14 +15,21 @@ const CRATE_AND_DEPENDENTS = [
   "crate-checks",
   "docker-image",
   "screencomp",
+  "screencomp-bench",
+  "screencomp-cli",
   "screencomp-e2e",
   "visual-docs-actions",
 ];
 
 test("a change under src/ selects the crate, its e2e suite and every dependent", () => {
   assert.deepEqual(affectedBy(["src/lib.rs"]), CRATE_AND_DEPENDENTS);
-  assert.deepEqual(affectedBy(["tests/integration.rs"]), CRATE_AND_DEPENDENTS);
   assert.deepEqual(affectedBy(["Cargo.lock"]), CRATE_AND_DEPENDENTS);
+});
+
+test("a change confined to the crate's suites or benchmarks selects only them", () => {
+  assert.deepEqual(affectedBy(["tests/integration.rs"]), ["coverage", "screencomp"]);
+  assert.deepEqual(affectedBy(["tests/actions.rs"]), ["coverage", "screencomp", "visual-docs-actions"]);
+  assert.deepEqual(affectedBy(["benches/commands.rs"]), ["screencomp-bench"]);
 });
 
 test("a change confined to the composite actions or their scripts selects only their project", () => {

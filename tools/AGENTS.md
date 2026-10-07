@@ -19,8 +19,11 @@
   on Windows through `support.mjs`'s `posixOnly`.
 - Every project carries exactly one `type:` tag; nx.json's `boundaries.allow`
   says which types each may depend on, and every project's `lint` runs
-  `workspace/check-project-boundaries.mjs` for itself. Only `coverage` may depend
-  on `screencomp-e2e`; nothing may depend on `browser-tests` or `coverage`.
+  `workspace/check-project-boundaries.mjs` for itself. Projects that build, run
+  or ship the binary depend on `screencomp-cli` (`type:app`); the suites
+  (`screencomp`, `screencomp-e2e`), `screencomp-bench`, `browser-tests` and
+  `coverage` are leaves: only `coverage` may depend on the two instrumented
+  suites, and nothing on the rest.
 - Coverage is combined, never per crate: both Rust `test` targets run `cargo
   llvm-cov --no-report` into `target/llvm-cov-target` after
   `coverage:coverage-clean`, and `coverage:coverage` enforces 95% over the

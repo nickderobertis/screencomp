@@ -8,7 +8,7 @@
     "lang:rust"
   ],
   "implicitDependencies": [
-    "screencomp"
+    "screencomp-cli"
   ],
   "targets": {
     "lint": {

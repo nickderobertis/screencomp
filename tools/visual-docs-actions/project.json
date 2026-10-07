@@ -4,7 +4,7 @@
   "//": "The composite actions (action.yml, visual-docs/, visual-docs-aggregate/, visual-docs-pages/, gh-pages-maintenance/), the reusable workflow and its GitHub-hosted smoke tests, the scripts they run (scripts/visual-docs-*.sh), and the consumer documentation that restates their interface (README.md, examples/). None of those files moves: consumers reference them by path at @v0, so they are attached here through the `actions` inputs, and this directory holds only the project definition. `test` runs the crate's `actions` test binary, the contract suite over exactly these files. Depends on the crate (the actions build and run its binary, and that suite drives it); the demo's capture script and sync workflow, whose capture copies the suite checks, are inputs.",
   "projectType": "application",
   "tags": ["type:actions", "lang:yaml"],
-  "implicitDependencies": ["screencomp"],
+  "implicitDependencies": ["screencomp-cli"],
   "namedInputs": {
     "actions": [
       "{workspaceRoot}/action.yml",
@@ -20,6 +20,11 @@
       "{workspaceRoot}/examples/**/*",
       "{workspaceRoot}/demo/capture.sh",
       "{workspaceRoot}/.github/workflows/sync-demo.yml"
+    ],
+    "suite": [
+      "{workspaceRoot}/tests/actions.rs",
+      "{workspaceRoot}/tests/common/**/*",
+      "{workspaceRoot}/tests/fixtures/**/*"
     ]
   },
   "targets": {
@@ -36,7 +41,7 @@
     },
     "test": {
       "command": "just _actions-test",
-      "inputs": ["default", "actions", "crate", "^default"]
+      "inputs": ["default", "actions", "suite", "crate", "^default"]
     }
   }
 }
