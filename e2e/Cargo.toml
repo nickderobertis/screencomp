@@ -1,0 +1,25 @@
+# The `screencomp` binary's end-to-end journeys (`tests/e2e.rs`): the compiled
+# CLI spawned as a subprocess, asserting exit codes, stdout/stderr separation and
+# file effects. A `publish = false` member holding only `tests/`, so it is an Nx
+# project of its own whose `test` depends on the binary's build (e2e/project.json).
+#
+# No dependency on the `screencomp` crate: the suite drives only the binary,
+# which `cargo nextest run -p screencomp-e2e -p screencomp` builds beside it, and
+# a library dev-dependency nothing imports would be dead weight cargo-machete
+# rejects. The Nx edge to `screencomp-cli`, the project that builds the binary,
+# is declared in project.json instead.
+[package]
+name = "screencomp-e2e"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

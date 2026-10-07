@@ -1,0 +1,45 @@
+{
+  "name": "crate-checks",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The repository-level checks over the crate's manifest and package that are not tests: the supply-chain audit, the release build and publish dry-run, and the MSRV check. A project of its own so that only a change reaching the crate selects them.",
+  "projectType": "application",
+  "tags": [
+    "type:workspace",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "screencomp-cli"
+  ],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs crate-checks",
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "supply-chain": {
+      "command": "just _supply-chain",
+      "inputs": [
+        "default",
+        "crate",
+        "{workspaceRoot}/deny.toml"
+      ]
+    },
+    "release-check": {
+      "command": "just _release-check",
+      "inputs": [
+        "default",
+        "crate",
+        "{workspaceRoot}/README.md"
+      ]
+    },
+    "msrv": {
+      "command": "just _msrv",
+      "inputs": [
+        "default",
+        "crate"
+      ]
+    }
+  }
+}

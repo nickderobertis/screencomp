@@ -1,8 +1,11 @@
 # AGENTS — .github
 
 - CI is a hard pass/fail gate: every run does a clean checkout, `just bootstrap`,
-  then `just check` (the `check` matrix job) across Linux/macOS/Windows. Never let
-  a job pass with warnings.
+  then `just check <tier>` (the `check` matrix job) across Linux/macOS/Windows,
+  the tier chosen by `tools/workspace/ci-tier.mjs`. Never let a job pass with
+  warnings. The `check (<os>)`, `workflows`, `action` and `action-download`
+  contexts must report on every pull request: no `if:`, path filter or `needs`
+  that could skip them (`workflows.test.mjs` checks).
 - Pin actions to a stable major or a commit SHA. Default `permissions` to
   `contents: read`; grant a write scope only on the job that needs it (the binary
   upload job gets `contents: write`, the image push job `packages: write`).

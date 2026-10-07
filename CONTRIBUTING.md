@@ -38,22 +38,29 @@ Prefer to wire things by hand? The equivalent manual steps:
 1. Install Rust via [rustup](https://rustup.rs). The toolchain, components, and
    release targets are pinned in `rust-toolchain.toml`.
 2. Confirm the toolchain: `rustup show`.
-3. Install developer tooling and git hooks: `just bootstrap`.
+3. Install [Node.js](https://nodejs.org) 22 or newer; the Nx project graph runs
+   on it.
+4. Install developer tooling and git hooks: `just bootstrap`.
    - Installs `cargo-nextest`, `cargo-llvm-cov`, `cargo-deny`, `cargo-machete`
-     (via `cargo-binstall` when present, else `cargo install --locked`) and the
-     pinned `lefthook` binary, then installs the hooks.
-4. Verify everything: `just check` (the same gate CI runs; `just full-check` is
-   a kept alias).
+     (via `cargo-binstall` when present, else `cargo install --locked`), the
+     pinned `lefthook` binary and the hooks, and the locked Nx install (bun at
+     `package.json`'s `packageManager` pin, from `bun.lock`).
+5. Verify everything: `just check all` (the same gate CI runs; `just check`
+   alone runs only the projects your branch can reach; `just full-check` is a
+   kept alias).
 
 ## The quality gate
 
-`just check` runs every check in order and stops at the first failure:
-formatting, `cargo check` (the `typecheck` phase), `clippy -D warnings`,
-unit/integration tests, end-to-end tests, the coverage threshold, the
-dependency/license/source policy, the unused-dependency check, security
-advisories, docs (`-D` rustdoc warnings), the release build, and the publish
-dry-run. It is the single gate CI runs after `just bootstrap`; `just full-check`
-remains as an alias.
+`just check` runs, through the Nx project graph (`nx.json`), every project's
+formatting check, `clippy -D warnings` plus the module-boundary check, `cargo
+check` (the `typecheck` target), tests (unit, integration, the visual-docs
+contract suite, the binary e2e suite), build and docs (`-D` rustdoc warnings),
+then the 95% coverage aggregate, the dependency/license/source policy, the
+unused-dependency check, security advisories, the release build, and the publish
+dry-run. By default it runs only the projects affected since your branch's merge
+base with `origin/main` (or `NX_BASE`); `just check all` runs every project. It is
+the single gate CI runs after `just bootstrap`; `just full-check` and `just gate`
+remain as aliases.
 
 Run individual phases while iterating:
 
@@ -97,7 +104,7 @@ rather than blocks — do not add it to required checks.
   friends — never in `full-check`.
 - **Real E2E tests.** Any change to user-visible behavior (commands, flags, exit
   codes, output contracts, file effects) needs an end-to-end test in
-  `tests/e2e.rs` that drives the compiled binary and asserts the journey. A
+  `e2e/tests/e2e.rs` that drives the compiled binary and asserts the journey. A
   smoke test alone is not enough.
 - **Keep `main` thin.** Behavior lives in the library; `src/main.rs` only parses
   args, calls `run`, and maps results to exit codes.
@@ -105,8 +112,8 @@ rather than blocks — do not add it to required checks.
 
 ## Dependency upgrades
 
-`just upgrade` runs `cargo update` and then the full gate. Review the resulting
-`Cargo.lock` diff. Upgrades that change behavior, MSRV, or tool versions must
+`just upgrade` runs `cargo update` and `bun update`, then the full gate (`just
+check all`). Review the resulting `Cargo.lock` and `bun.lock` diffs. Upgrades that change behavior, MSRV, or tool versions must
 keep `just full-check` green before merging. Do not mutate dependencies outside
 this flow without explicit review.
 

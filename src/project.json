@@ -1,0 +1,47 @@
+{
+  "name": "screencomp",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "//": "The `screencomp` crate's checks and its own suites: its sources (this directory) plus, through the `crate` and `suites` inputs, the manifest, lockfile and the in-process suites under tests/ (unit, `integration`, `actions`). Rooted at src/ rather than beside Cargo.toml because the crate stays at the repository root, and a project rooted there would own every root file, the composite actions among them. A leaf: only the `coverage` aggregate depends on it, and everything that builds, runs or ships the binary depends on `screencomp-cli` instead, so a change confined to tests/ selects only this project and the aggregate.",
+  "projectType": "application",
+  "sourceRoot": "src",
+  "tags": ["type:suite", "lang:rust"],
+  "implicitDependencies": ["screencomp-cli"],
+  "namedInputs": {
+    "suites": ["{workspaceRoot}/tests/**/*"]
+  },
+  "targets": {
+    "format": {
+      "command": "just _rust-format screencomp"
+    },
+    "format-check": {
+      "command": "just _rust-format-check screencomp",
+      "inputs": ["default", "crate", "suites"]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node tools/workspace/check-project-boundaries.mjs screencomp",
+          "just _rust-lint screencomp"
+        ],
+        "parallel": false
+      },
+      "inputs": ["default", "crate", "suites", "boundaries"]
+    },
+    "typecheck": {
+      "command": "just _rust-typecheck screencomp",
+      "inputs": ["default", "crate", "suites"]
+    },
+    "test": {
+      "command": "just _rust-test screencomp",
+      "inputs": ["default", "crate", "suites"],
+      "outputs": ["{workspaceRoot}/target/llvm-cov-target"],
+      "dependsOn": [{ "projects": ["coverage"], "target": "coverage-clean" }],
+      "parallelism": false
+    },
+    "doc": {
+      "command": "just _rust-doc screencomp",
+      "inputs": ["default", "crate"]
+    }
+  }
+}

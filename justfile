@@ -1,11 +1,19 @@
-# screencomp task runner. All common operations live here and delegate to Cargo
-# or Rust-native tools. Successful recipes stay quiet; failures keep actionable
-# diagnostics. Run `just` (or `just --list`) to see recipes.
+# screencomp task runner. The gate and test recipes delegate to the Nx project
+# graph (nx.json; see AGENTS.md "Quality gate"): each project declares its own
+# targets, which call back into the private `_…` recipes below, and the root only
+# decides which projects run them. Successful recipes stay quiet; failures keep
+# actionable diagnostics. Run `just` (or `just --list`) to see recipes.
+#
+# Tiers: the gate, test and lint recipes take a trailing `tier` argument.
+# `affected` (the default) runs the projects the change since the merge base can
+# reach: NX_BASE when set (CI derives it explicitly), else the merge base of HEAD
+# with origin/main. `all` is the full sweep over every project, e.g.
+# `just check all`.
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set windows-shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
-# Minimum line coverage enforced by `test-cov` and the `check` gate.
+# Minimum line coverage enforced by the `coverage` aggregate (the `check` gate).
 cov_min := "95"
 # Pinned lefthook binary fetched by bootstrap / hooks-install when absent.
 lefthook_version := "2.1.9"
@@ -30,9 +38,14 @@ setup:
 setup-check:
     @bash scripts/setup-check.sh
 
-# Install developer tooling and git hooks (idempotent).
-bootstrap: _ensure-tools _ensure-lefthook hooks-install
+# Install developer tooling, the locked Nx install and git hooks (idempotent).
+bootstrap: _ensure-tools _ensure-lefthook hooks-install node-modules
+    @cargo fetch --locked
     @echo "bootstrap complete"
+
+# Install the locked JavaScript dependencies (Nx, the browser suites) from bun.lock.
+node-modules:
+    @bash tools/workspace/node-modules.sh
 
 # Fetch locked dependencies and verify the pinned toolchain is active.
 sync:
@@ -43,68 +56,79 @@ sync:
 run *args:
     cargo run --locked -- {{args}}
 
-# Format the workspace (skill-standard verb; `fmt` is the short alias below).
-format:
-    cargo fmt --all
+# Format the affected projects in place (`just format all` for every project).
+[positional-arguments]
+format tier="affected":
+    @just _nx "$1" -t format
 
-# Short alias for `format`.
-fmt:
-    cargo fmt --all
+alias fmt := format
 
 # Check formatting without writing.
-fmt-check:
-    cargo fmt --all --check
+[positional-arguments]
+fmt-check tier="affected":
+    @just _nx "$1" -t format-check
 
-# Type-check all targets and features.
-typecheck:
-    cargo check --locked --all-targets --all-features
+# Type-check every target and feature of the affected Rust projects.
+[positional-arguments]
+typecheck tier="affected":
+    @just _nx "$1" -t typecheck
 
-# Lint with every enabled lint treated as an error (skill-standard verb).
-lint:
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+# Lint the affected projects (clippy -D warnings, boundaries, actionlint/shellcheck, hadolint).
+[positional-arguments]
+lint tier="affected":
+    @just _nx "$1" -t lint
 
-# Short alias for `lint`.
-clippy:
-    cargo clippy --locked --all-targets --all-features -- -D warnings
+alias clippy := lint
 
 # Apply machine-applicable clippy fixes.
 clippy-fix:
-    cargo clippy --fix --allow-dirty --allow-staged --locked --all-targets --all-features -- -D warnings
+    cargo clippy --fix --allow-dirty --allow-staged --locked --workspace --all-targets --all-features -- -D warnings
 
-# Unit + integration tests (excludes the slower binary e2e suite).
-test:
-    cargo nextest run --locked -E 'not binary(e2e)'
+# The affected projects' tests (the Rust suites run under coverage instrumentation).
+[positional-arguments]
+test tier="affected":
+    @just _nx "$1" -t test
 
-# Re-run tests on change (requires cargo-watch).
+# Re-run the crate's in-process tests on change (requires cargo-watch).
 test-watch:
-    cargo watch -x "nextest run --locked -E 'not binary(e2e)'"
+    cargo watch -x "nextest run --locked -p screencomp"
 
-# All tests with an enforced line-coverage threshold.
-test-cov:
-    cargo llvm-cov nextest --locked --all-features --fail-under-lines {{cov_min}} --summary-only
+# Tests plus the 95% line-coverage aggregate over the crate's sources.
+[positional-arguments]
+test-cov tier="affected":
+    @just _nx "$1" -t test coverage
 
-# End-to-end tests that execute the compiled binary.
-test-e2e:
-    cargo nextest run --locked -E 'binary(e2e)'
+# End-to-end tests that execute the compiled binary (the `screencomp-e2e` project).
+[positional-arguments]
+test-e2e tier="affected":
+    @just _nx "$1" -t test "--exclude=*,!tag:type:e2e"
+
+# The browser suites in real Chromium (never in the gate), or only `project`.
+[positional-arguments]
+test-browser tier="affected" project="":
+    @just _nx "$1" -t browser-test ${2:+"--exclude=*,!$2"}
+
+# Needs `just node-modules` first; sudo where OS packages are missing.
+# Install the Chromium the browser suites drive, with its OS packages.
+browser-install:
+    cd browser-tests && node_modules/.bin/playwright install --with-deps chromium
 
 # Build API docs, failing on any rustdoc warning.
 doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features
+    @./tools/workspace/nx run screencomp:doc
 
 # Security advisories + yanked crates.
 security:
     cargo deny check advisories
 
 # License, banned/duplicate-crate, source policy, and unused-dependency hygiene.
-# `license-not-encountered` is silenced: the allow-list is accepted-license
-# policy, not an inventory of what the current tree happens to use.
 deps-check:
     cargo deny check bans licenses sources -A license-not-encountered
     cargo machete
 
 # Build under the declared MSRV (the pinned toolchain equals rust-version).
 msrv:
-    cargo check --locked --all-features
+    @./tools/workspace/nx run crate-checks:msrv
 
 # Install git hooks into the working copy.
 hooks-install: _ensure-lefthook
@@ -124,7 +148,7 @@ build-release:
 
 # Verify publish metadata and the crate package without uploading anything.
 dist-plan:
-    cargo publish --locked --dry-run --allow-dirty
+    cargo publish --locked --dry-run --allow-dirty -p screencomp
     @echo "binary release targets are defined in .github/workflows/release.yml"
 
 # Build and package a release archive + checksum for the host target.
@@ -213,51 +237,45 @@ lint-actions: _ensure-actionlint
 lint-docker: _ensure-hadolint
     hadolint Dockerfile
 
-# Full quality gate (skill-standard `check` verb). Runs `just test` and
-# `just test-e2e` plus {{cov_min}}% coverage; CI runs this after `bootstrap`.
-check:
+# The quality gate, run by CI after `bootstrap` (AGENTS.md, "Quality gate"); `just check all` sweeps every project.
+[positional-arguments]
+check tier="affected":
     #!/usr/bin/env bash
     set -euo pipefail
-    phase() {
-        local label="$1"; shift
-        local log; log="$(mktemp)"
-        printf '▶ %-12s ' "$label"
-        if "$@" >"$log" 2>&1; then
-            printf 'ok\n'; rm -f "$log"
-        else
-            printf 'FAILED\n\n'; cat "$log"; rm -f "$log"; exit 1
-        fi
-    }
-    phase fmt        just fmt-check
-    phase typecheck  just typecheck
-    phase lint       just lint
-    phase test       just test
-    phase e2e        just test-e2e
-    phase coverage   cargo llvm-cov nextest --locked --all-features --fail-under-lines {{cov_min}} --summary-only
-    phase deps       cargo deny check bans licenses sources -A license-not-encountered
-    phase unused     cargo machete
-    phase security   cargo deny check advisories
-    phase doc        env RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
-    phase release    cargo build --release --locked
-    phase dist-plan  cargo publish --locked --dry-run --allow-dirty
-    printf '\n✓ check passed\n'
+    tier="$1"
+    case "$tier" in
+        affected)
+            base="$(just _base)"
+            ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ;;
+        all)
+            ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ;;
+        *)
+            printf "unknown tier '%s': use 'affected' (the default) or 'all'\n" "$tier" >&2
+            exit 2
+            ;;
+    esac
+    printf '✓ check passed (%s tier)\n' "$tier"
 
 # Backward-compatible alias for the `check` gate (kept for docs/bench refs).
-full-check: check
+alias full-check := check
 
 # Orchestrator/pre-push spelling for the same complete deterministic gate.
-gate: check
+alias gate := check
 
 # Remove build and release artifacts.
 clean:
     cargo clean
-    rm -rf dist
+    rm -rf dist .nx
 
-# Upgrade dependencies to the latest semver-compatible versions, then re-gate.
-# May change Cargo.lock (and, via re-gate, surface tool-version drift).
+# Upgrade dependencies to the latest semver-compatible versions, then re-gate
+# with the full sweep (an upgrade can reach every project). May change Cargo.lock
+# and bun.lock.
 upgrade:
     cargo update
-    just check
+    bun update
+    just check all
 
 # Noisy environment report (kept out of the quality gate).
 doctor:
@@ -265,7 +283,163 @@ doctor:
     @echo "# tools"; for t in asdf direnv just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker hyperfine critcmp samply; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
     @echo "# installed targets"; rustup target list --installed
 
-# --- internal helpers -------------------------------------------------------
+# Run Nx targets at a tier: `affected` against the merge base, or `all`.
+[positional-arguments]
+_nx tier *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tier="$1"
+    shift
+    case "$tier" in
+        affected) base="$(just _base)"; exec ./tools/workspace/nx affected --base="$base" "$@" ;;
+        all) exec ./tools/workspace/nx run-many "$@" ;;
+        *) echo "unknown tier '$tier': use 'affected' (the default) or 'all'" >&2; exit 2 ;;
+    esac
+
+# The affected tier's base: NX_BASE when set, else the merge base of HEAD with
+# origin/main. Validated here, before anything interpolates it into a command: a
+# git ref or SHA is letters, digits and `. _ / -`, and it must name a commit.
+_base:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "${NX_BASE:-}" ]; then
+        base="$NX_BASE"
+    elif ! base="$(git merge-base origin/main HEAD 2>/dev/null)"; then
+        echo "cannot derive the affected tier's base: HEAD has no merge base with origin/main" >&2
+        echo "ACTION: run 'git fetch origin main', or set NX_BASE to the ref or commit to diff against" >&2
+        exit 1
+    fi
+    if ! [[ "$base" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+        echo "NX_BASE must be a plain git ref or SHA (letters, digits and . _ / - only); got: $base" >&2
+        exit 1
+    fi
+    if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+        echo "NX_BASE '$base' names no commit in this checkout" >&2
+        echo "ACTION: fetch it (git fetch origin <ref>), or unset NX_BASE to use the merge base with origin/main" >&2
+        exit 1
+    fi
+    printf '%s\n' "$base"
+
+# llmlint: ignore-block[diagnostics_error_or_absent] These compiles need no -D warnings of their own: every gate tier runs the same project's `lint` (clippy -D warnings over the same targets and features, which reports every rustc warning), so a warning already fails the gate, as AGENTS.md's diagnostics policy states; repeating it as RUSTFLAGS here would rebuild every dependency whenever clippy and these builds alternate.
+[positional-arguments]
+_rust-format crate:
+    cargo fmt -p "$1"
+
+[positional-arguments]
+_rust-format-check crate:
+    cargo fmt -p "$1" --check
+
+[positional-arguments]
+_rust-lint crate:
+    cargo clippy --locked -p "$1" --all-targets --all-features -- -D warnings
+
+[positional-arguments]
+_rust-typecheck crate:
+    cargo check --locked -p "$1" --all-targets --all-features
+
+[positional-arguments]
+_rust-build crate:
+    cargo build --locked -p "$1"
+
+[positional-arguments]
+_rust-doc crate:
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features -p "$1"
+
+# A crate's suite under coverage instrumentation, with the report deferred: the
+# raw profiles land in target/llvm-cov-target, which `_coverage` merges. `binary`
+# names a crate whose binary the suite spawns: it is built (instrumented) in the
+# same run, and only `crate`'s own tests execute.
+[positional-arguments]
+_rust-test crate binary="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--locked --all-features -p "$1")
+    if [ -n "$2" ]; then
+        args+=(-p "$2" -E "package($1)")
+    fi
+    exec cargo llvm-cov --no-report nextest "${args[@]}"
+
+# Empty the shared profile directory before any instrumented suite writes to it,
+# so the aggregate never merges a profile an earlier run left behind.
+_coverage-clean:
+    cargo llvm-cov clean --workspace
+
+# The {{cov_min}}% line-coverage floor, once, over every suite's profiles: the
+# crate's own sources, as covered by its in-process suites and the binary e2e
+# suite together.
+_coverage:
+    cargo llvm-cov report --fail-under-lines {{cov_min}} --summary-only
+
+# Supply chain: license/ban/source policy (`license-not-encountered` silenced:
+# the allow-list is accepted-license policy, not an inventory of what the tree
+# happens to use), unused dependencies, then advisories and yanked crates.
+_supply-chain:
+    cargo deny check bans licenses sources -A license-not-encountered
+    cargo machete
+    cargo deny check advisories
+
+# The shipped artifact: the optimized release build and the crate package.
+_release-check:
+    cargo build --release --locked
+    cargo publish --locked --dry-run --allow-dirty -p screencomp
+
+_msrv:
+    cargo check --locked -p screencomp --all-features
+
+# The visual-docs contract suite (tests/actions.rs), uninstrumented.
+_actions-test:
+    cargo nextest run --locked -p screencomp --test actions
+# llmlint: ignore-end[diagnostics_error_or_absent]
+
+# actionlint over the reusable workflow, its smoke tests and the documented
+# callers; shellcheck over the scripts the actions run (actionlint only lints the
+# shell embedded in workflows).
+[linux]
+_lint-visual-docs: _ensure-actionlint
+    actionlint .github/workflows/visual-docs-reusable.yml .github/workflows/test-visual-docs.yml .github/workflows/test-gh-pages-maintenance.yml examples/*.yml
+    @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
+    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh
+
+# The definition linters read platform-independent files, so one verdict per tree
+# suffices, and their pinned binaries are Linux-only in practice (none for
+# Windows, a crashing hadolint on Apple silicon): the Linux `check` leg and the
+# `workflows` job run them.
+[macos]
+[windows]
+_lint-visual-docs:
+    @echo "_lint-visual-docs: actionlint and shellcheck run on Linux (the Linux check leg and the workflows job)"
+
+# hadolint, as the docker-image project's `lint` runs it; Linux-only like
+# `_lint-visual-docs`. `just lint-docker` runs it unconditionally.
+[linux]
+_lint-docker-image: lint-docker
+
+[macos]
+[windows]
+_lint-docker-image:
+    @echo "_lint-docker-image: hadolint runs on Linux (the Linux check leg and the workflows job)"
+
+# The gallery browser suite against the freshly built debug binary.
+_browser-test:
+    cd browser-tests && PATH="{{justfile_directory()}}/target/debug:$PATH" node_modules/.bin/playwright test
+
+# The demo's own capture spec on the host, from the demo's own npm lockfile
+# (demo/ is mirrored onto screencomp-demo, which installs it with npm), into a
+# scratch directory. A smoke of the spec, not the pinned-container capture.
+_demo-browser-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(mktemp -d)"
+    log="$(mktemp)"
+    trap 'rm -rf "$out" "$log"' EXIT
+    cd demo
+    npm ci --no-audit --no-fund >"$log" 2>&1 || { cat "$log" >&2; echo "the demo's 'npm ci' failed; its output is above. ACTION: if demo/package.json changed, run 'npm install' in demo/ and commit demo/package-lock.json; otherwise check access to the npm registry" >&2; exit 1; }
+    SHOTS_OUT="$out" npx playwright test
+    test -s "$out/captures.json" || { echo "the demo capture wrote no captures.json; ACTION: check demo/tests/screenshots.spec.ts, which writes it to \$SHOTS_OUT" >&2; exit 1; }
+
+# The gate tooling's own tests (tier selection, project boundaries).
+_workspace-test:
+    node --test tools/workspace/tests/*.test.mjs
 
 # Install missing cargo-based dev tools as prebuilt binaries via cargo-binstall.
 # Building these from source compiles them against the pinned toolchain, and the
@@ -369,11 +543,34 @@ _ensure-hadolint:
     curl -fsSL "$url" -o "$dest/hadolint"
     chmod +x "$dest/hadolint"
 
-lint-llm:
-    llmlint
+# The LLM-judge tier (llmlint) is never part of `check`: it is non-deterministic
+# and drives a coding harness through oneharness (`oneharness.toml` selects it),
+# so it stays out of the deterministic, offline gate. The diff-scoped run is the blocking `llmlint` PR
+# check (.github/workflows/llmlint.yml). Install it with `just setup-llmlint`.
 
-lint-llm-diff:
-    llmlint --diff --diff-base "origin/main"
+# Install/refresh the llmlint toolchain (llmlint + oneharness). Idempotent; the
+# SessionStart hook runs it through scripts/session-setup.sh.
+setup-llmlint:
+    @bash scripts/setup-llmlint.sh
 
-lint-llm-validate:
-    llmlint validate
+# llmlint over the configured set, or over the paths given.
+[positional-arguments]
+lint-llm *paths:
+    @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; }
+    llmlint "$@"
+
+# llmlint scoped to what this branch changed since it forked from BASE (three-dot
+# / merge-base semantics): only the changed files, and the judge only on the
+# changed lines. Extra arguments go to llmlint. Fetch BASE first if missing.
+[positional-arguments]
+lint-llm-diff base="origin/main" *args:
+    @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; }
+    llmlint --diff --diff-base "$@"
+
+# The deterministic llmlint gate, no model and no credential: the config parses,
+# every `llmlint: ignore` names a configured rule, and edited versioned fragments
+# bumped `version:`. Pass `--diff-base origin/main` to scope the version check.
+[positional-arguments]
+lint-llm-validate *args:
+    @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; }
+    llmlint validate "$@"

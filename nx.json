@@ -1,0 +1,106 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "//": "A project owns the files under its root. Files that must stay where consumers or tools find them (the crate's Cargo.toml and src/, its tests/, the composite actions, the Dockerfile, demo/) are attached to their project through `{workspaceRoot}/...` inputs instead, which is also how Nx's affected detection maps a change to them onto that project.",
+  "defaultBase": "origin/main",
+  "cacheDirectory": ".nx/cache",
+  "namedInputs": {
+    "sharedGlobals": [
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/.cargo/config.toml",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock"
+    ],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
+    "crate": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/clippy.toml",
+      "{workspaceRoot}/rustfmt.toml"
+    ],
+    "boundaries": [
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/tools/workspace/check-project-boundaries.mjs",
+      "{workspaceRoot}/tools/workspace/nx-env.mjs"
+    ]
+  },
+  "boundaries": {
+    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. Dependents reach the crate only through `screencomp-cli` (its sources and manifest); the crate's own suites (`screencomp`), its benchmarks, the binary-driving suite and the browser suite are leaves, which only the `coverage` aggregate may depend on (it merges the two instrumented suites' profiles), so a change to a suite never selects another project.",
+    "allow": {
+      "type:app": [],
+      "type:consumer": [],
+      "type:suite": [
+        "type:app"
+      ],
+      "type:bench": [
+        "type:app"
+      ],
+      "type:e2e": [
+        "type:app"
+      ],
+      "type:browser-test": [
+        "type:app"
+      ],
+      "type:actions": [
+        "type:app"
+      ],
+      "type:image": [
+        "type:app"
+      ],
+      "type:workspace": [
+        "type:app"
+      ],
+      "type:aggregate": [
+        "type:suite",
+        "type:e2e"
+      ]
+    }
+  },
+  "targetDefaults": {
+    "format": {
+      "cache": false
+    },
+    "format-check": {
+      "cache": true
+    },
+    "lint": {
+      "cache": true
+    },
+    "typecheck": {
+      "cache": true
+    },
+    "doc": {
+      "cache": true
+    },
+    "build": {
+      "cache": false
+    },
+    "test": {
+      "cache": false
+    },
+    "browser-test": {
+      "cache": false
+    },
+    "bench": {
+      "cache": false
+    },
+    "coverage-clean": {
+      "cache": false
+    },
+    "coverage": {
+      "cache": false
+    },
+    "supply-chain": {
+      "cache": false
+    },
+    "release-check": {
+      "cache": false
+    },
+    "msrv": {
+      "cache": false
+    }
+  }
+}

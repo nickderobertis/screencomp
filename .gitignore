@@ -23,3 +23,5 @@
 
 # OS noise
 .DS_Store
+/node_modules
+/.nx

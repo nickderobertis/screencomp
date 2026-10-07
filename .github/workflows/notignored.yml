@@ -1,0 +1,34 @@
+# Comment on every pull request with the lint and type-check suppressions it
+# adds (`#[allow]`, `llmlint: ignore`, ...), each with its rule, reason and line,
+# so a reviewer sees every bypass without reading the whole diff.
+#
+# Deliberately NOT a required status check: it skips fork pull requests (whose
+# read-only token cannot upsert the comment), and a required context that never
+# reports would block them forever. The gate is `just check`.
+
+name: notignored
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: notignored-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suppressions:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The scan diffs against the base branch, which a shallow checkout omits.
+          fetch-depth: 0
+
+      # `@v0` floats with each 0.x release; every input defaults (the base branch,
+      # the whole repository).
+      - uses: nickderobertis/notignored@v0

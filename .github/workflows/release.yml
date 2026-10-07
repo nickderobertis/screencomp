@@ -25,6 +25,8 @@ env:
 
 jobs:
   # Gate the release on a passing test run so untested artifacts never publish.
+  # `--workspace` covers the crate's suites, the binary e2e suite (its own
+  # workspace member) included.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -34,8 +36,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --locked
+      # llmlint: ignore-block[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent] A hand-cut Release is a supported fallback and this job is its only gate (AGENTS.md, "Release & git"); clippy's -D warnings over the same targets makes a compiler warning fatal here.
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked --workspace
+      # llmlint: ignore-end[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent]
 
   # Build, archive, checksum, and attach a binary per target to the Release.
   upload:

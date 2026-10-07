@@ -10,3 +10,6 @@
 - `cargo check`/`clippy` cover this target via `--all-targets`; keep it
   warning-clean so it cannot rot. `harness = false` keeps it out of the test
   runner and coverage.
+- `project.json` here is the `screencomp-bench` Nx project, a leaf nothing
+  depends on, so a benchmark-only change selects nothing else. The crate already
+  excludes `benches/` from its package.

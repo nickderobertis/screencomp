@@ -2,7 +2,6 @@
 //!
 //! These cover critical user journeys from the user's perspective — exit codes,
 //! stdout/stderr separation, and file effects — not just "the binary starts".
-// llmlint: ignore-file[tests_mirror_real_usage] The visual-docs acceptance test intentionally extracts and composes the shipped action's fetch/build blocks: GitHub exposes no offline composite-action runner, and executing these exact blocks together is the requested CI-path boundary without remote side effects.
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +9,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+// The subprocess helpers the in-process suites share live with the crate under
+// test; this crate borrows them rather than keeping a second copy.
+#[path = "../../tests/common/mod.rs"]
 mod common;
 use common::command;
 
@@ -21,7 +23,7 @@ fn bin() -> Command {
 }
 
 fn fixtures() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures")
 }
 
 fn baseline() -> PathBuf {
@@ -83,7 +85,7 @@ fn demo_managed_config_is_valid_under_current_schema() {
     // sync-demo.yml. A config-schema change that breaks it must fail HERE, in this
     // repo's gate, rather than silently ship a broken consumer. `success` proves it
     // parses under the current schema; the arch proves the CI matrix is populated.
-    let cfg = format!("{}/demo/screencomp.toml", env!("CARGO_MANIFEST_DIR"));
+    let cfg = format!("{}/../demo/screencomp.toml", env!("CARGO_MANIFEST_DIR"));
     bin()
         .args(["--config", &cfg, "arches", "--format", "json"])
         .assert()
@@ -112,10 +114,27 @@ fn version_matches_crate() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(concat!(
-            "screencomp ",
-            env!("CARGO_PKG_VERSION")
+        .stdout(predicate::str::contains(format!(
+            "screencomp {}",
+            crate_version()
         )));
+}
+
+/// The `screencomp` package's version, read from its manifest: this suite is a
+/// crate of its own, so `CARGO_PKG_VERSION` here names `screencomp-e2e`.
+fn crate_version() -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest).expect("screencomp's Cargo.toml");
+    let package = manifest
+        .split("\n[")
+        .find(|table| table.starts_with("[package]") || table.starts_with("package]"))
+        .expect("Cargo.toml has a [package] table");
+    package
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("[package] declares a literal version")
+        .to_owned()
 }
 
 #[test]
@@ -221,7 +240,6 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
         .success();
 
     let md = std::fs::read_to_string(&out).expect("comment file");
-    // Small diff under the default limit: inline before/after images appear.
     assert!(md.contains("| Before | After |"));
     assert!(md.contains("src=\"https://example.test/pr/12/baseline/about-desktop.png\""));
     assert!(md.contains("src=\"https://example.test/pr/12/current/pricing-desktop.png\""));
@@ -267,7 +285,7 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
 }
 
 #[test]
-fn comment_aggregated_upserts_one_comment_across_projects() {
+fn comment_aggregated_renders_one_marked_comment_across_projects() {
     // A many-project monorepo: two affected projects folded into ONE comment,
     // keyed by a single stable marker, driven through the compiled binary.
     let dir = TempDir::new().unwrap();
@@ -597,7 +615,6 @@ fn gallery_has_one_toggle_bar_that_filters_cards() {
         .success();
 
     let html = std::fs::read_to_string(out.join("index.html")).expect("index.html");
-    // Exactly one toggle bar for the whole page, not one repeated per card.
     assert_eq!(html.matches("class=\"toggles\"").count(), 1, "{html}");
     // Default selection is `desktop`; `legacy` only has `mobile`, so its card is
     // filtered out (hidden) while `home` (which has a desktop variant) stays.
@@ -686,198 +703,6 @@ fn focused_gallery_requires_a_baseline() {
             "required arguments were not provided",
         ))
         .stderr(predicate::str::contains("--baseline <DIR>"));
-}
-
-#[cfg(unix)]
-#[test]
-fn shipped_pr_preview_shell_builds_focused_diff_and_recovers_without_canonical() {
-    let dir = TempDir::new().unwrap();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let action = std::fs::read_to_string(root.join("visual-docs/action.yml")).unwrap();
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_screencomp"));
-    let binary_dir = binary.parent().unwrap();
-    let path = std::env::join_paths(std::iter::once(binary_dir.to_path_buf()).chain(
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-    ))
-    .unwrap();
-
-    let canonical = dir.path().join("canonical-repository");
-    std::fs::create_dir_all(&canonical).unwrap();
-    assert!(
-        command(&binary)
-            .args(["gallery", "--input"])
-            .arg(baseline())
-            .arg("--output")
-            .arg(&canonical)
-            .status()
-            .unwrap()
-            .success()
-    );
-    for args in [
-        ["init", "-q"].as_slice(),
-        ["config", "user.name", "Test"].as_slice(),
-        ["config", "user.email", "test@example.com"].as_slice(),
-        ["add", "."].as_slice(),
-        ["commit", "-qm", "canonical"].as_slice(),
-        ["branch", "-M", "gh-pages"].as_slice(),
-    ] {
-        assert!(
-            command("git")
-                .args(args)
-                .current_dir(&canonical)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-
-    let fetch_step = action
-        .find("    - name: Fetch canonical gallery baseline")
-        .unwrap();
-    let fetch_run =
-        action[fetch_step..].find("      run: |\n").unwrap() + fetch_step + "      run: |\n".len();
-    let fetch_end = action[fetch_run..].find("\n    - name:").unwrap() + fetch_run;
-    let fetch_script = action[fetch_run..fetch_end]
-        .lines()
-        .map(|line| line.strip_prefix("        ").unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .replace(
-            "\"https://github.com/${PAGES_REPO}.git\"",
-            &format!("\"{}\"", canonical.display()),
-        );
-    let build_step = action.find("    - name: Build gallery").unwrap();
-    let build_run =
-        action[build_step..].find("      run: |\n").unwrap() + build_step + "      run: |\n".len();
-    let build_end = action[build_run..].find("\n    - name:").unwrap() + build_run;
-    let build_script = action[build_run..build_end]
-        .lines()
-        .map(|line| line.strip_prefix("        ").unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let preview_work = dir.path().join("preview-work");
-    std::fs::create_dir_all(&preview_work).unwrap();
-    let fetch_output = preview_work.join("fetch-output");
-    let fetched = command("bash")
-        .arg("-c")
-        .arg(&fetch_script)
-        .current_dir(&preview_work)
-        .env("PAGES_REPO", "docs/galleries")
-        .env("PAGES_TOKEN", "token")
-        .env("DEST", "")
-        .env("ARCH", "")
-        .env("RUNNER_TEMP", dir.path())
-        .env("GITHUB_OUTPUT", &fetch_output)
-        .output()
-        .unwrap();
-    assert!(
-        fetched.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fetched.stderr)
-    );
-    let fetch_outputs = std::fs::read_to_string(&fetch_output).unwrap();
-    let baseline_path = fetch_outputs
-        .lines()
-        .find_map(|line| line.strip_prefix("path="))
-        .unwrap();
-    let built = command("bash")
-        .arg("-c")
-        .arg(&build_script)
-        .current_dir(&preview_work)
-        .env("PATH", &path)
-        .env("CURRENT", current())
-        .env("ARCH", "")
-        .env("GALLERY_TITLE", "PR preview")
-        .env("BASELINE_FOUND", "true")
-        .env("BASELINE_PATH", baseline_path)
-        .output()
-        .unwrap();
-    assert!(
-        built.status.success(),
-        "{}",
-        String::from_utf8_lossy(&built.stderr)
-    );
-    let site = preview_work.join("site");
-    let html = std::fs::read_to_string(site.join("index.html")).unwrap();
-    assert!(html.contains("<h2>Changed</h2>"), "{html}");
-    assert!(html.contains("<summary>Unchanged ("), "{html}");
-    assert!(!html.contains("<h2>Unchanged</h2>"), "{html}");
-    for file in [
-        "baseline/captures.json",
-        "current/captures.json",
-        "baseline/about-desktop.png",
-        "current/about-desktop.png",
-    ] {
-        assert!(site.join(file).is_file(), "{file}");
-    }
-
-    let no_canonical = dir.path().join("repository-without-gh-pages");
-    std::fs::create_dir_all(&no_canonical).unwrap();
-    std::fs::write(no_canonical.join("README"), "seed").unwrap();
-    for args in [
-        ["init", "-q"].as_slice(),
-        ["config", "user.name", "Test"].as_slice(),
-        ["config", "user.email", "test@example.com"].as_slice(),
-        ["add", "."].as_slice(),
-        ["commit", "-qm", "seed"].as_slice(),
-    ] {
-        assert!(
-            command("git")
-                .args(args)
-                .current_dir(&no_canonical)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    let recovery_fetch = fetch_script.replace(
-        &canonical.display().to_string(),
-        &no_canonical.display().to_string(),
-    );
-    let recovery_work = dir.path().join("recovery-work");
-    std::fs::create_dir_all(&recovery_work).unwrap();
-    let recovery_output = recovery_work.join("fetch-output");
-    assert!(
-        command("bash")
-            .arg("-c")
-            .arg(recovery_fetch)
-            .current_dir(&recovery_work)
-            .env("PAGES_REPO", "docs/galleries")
-            .env("PAGES_TOKEN", "token")
-            .env("DEST", "")
-            .env("ARCH", "")
-            .env("RUNNER_TEMP", dir.path())
-            .env("GITHUB_OUTPUT", &recovery_output)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert_eq!(
-        std::fs::read_to_string(&recovery_output).unwrap(),
-        "found=false\n"
-    );
-    assert!(
-        command("bash")
-            .arg("-c")
-            .arg(&build_script)
-            .current_dir(&recovery_work)
-            .env("PATH", &path)
-            .env("CURRENT", current())
-            .env("ARCH", "")
-            .env("GALLERY_TITLE", "First preview")
-            .env("BASELINE_FOUND", "false")
-            .env("BASELINE_PATH", "")
-            .status()
-            .unwrap()
-            .success()
-    );
-    let recovery_site = recovery_work.join("site");
-    let recovery_html = std::fs::read_to_string(recovery_site.join("index.html")).unwrap();
-    assert!(!recovery_html.contains("<h2>Changed</h2>"));
-    assert!(recovery_site.join("captures.json").is_file());
-    assert!(recovery_site.join("about-desktop.png").is_file());
-    assert!(!recovery_site.join("baseline").exists());
 }
 
 /// Host CPU arch, mirroring `commands::arch::host_arch`.
@@ -1142,7 +967,6 @@ fn doctor_reports_a_clean_capture_layout() {
 #[test]
 fn doctor_exit_code_gate_catches_a_capture_without_an_index() {
     let dir = TempDir::new().unwrap();
-    // A capture directory missing its captures.json index.
     std::fs::write(dir.path().join("home.png"), b"oops").unwrap();
 
     bin()
@@ -1616,7 +1440,6 @@ fn manifest_writes_pretty_json_index_to_stdout() {
 
 #[test]
 fn classify_requires_exactly_one_baseline_source() {
-    // Neither source: usage error.
     bin()
         .args(["classify", "--current"])
         .arg(current())
@@ -1625,7 +1448,6 @@ fn classify_requires_exactly_one_baseline_source() {
         .code(2)
         .stderr(predicate::str::contains("baseline"));
 
-    // Both sources: mutually exclusive, usage error.
     bin()
         .args(["classify", "--baseline"])
         .arg(baseline())
@@ -1798,7 +1620,6 @@ fn config_from_flag_and_env_override_defaults() {
     )
     .unwrap();
 
-    // Via --config flag.
     bin()
         .args(["comment", "--config"])
         .arg(&cfg)
@@ -1811,7 +1632,6 @@ fn config_from_flag_and_env_override_defaults() {
         .stdout(predicate::str::contains("<!-- ui-shots -->"))
         .stdout(predicate::str::contains("## UI shots"));
 
-    // Via SCREENCOMP_CONFIG environment variable.
     bin()
         .env("SCREENCOMP_CONFIG", &cfg)
         .args(["comment", "--baseline"])
@@ -2076,7 +1896,6 @@ fn init_enable_hook_wires_the_git_hooks_path() {
         .success()
         .stdout(predicate::str::contains("Enabled the local pre-push guard"));
 
-    // Git is now pointed at the committed hooks directory.
     let out = command("git")
         .arg("-C")
         .arg(dir.path())

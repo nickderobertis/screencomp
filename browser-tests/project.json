@@ -1,0 +1,20 @@
+{
+  "name": "browser-tests",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "//": "Playwright over the gallery the freshly built CLI renders, in a real Chromium: the one place the gallery's inline filtering script runs. Its `browser-test` depends on the crate's `build` and is out of the gate (the gate stays browser-free); test-visual-docs.yml's `gallery-browser` job runs it. Nothing may depend on it.",
+  "projectType": "application",
+  "sourceRoot": "browser-tests/tests",
+  "tags": ["type:browser-test", "lang:typescript"],
+  "implicitDependencies": ["screencomp-cli"],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs browser-tests",
+      "inputs": ["default", "boundaries"]
+    },
+    "browser-test": {
+      "command": "just _browser-test",
+      "inputs": ["default", "^default"],
+      "dependsOn": [{ "projects": ["screencomp-cli"], "target": "build" }]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "workspace",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The gate's own tooling in this directory (the Nx wrapper, the locked-install healer, the boundary check, the CI tier selector) and its tests. It depends on no project, so a change to the crate never reruns these tests; the crate-reading repository checks live in `crate-checks`.",
+  "projectType": "application",
+  "tags": [
+    "type:workspace",
+    "lang:javascript"
+  ],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs workspace",
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "test": {
+      "command": "just _workspace-test",
+      "inputs": [
+        "default",
+        "{workspaceRoot}/nx.json",
+        "{workspaceRoot}/**/project.json",
+        "{workspaceRoot}/.github/workflows/{ci,llmlint,notignored,pr-title,release-plz}.yml",
+        "{workspaceRoot}/scripts/{session-setup,setup-lib,setup-llmlint,llmlint-require-credential}.sh",
+        "{workspaceRoot}/release-plz.toml",
+        "{workspaceRoot}/oneharness.toml"
+      ]
+    }
+  }
+}

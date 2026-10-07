@@ -1,0 +1,47 @@
+{
+  "name": "visual-docs-actions",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The composite actions (action.yml, visual-docs/, visual-docs-aggregate/, visual-docs-pages/, gh-pages-maintenance/), the reusable workflow and its GitHub-hosted smoke tests, the scripts they run (scripts/visual-docs-*.sh), and the consumer documentation that restates their interface (README.md, examples/). None of those files moves: consumers reference them by path at @v0, so they are attached here through the `actions` inputs, and this directory holds only the project definition. `test` runs the crate's `actions` test binary, the contract suite over exactly these files. Depends on the crate (the actions build and run its binary, and that suite drives it); the demo's capture script and sync workflow, whose capture copies the suite checks, are inputs.",
+  "projectType": "application",
+  "tags": ["type:actions", "lang:yaml"],
+  "implicitDependencies": ["screencomp-cli"],
+  "namedInputs": {
+    "actions": [
+      "{workspaceRoot}/action.yml",
+      "{workspaceRoot}/visual-docs/**/*",
+      "{workspaceRoot}/visual-docs-aggregate/**/*",
+      "{workspaceRoot}/visual-docs-pages/**/*",
+      "{workspaceRoot}/gh-pages-maintenance/**/*",
+      "{workspaceRoot}/.github/workflows/visual-docs-reusable.yml",
+      "{workspaceRoot}/.github/workflows/test-visual-docs.yml",
+      "{workspaceRoot}/.github/workflows/test-gh-pages-maintenance.yml",
+      "{workspaceRoot}/scripts/visual-docs-*.sh",
+      "{workspaceRoot}/README.md",
+      "{workspaceRoot}/examples/**/*",
+      "{workspaceRoot}/demo/capture.sh",
+      "{workspaceRoot}/.github/workflows/sync-demo.yml"
+    ],
+    "suite": [
+      "{workspaceRoot}/tests/actions.rs",
+      "{workspaceRoot}/tests/common/**/*",
+      "{workspaceRoot}/tests/fixtures/**/*"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node tools/workspace/check-project-boundaries.mjs visual-docs-actions",
+          "just _lint-visual-docs"
+        ],
+        "parallel": false
+      },
+      "inputs": ["default", "actions", "boundaries"]
+    },
+    "test": {
+      "command": "just _actions-test",
+      "inputs": ["default", "actions", "suite", "crate", "^default"]
+    }
+  }
+}

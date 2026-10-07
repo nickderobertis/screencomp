@@ -1,0 +1,26 @@
+{
+  "name": "screencomp-cli",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The shipped binary as an artifact: the crate's sources and manifest, attached through `default` (overridden here, since none of them lives under this directory), and its debug `build`. Every project that builds, runs or ships the CLI depends on this one rather than on `screencomp`, so a change confined to the crate's suites or benchmarks reaches none of them.",
+  "projectType": "application",
+  "tags": ["type:app", "lang:rust"],
+  "namedInputs": {
+    "default": [
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "sharedGlobals"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs screencomp-cli",
+      "inputs": ["default", "boundaries"]
+    },
+    "build": {
+      "command": "just _rust-build screencomp",
+      "inputs": ["default"],
+      "outputs": ["{workspaceRoot}/target/debug"]
+    }
+  }
+}

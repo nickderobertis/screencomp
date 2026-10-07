@@ -18,24 +18,30 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # The gate. A clean checkout, `just bootstrap` (dev toolchain from scratch),
-  # then `just check` — fmt, typecheck, lint, unit + integration + e2e tests,
-  # 95% coverage, supply-chain (deny + machete), docs, release build, and the
-  # publish dry-run. This is the single required correctness gate; it runs on
-  # every platform the binary ships to. Branch protection requires every
-  # `check (<os>)` context.
+  # The gate: a clean checkout, `just bootstrap`, then `just check` at the tier
+  # tools/workspace/ci-tier.mjs selects (AGENTS.md, "Release & git"), on every
+  # platform the binary ships to. A red sweep fails these same jobs. Branch
+  # protection requires every `check (<os>)` context, so nothing here may skip one.
   check:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # bash on every leg (Git Bash on Windows), so the tier hand-off below reads
+    # the same everywhere.
+    defaults:
+      run:
+        shell: bash
     env:
       # Authenticate cargo-binstall's GitHub API calls in `just bootstrap` so it
       # is not rate-limited into falling back to a source compile.
       GITHUB_TOKEN: ${{ github.token }}
     steps:
+      # Full history: the affected tier's merge base is derived from it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Provision pinned toolchain
         run: rustup show
       # Cache the dependency/build artifacts, but NOT ~/.cargo/bin: caching the
@@ -48,6 +54,14 @@ jobs:
           cache-bin: false
       - name: Install just
         uses: extractions/setup-just@v2
+      # The Node toolchain Nx runs on, and bun at package.json's packageManager pin
+      # for the one bun.lock.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
       # `just bootstrap` installs cargo-nextest/llvm-cov/deny/machete. With only
       # `cargo install` available it compiles them from source against the pinned
       # 1.89 toolchain, and the newest nextest's MSRV is higher — it fails to
@@ -58,8 +72,14 @@ jobs:
         uses: cargo-bins/cargo-binstall@main
       - name: Bootstrap
         run: just bootstrap
+      - name: Select the gate tier
+        id: tier
+        run: node tools/workspace/ci-tier.mjs >> "$GITHUB_OUTPUT"
       - name: Check
-        run: just check
+        env:
+          TIER: ${{ steps.tier.outputs.tier }}
+          NX_BASE: ${{ steps.tier.outputs.base }}
+        run: just check "$TIER"
 
   # Lint workflows (and their embedded shell) and the Dockerfile. No warnings.
   # Kept separate from `check`: these lint the CI/Docker definitions themselves,
