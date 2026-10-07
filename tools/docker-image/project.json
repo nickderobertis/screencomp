@@ -1,7 +1,7 @@
 {
   "name": "docker-image",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "//": "The GHCR image's definition (Dockerfile, .dockerignore), which stays at the repository root where docker.yml and consumers build it; attached here through the `image` inputs. Its `lint` is hadolint. The image itself is built by docker.yml, which needs a Docker daemon, so it carries no `build` target. Depends on the crate it compiles.",
+  "//": "The GHCR image's definition (Dockerfile, .dockerignore), which stays at the repository root where docker.yml and consumers build it; attached here through the `image` inputs. Its `lint` is hadolint, on Linux hosts only (`_lint-docker-image`). The image itself is built by docker.yml, which needs a Docker daemon, so it carries no `build` target. Depends on the crate it compiles.",
   "projectType": "application",
   "tags": ["type:image", "lang:docker"],
   "implicitDependencies": ["screencomp"],
@@ -14,7 +14,7 @@
       "options": {
         "commands": [
           "node tools/workspace/check-project-boundaries.mjs docker-image",
-          "just lint-docker"
+          "just _lint-docker-image"
         ],
         "parallel": false
       },

@@ -12,6 +12,11 @@
 - Target bodies are `just _…` recipes (Windows runs project commands under
   cmd.exe, so no shell syntax in `project.json`). Target names mean the same in
   every project; `browser-test` (real Chromium) is never a gate target.
+- Every gate target passes on all three `check (<os>)` legs. A check whose
+  verdict cannot differ by host and whose tool is Linux-only (actionlint,
+  shellcheck, hadolint) is an `[linux]` recipe with a `[macos]`/`[windows]`
+  twin that says where it runs; a test whose stand-ins need a POSIX PATH skips
+  on Windows through `support.mjs`'s `posixOnly`.
 - Every project carries exactly one `type:` tag; nx.json's `boundaries.allow`
   says which types each may depend on, and every project's `lint` runs
   `workspace/check-project-boundaries.mjs` for itself. Only `coverage` may depend

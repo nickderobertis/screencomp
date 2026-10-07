@@ -394,10 +394,30 @@ _actions-test:
 # actionlint over the reusable workflow, its smoke tests and the documented
 # callers; shellcheck over the scripts the actions run (actionlint only lints the
 # shell embedded in workflows).
+[linux]
 _lint-visual-docs: _ensure-actionlint
     actionlint .github/workflows/visual-docs-reusable.yml .github/workflows/test-visual-docs.yml .github/workflows/test-gh-pages-maintenance.yml examples/*.yml
     @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
     shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh
+
+# The definition linters read platform-independent files, so one verdict per tree
+# suffices, and their pinned binaries are Linux-only in practice (none for
+# Windows, a crashing hadolint on Apple silicon): the Linux `check` leg and the
+# `workflows` job run them.
+[macos]
+[windows]
+_lint-visual-docs:
+    @echo "_lint-visual-docs: actionlint and shellcheck run on Linux (the Linux check leg and the workflows job)"
+
+# hadolint, as the docker-image project's `lint` runs it; Linux-only like
+# `_lint-visual-docs`. `just lint-docker` runs it unconditionally.
+[linux]
+_lint-docker-image: lint-docker
+
+[macos]
+[windows]
+_lint-docker-image:
+    @echo "_lint-docker-image: hadolint runs on Linux (the Linux check leg and the workflows job)"
 
 # The gallery browser suite against the freshly built debug binary.
 _browser-test:
