@@ -47,8 +47,9 @@ function installFixture({ bunVersion, status = 0, nodeOnPath = true, nodeVersion
     writeFileSync(join(bin, name), `#!/bin/sh\n${body}`);
     chmodSync(join(bin, name), 0o755);
   };
-  // The install a stand-in performs: what `bun install` leaves behind.
-  const install = `mkdir -p node_modules/nx && echo '{}' > node_modules/nx/package.json\nexit ${status}\n`;
+  // The install a stand-in performs: what `bun install` leaves behind, and a
+  // line of its own output, which the script shows only when the install fails.
+  const install = `echo "stand-in install output: exit ${status}"\nmkdir -p node_modules/nx && echo '{}' > node_modules/nx/package.json\nexit ${status}\n`;
   if (bunVersion !== null) {
     standIn("bun", `if [ "$1" = "--version" ]; then echo ${bunVersion}; exit 0; fi\necho "bun $*" >> "${calls}"\n${install}`);
   }
@@ -69,7 +70,8 @@ test("a stale install runs the pinned bun's frozen install and stamps it", { ski
   try {
     const run = fx.run();
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(fx.recorded(), ["bun install --frozen-lockfile --silent"]);
+    assert.equal(run.stdout + run.stderr, "", "a successful install is quiet");
+    assert.deepEqual(fx.recorded(), ["bun install --frozen-lockfile"]);
     assert.ok(readFileSync(fx.stamp, "utf8").startsWith(readFileSync(join(fx.dir, "bun.lock"), "utf8")));
     const again = fx.run();
     assert.equal(again.status, 0);
@@ -190,7 +192,7 @@ test("a machine with no bun installs the pinned one through npm", { skip: posixO
   try {
     const run = fx.run();
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(fx.recorded(), [`npm exec --yes --package=bun@${PIN} -- bun install --frozen-lockfile --silent`]);
+    assert.deepEqual(fx.recorded(), [`npm exec --yes --package=bun@${PIN} -- bun install --frozen-lockfile`]);
     assert.ok(existsSync(fx.stamp));
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
@@ -202,7 +204,7 @@ test("a bun at another version is bypassed for the pinned one", { skip: posixOnl
   try {
     const run = fx.run();
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(fx.recorded(), [`npm exec --yes --package=bun@${PIN} -- bun install --frozen-lockfile --silent`]);
+    assert.deepEqual(fx.recorded(), [`npm exec --yes --package=bun@${PIN} -- bun install --frozen-lockfile`]);
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }
@@ -213,7 +215,8 @@ test("a failed install fails with the next step and leaves no stamp", { skip: po
   try {
     const run = fx.run();
     assert.equal(run.status, 1);
-    assert.match(run.stderr, /'bun install --frozen-lockfile' \(bun [0-9.]+\) failed/);
+    assert.match(run.stderr, /stand-in install output: exit 1/);
+    assert.match(run.stderr, /'bun install --frozen-lockfile' \(bun [0-9.]+\) failed; its output is above/);
     assert.match(run.stderr, /ACTION: /);
     assert.ok(!existsSync(fx.stamp));
   } finally {

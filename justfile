@@ -430,9 +430,10 @@ _demo-browser-test:
     #!/usr/bin/env bash
     set -euo pipefail
     out="$(mktemp -d)"
-    trap 'rm -rf "$out"' EXIT
+    log="$(mktemp)"
+    trap 'rm -rf "$out" "$log"' EXIT
     cd demo
-    npm ci --no-audit --no-fund --silent
+    npm ci --no-audit --no-fund >"$log" 2>&1 || { cat "$log" >&2; echo "the demo's 'npm ci' failed; its output is above. ACTION: if demo/package.json changed, run 'npm install' in demo/ and commit demo/package-lock.json; otherwise check access to the npm registry" >&2; exit 1; }
     SHOTS_OUT="$out" npx playwright test
     test -s "$out/captures.json" || { echo "the demo capture wrote no captures.json; ACTION: check demo/tests/screenshots.spec.ts, which writes it to \$SHOTS_OUT" >&2; exit 1; }
 

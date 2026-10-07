@@ -75,9 +75,13 @@ else
     exit 1
 fi
 
-if ! "${bun[@]}" install --frozen-lockfile --silent >&2; then
-    echo "node-modules: 'bun install --frozen-lockfile' (bun $version) failed" >&2
-    echo "ACTION: if package.json changed, run 'bun install' and commit bun.lock; otherwise check access to the npm registry" >&2
+# The install's own output is kept, and shown only when it fails.
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+if ! "${bun[@]}" install --frozen-lockfile >"$log" 2>&1; then
+    cat "$log" >&2
+    echo "node-modules: 'bun install --frozen-lockfile' (bun $version) failed; its output is above" >&2
+    echo "ACTION: if package.json changed, run 'bun install' and commit bun.lock; otherwise check access to the npm registry and github.com (the PR-title action installs from there)" >&2
     exit 1
 fi
 fingerprint >"$stamp"
