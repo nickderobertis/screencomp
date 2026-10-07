@@ -49,8 +49,8 @@ export function scratchCopy() {
 /**
  * Windows refuses to remove a directory a live process still has as its cwd
  * (EBUSY), and a detached hand-off a test left running (the hung
- * setup-llmlint stand-in sleeps 8s) holds the scratch copy that way; retrying
- * with backoff (up to ~21s in all) outlasts it.
+ * setup-llmlint stand-in, for session-setup.test.mjs's HANG_SECONDS) holds the
+ * scratch copy that way; retrying with backoff (up to ~21s in all) outlasts it.
  */
 export function removeScratch(dir) {
   rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
