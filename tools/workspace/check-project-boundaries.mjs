@@ -117,9 +117,13 @@ function nxGraph(root) {
     const manifest = require.resolve("nx/package.json");
     const nx = join(dirname(manifest), require(manifest).bin.nx);
     const file = join(scratch, "graph.json");
+    // Plugins load in-process: nx.json adds none, so isolation only buys a
+    // worker handshake with a fixed 10s deadline, which this nested run misses
+    // on a loaded runner (seen on the Windows leg) while the outer `nx run`
+    // keeps every core busy.
     execFileSync(process.execPath, [nx, "graph", `--file=${file}`], {
       cwd: root,
-      env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true" },
+      env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true", NX_ISOLATE_PLUGINS: "false" },
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 64 * 1024 * 1024,
     });
