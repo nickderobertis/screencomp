@@ -23,10 +23,14 @@ import { test } from "node:test";
 
 import { posixOnly, removeScratch, scratchCopy } from "./support.mjs";
 
+// How long the hung stand-in sleeps before recording that it finished. Within
+// support.mjs's removeScratch retry budget (~21s), which outlasts it on Windows.
+const HANG_SECONDS = 15;
+
 const STAND_INS = {
   succeeds: "touch .dev/llmlint-reached\nexit 0\n",
   fails: "touch .dev/llmlint-reached\nexit 1\n",
-  hangs: "touch .dev/llmlint-reached\nsleep 8\n",
+  hangs: `touch .dev/llmlint-reached\nsleep ${HANG_SECONDS}\ntouch .dev/llmlint-finished\n`,
 };
 
 function withScratch(setupLlmlint, body) {
@@ -44,7 +48,11 @@ function withScratch(setupLlmlint, body) {
   }
 }
 
-/** Run the hook as the SessionStart command does, timing it. */
+/**
+ * Run the hook as the SessionStart command does, timing it. A hook still
+ * running at the timeout is killed and fails its test's exit-status check; how
+ * long the hook waits on the hand-off is bounded by `assertDidNotWait`.
+ */
 function hook(dir, env = {}) {
   const started = Date.now();
   const clean = Object.fromEntries(
@@ -72,6 +80,19 @@ function reached(dir, waitMs = 10_000) {
   return existsSync(marker);
 }
 
+/**
+ * The hook returned without waiting on the hung hand-off: the stand-in had not
+ * yet finished its sleep. This bounds the time the hook spent on the hand-off
+ * (under HANG_SECONDS), not the hook's own start-up, which a slow or loaded
+ * host stretches without the hook waiting on anything.
+ */
+function assertDidNotWait(dir, run) {
+  assert.ok(
+    !existsSync(join(dir, ".dev/llmlint-finished")),
+    `the hook waited for the hung setup-llmlint.sh (returned after ${run.seconds}s)`,
+  );
+}
+
 /** Mark the scratch copy's environment as already set up (the silent path). */
 function markReady(dir) {
   const run = spawnSync("bash", ["-c", ". scripts/setup-lib.sh && _load_tool_env && _write_stamp && _check_ready"], {
@@ -86,7 +107,7 @@ for (const [outcome, script] of Object.entries(STAND_INS)) {
     withScratch(script, (dir) => {
       const run = hook(dir);
       assert.equal(run.status, 0, run.stderr);
-      assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+      if (outcome === "hangs") assertDidNotWait(dir, run);
       assert.match(run.stdout, /Dev environment not set up yet|Dev environment not ready/);
       assert.ok(reached(dir), "setup-llmlint.sh was not reached");
     });
@@ -131,10 +152,10 @@ test("a setup that leaves llmlint missing is reported at the next session start,
 });
 
 test("the opt-in provisioning path hands off too", () => {
-  withScratch(STAND_INS.fails, (dir) => {
+  withScratch(STAND_INS.hangs, (dir) => {
     const run = hook(dir, { SCREENCOMP_AUTO_SETUP: "1" });
     assert.equal(run.status, 0, run.stderr);
-    assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+    assertDidNotWait(dir, run);
     assert.match(run.stdout, /provisioning in the BACKGROUND/);
     assert.ok(reached(dir));
   });
@@ -149,7 +170,7 @@ test("the already-set-up path stays silent and hands off", (t) => {
     const run = hook(dir);
     assert.equal(run.status, 0, run.stderr);
     assert.equal(run.stdout, "");
-    assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+    assertDidNotWait(dir, run);
     assert.ok(reached(dir));
   });
 });
@@ -162,7 +183,6 @@ test("the real setup-llmlint.sh with no uv on PATH neither blocks nor fails the 
       // installer's ~/.local/bin, and no asdf shim directory to resolve one from.
       const run = hook(dir, { HOME: home, PATH: "/usr/bin:/bin", ASDF_DATA_DIR: join(home, ".asdf") });
       assert.equal(run.status, 0, run.stderr);
-      assert.ok(run.seconds < 5, `took ${run.seconds}s`);
       const log = join(dir, ".dev/setup-llmlint.log");
       const until = Date.now() + 10_000;
       while (Date.now() < until && !/uv not found/.test(existsSync(log) ? readFileSync(log, "utf8") : "")) {
@@ -194,7 +214,7 @@ test("without setsid the hand-off still detaches through nohup", { skip: posixOn
       }
       const run = hook(dir, { PATH: bin, ASDF_DATA_DIR: join(bin, "no-asdf") });
       assert.equal(run.status, 0, run.stderr);
-      assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+      assertDidNotWait(dir, run);
       assert.ok(reached(dir));
     } finally {
       rmSync(bin, { recursive: true, force: true });
@@ -207,7 +227,6 @@ test("an unwritable .dev/ skips the hand-off with guidance and still returns 0",
     writeFileSync(join(dir, ".dev"), "a file where the log directory would go");
     const run = hook(dir);
     assert.equal(run.status, 0, run.stderr);
-    assert.ok(run.seconds < 5, `took ${run.seconds}s`);
     assert.match(run.stderr, /cannot create \.dev\/ for the llmlint setup log; run 'just setup-llmlint' by hand/);
   });
 });
