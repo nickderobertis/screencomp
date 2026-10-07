@@ -1,0 +1,42 @@
+# Lint the pull request title as a Conventional Commit.
+#
+# Under squash-merge the PR title becomes the one commit subject that lands on
+# main, and release-plz reads only that subject: `release_commits` in
+# release-plz.toml releases only `feat`/`fix`/`perf` or a breaking `type!:`
+# subject. A mistitled change therefore ships nothing, silently; this check makes
+# the title malformed-or-not visible before merge. The admitted types are exactly
+# the ones release-plz.toml's changelog parsers name, a list a workflow-contract
+# test (tools/workspace/tests/workflows.test.mjs) holds in lockstep.
+name: pr-title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+# Least privilege: the action only reads the pull request.
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: pr-title-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            ci
+            chore
+            build
+            style

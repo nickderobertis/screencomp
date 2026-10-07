@@ -2,7 +2,6 @@
 //!
 //! These cover critical user journeys from the user's perspective — exit codes,
 //! stdout/stderr separation, and file effects — not just "the binary starts".
-// llmlint: ignore-file[tests_mirror_real_usage] The visual-docs acceptance test intentionally extracts and composes the shipped action's fetch/build blocks: GitHub exposes no offline composite-action runner, and executing these exact blocks together is the requested CI-path boundary without remote side effects.
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +9,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+// The subprocess helpers the in-process suites share live with the crate under
+// test; this crate borrows them rather than keeping a second copy.
+#[path = "../../tests/common/mod.rs"]
 mod common;
 use common::command;
 
@@ -21,7 +23,7 @@ fn bin() -> Command {
 }
 
 fn fixtures() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures")
 }
 
 fn baseline() -> PathBuf {
@@ -83,7 +85,7 @@ fn demo_managed_config_is_valid_under_current_schema() {
     // sync-demo.yml. A config-schema change that breaks it must fail HERE, in this
     // repo's gate, rather than silently ship a broken consumer. `success` proves it
     // parses under the current schema; the arch proves the CI matrix is populated.
-    let cfg = format!("{}/demo/screencomp.toml", env!("CARGO_MANIFEST_DIR"));
+    let cfg = format!("{}/../demo/screencomp.toml", env!("CARGO_MANIFEST_DIR"));
     bin()
         .args(["--config", &cfg, "arches", "--format", "json"])
         .assert()
@@ -112,10 +114,27 @@ fn version_matches_crate() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains(concat!(
-            "screencomp ",
-            env!("CARGO_PKG_VERSION")
+        .stdout(predicate::str::contains(format!(
+            "screencomp {}",
+            crate_version()
         )));
+}
+
+/// The `screencomp` package's version, read from its manifest: this suite is a
+/// crate of its own, so `CARGO_PKG_VERSION` here names `screencomp-e2e`.
+fn crate_version() -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Cargo.toml");
+    let manifest = std::fs::read_to_string(&manifest).expect("screencomp's Cargo.toml");
+    let package = manifest
+        .split("\n[")
+        .find(|table| table.starts_with("[package]") || table.starts_with("package]"))
+        .expect("Cargo.toml has a [package] table");
+    package
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("[package] declares a literal version")
+        .to_owned()
 }
 
 #[test]

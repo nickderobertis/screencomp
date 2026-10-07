@@ -1,9 +1,9 @@
-//! Helpers shared by the `integration` and `e2e` suites.
+//! Helpers shared by the `integration`, `actions` and `e2e` suites.
 //!
 //! Not a test target of its own (a subdirectory of `tests/` is not compiled as
-//! one) — both suites pull it in with `mod common;`, so the subprocess
+//! one) — this crate's suites pull it in with `mod common;` and the
+//! `screencomp-e2e` crate with a `#[path]` to this file, so the subprocess
 //! discipline below has a single copy rather than one per suite.
-// llmlint: ignore-file[new_code_lands_in_a_project] A monorepo rule, and there is no Nx workspace here to land in: `Cargo.toml` is the project definition and already covers this file, as it does the two suites beside it.
 
 use std::ffi::OsStr;
 use std::process::Command;

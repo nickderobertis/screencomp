@@ -1,0 +1,76 @@
+{
+  "name": "workspace",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The repository-level targets: the coverage aggregate over the crate's and the e2e suite's profiles (and the clean that precedes them), the supply-chain audit, the release build and publish dry-run, and the MSRV check. It also owns the gate's own tooling in this directory (the Nx wrapper, the boundary check, the CI tier selector) and their tests. It depends on the crate and the e2e suite, so a change reaching either reruns the aggregate.",
+  "projectType": "application",
+  "tags": [
+    "type:workspace",
+    "lang:javascript"
+  ],
+  "implicitDependencies": [
+    "screencomp",
+    "screencomp-e2e"
+  ],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs workspace",
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "test": {
+      "command": "just _workspace-test",
+      "inputs": [
+        "default",
+        "{workspaceRoot}/nx.json",
+        "{workspaceRoot}/**/project.json",
+        "{workspaceRoot}/.github/workflows/{ci,llmlint,notignored,pr-title,release-plz}.yml",
+        "{workspaceRoot}/scripts/llmlint-require-credential.sh",
+        "{workspaceRoot}/release-plz.toml",
+        "{workspaceRoot}/oneharness.toml"
+      ]
+    },
+    "coverage-clean": {
+      "command": "just _coverage-clean"
+    },
+    "coverage": {
+      "command": "just _coverage",
+      "outputs": [
+        "{workspaceRoot}/target/llvm-cov-target"
+      ],
+      "dependsOn": [
+        {
+          "projects": [
+            "screencomp",
+            "screencomp-e2e"
+          ],
+          "target": "test"
+        }
+      ]
+    },
+    "supply-chain": {
+      "command": "just _supply-chain",
+      "inputs": [
+        "default",
+        "crate",
+        "{workspaceRoot}/deny.toml"
+      ]
+    },
+    "release-check": {
+      "command": "just _release-check",
+      "inputs": [
+        "default",
+        "crate",
+        "{workspaceRoot}/README.md"
+      ]
+    },
+    "msrv": {
+      "command": "just _msrv",
+      "inputs": [
+        "default",
+        "crate"
+      ]
+    }
+  }
+}

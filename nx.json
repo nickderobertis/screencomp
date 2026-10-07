@@ -1,0 +1,100 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "//": "A project owns the files under its root. Files that must stay where consumers or tools find them (the crate's Cargo.toml and tests/, the composite actions, the Dockerfile, demo/) are attached to their project through `{workspaceRoot}/...` inputs instead, which is also how Nx's affected detection maps a change to them onto that project.",
+  "defaultBase": "origin/main",
+  "cacheDirectory": ".nx/cache",
+  "namedInputs": {
+    "sharedGlobals": [
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/.cargo/config.toml",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock"
+    ],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
+    "crate": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/clippy.toml",
+      "{workspaceRoot}/rustfmt.toml",
+      "{workspaceRoot}/tests/**/*",
+      "{workspaceRoot}/benches/**/*"
+    ],
+    "boundaries": [
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/tools/workspace/check-project-boundaries.mjs"
+    ]
+  },
+  "boundaries": {
+    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. The binary-driving and browser suites are depended on by nothing but the workspace's coverage aggregate (which merges the e2e suite's profiles), so no change to another project can reach them.",
+    "allow": {
+      "type:app": [],
+      "type:consumer": [],
+      "type:e2e": [
+        "type:app",
+        "type:consumer"
+      ],
+      "type:browser-test": [
+        "type:app"
+      ],
+      "type:actions": [
+        "type:app",
+        "type:consumer"
+      ],
+      "type:image": [
+        "type:app"
+      ],
+      "type:workspace": [
+        "type:app",
+        "type:e2e"
+      ]
+    }
+  },
+  "targetDefaults": {
+    "format": {
+      "cache": false
+    },
+    "format-check": {
+      "cache": true
+    },
+    "lint": {
+      "cache": true
+    },
+    "typecheck": {
+      "cache": true
+    },
+    "doc": {
+      "cache": true
+    },
+    "build": {
+      "cache": false
+    },
+    "test": {
+      "cache": false
+    },
+    "browser-test": {
+      "cache": false
+    },
+    "bench": {
+      "cache": false
+    },
+    "coverage-clean": {
+      "cache": false
+    },
+    "coverage": {
+      "cache": false
+    },
+    "supply-chain": {
+      "cache": false
+    },
+    "release-check": {
+      "cache": false
+    },
+    "msrv": {
+      "cache": false
+    }
+  }
+}

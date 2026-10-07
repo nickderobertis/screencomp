@@ -639,6 +639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "screencomp-e2e"
+version = "0.0.0"
+dependencies = [
+ "assert_cmd",
+ "predicates",
+ "tempfile",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"

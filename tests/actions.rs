@@ -7,6 +7,7 @@
 //! `visual-docs-actions` project's `test` target (`cargo nextest run -p
 //! screencomp --test actions`), so a change confined to those files reruns them
 //! without reaching the crate's own suite.
+// llmlint: ignore-file[tests_mirror_real_usage] The visual-docs acceptance test intentionally extracts and composes the shipped action's fetch/build blocks: GitHub exposes no offline composite-action runner, and executing these exact blocks together is the requested CI-path boundary without remote side effects.
 
 use std::path::{Path, PathBuf};
 
@@ -682,7 +683,7 @@ fn visual_docs_external_pages_contract_and_preview_fallback_are_wired() {
 
     let justfile = std::fs::read_to_string(root.join("justfile")).unwrap();
     assert!(
-        justfile.contains("\ngate: check\n"),
+        justfile.contains("\nalias gate := check\n"),
         "`just gate` must remain an alias of the full check gate"
     );
 }

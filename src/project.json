@@ -1,0 +1,52 @@
+{
+  "name": "screencomp",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "//": "The shipped CLI crate: its sources (this directory) plus, through the `crate` inputs, the manifest, lockfile and the in-process suites under tests/ (unit, `integration`, `actions`). Rooted at src/ rather than beside Cargo.toml because the crate stays at the repository root, and a project rooted there would own every root file, the composite actions among them, so a change to an action would select the crate. Depends on nothing in this repository.",
+  "projectType": "application",
+  "sourceRoot": "src",
+  "tags": ["type:app", "lang:rust"],
+  "targets": {
+    "format": {
+      "command": "just _rust-format screencomp"
+    },
+    "format-check": {
+      "command": "just _rust-format-check screencomp",
+      "inputs": ["default", "crate"]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node tools/workspace/check-project-boundaries.mjs screencomp",
+          "just _rust-lint screencomp"
+        ],
+        "parallel": false
+      },
+      "inputs": ["default", "crate", "boundaries"]
+    },
+    "typecheck": {
+      "command": "just _rust-typecheck screencomp",
+      "inputs": ["default", "crate"]
+    },
+    "build": {
+      "command": "just _rust-build screencomp",
+      "inputs": ["default", "crate"],
+      "outputs": ["{workspaceRoot}/target/debug"]
+    },
+    "test": {
+      "command": "just _rust-test screencomp",
+      "inputs": ["default", "crate"],
+      "outputs": ["{workspaceRoot}/target/llvm-cov-target"],
+      "dependsOn": [{ "projects": ["workspace"], "target": "coverage-clean" }],
+      "parallelism": false
+    },
+    "doc": {
+      "command": "just _rust-doc screencomp",
+      "inputs": ["default", "crate"]
+    },
+    "bench": {
+      "command": "just bench",
+      "inputs": ["default", "crate"]
+    }
+  }
+}

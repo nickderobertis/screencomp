@@ -1,3 +1,13 @@
+# The LLM-judge tier (llmlint): a blocking pull-request check, separate from the
+# deterministic `check` gate. Scoped to what the pull request changed (the
+# merge-base diff with main), so each change pays for its own lines.
+#
+# It REQUIRES the harness credential and fails fast without it: it never passes
+# without running the model-backed diff lint, which would report unjudged files
+# as clean. The harness is codex (the primary in oneharness.toml's fallback
+# chain) and its credential is the repository secret OPENAI_API_KEY (AGENTS.md).
+# Fork pull requests are gated by the repository's require-approval-for-fork-
+# workflows setting, not by a no-op branch here.
 name: llmlint
 
 on:
@@ -10,26 +20,49 @@ concurrency:
   group: llmlint-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The codex CLI the judged step drives; bump deliberately.
+  CODEX_VERSION: "0.161.0"
+
 jobs:
   llmlint:
     runs-on: ubuntu-latest
-    env:
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
+      # The pull request's head (not the synthetic merge ref), with full history
+      # so the merge base with main resolves.
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+      - name: Fetch main (the diff base)
+        run: git fetch --no-tags origin main
       - uses: astral-sh/setup-uv@v5
       - name: Install just
         run: uv tool install rust-just
-      - name: Install llmlint
-        run: scripts/setup-llmlint.sh
-      - name: Validate llmlint config
-        run: just lint-llm-validate
-      - name: Lint changed lines
-        if: ${{ env.OPENAI_API_KEY != '' || env.ANTHROPIC_API_KEY != '' }}
-        run: just lint-llm-diff
-      - name: Skip model-backed llmlint without harness secret
-        if: ${{ env.OPENAI_API_KEY == '' && env.ANTHROPIC_API_KEY == '' }}
-        run: echo "No llmlint harness secret configured; validate completed, skipping model-backed diff."
+      - name: Install llmlint (and oneharness)
+        run: |
+          bash scripts/setup-llmlint.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # setup-llmlint.sh installs llmlint and oneharness, not a harness: without
+      # one the judged step would have nothing to drive.
+      - name: Install the codex harness
+        run: npm install --global "@openai/codex@${CODEX_VERSION}"
+
+      # Deterministic, model-free gate first: the config parses, every
+      # `llmlint: ignore` names a configured rule, and an edited versioned
+      # fragment bumped its `version:`. No credential needed.
+      - name: Validate llmlint config (no model)
+        run: just lint-llm-validate --diff-base origin/main
+
+      - name: Require and authenticate the harness credential
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: bash scripts/llmlint-require-credential.sh
+
+      - name: Lint changed lines (model-backed)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: just lint-llm-diff origin/main

@@ -1,0 +1,23 @@
+{
+  "name": "demo",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The screencomp-demo consumer's managed source (demo/), mirrored verbatim onto that repository by sync-demo.yml. Its project definition lives here, not in demo/, because everything in demo/ is mirrored. Its `browser-test` runs the demo's own Playwright capture spec on the host from the demo's own npm lockfile: a smoke of the spec, not the byte-reproducible pinned-container capture, and out of the gate like every browser suite. Depends on nothing in this repository: the demo consumes the released CLI and actions at @v0.",
+  "projectType": "application",
+  "tags": ["type:consumer", "lang:typescript"],
+  "namedInputs": {
+    "demo": [
+      "{workspaceRoot}/demo/**/*",
+      "{workspaceRoot}/.github/workflows/sync-demo.yml"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs demo",
+      "inputs": ["default", "demo", "boundaries"]
+    },
+    "browser-test": {
+      "command": "just _demo-browser-test",
+      "inputs": ["default", "demo"]
+    }
+  }
+}

@@ -1,9 +1,9 @@
 [package]
 name = "screencomp"
 version = "0.4.8"
-edition = "2024"
-rust-version = "1.89"
-license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Classify, gallery, and PR-comment screenshots for the visual-docs framework — byte-reproducible, network-free."
 repository = "https://github.com/nickderobertis/screencomp"
 homepage = "https://github.com/nickderobertis/screencomp"
@@ -31,7 +31,44 @@ exclude = [
     "CHANGELOG.md",
     "AGENTS.md",
     "CLAUDE.md",
+    "**/AGENTS.md",
+    "**/CLAUDE.md",
+    # The Nx project graph and its Node toolchain: repository tooling only.
+    "nx.json",
+    "package.json",
+    "bun.lock",
+    "**/project.json",
+    "tools/",
+    # The Playwright suite's Node project (its lock is the root bun.lock).
+    "browser-tests/",
+    # The binary-driving suite is a workspace member of its own.
+    "e2e/",
 ]
+
+# The crate stays at the repository root so its crates.io package, the release
+# archives, `scripts/install.sh` and the composite actions are unaffected; the
+# workspace adds the test-only member that drives the compiled binary. Each
+# member is also an Nx project (nx.json): Cargo resolves the one Cargo.lock, Nx
+# runs the targets.
+[workspace]
+members = [".", "e2e"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+
+[workspace.dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
 
 [dependencies]
 camino = { version = "1.2", features = ["serde1"] }
@@ -46,11 +83,11 @@ thiserror = "2"
 toml = "1"
 
 [dev-dependencies]
-assert_cmd = "2"
+assert_cmd = { workspace = true }
 # Used by in-process integration tests to parse `Cli` the same way the binary does.
 clap = { version = "4.6", features = ["derive"] }
-predicates = "3"
-tempfile = "3"
+predicates = { workspace = true }
+tempfile = { workspace = true }
 # Statistical micro-benchmarks of the in-process command pipeline (see
 # `benches/`). Default features (plotters HTML reports, rayon) are dropped to
 # keep the dependency tree — and the `cargo deny` surface — small;
@@ -81,9 +118,5 @@ strip = false
 name = "commands"
 harness = false
 
-[lints.rust]
-unsafe_code = "forbid"
-missing_docs = "deny"
-
-[lints.clippy]
-all = "deny"
+[lints]
+workspace = true

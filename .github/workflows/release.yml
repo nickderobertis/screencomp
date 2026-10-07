@@ -25,6 +25,10 @@ env:
 
 jobs:
   # Gate the release on a passing test run so untested artifacts never publish.
+  # A release cut by hand is a supported fallback (see the header), and for it
+  # this job is the only gate, so it stays even though the release-plz path
+  # already swept the release pull request. `--workspace` covers the crate's
+  # suites, the binary e2e suite (its own workspace member) included.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -34,8 +38,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo nextest run --locked
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo nextest run --locked --workspace
 
   # Build, archive, checksum, and attach a binary per target to the Release.
   upload:
