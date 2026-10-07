@@ -6,7 +6,8 @@
 # No dependency on the `screencomp` crate: the suite drives only the binary,
 # which `cargo nextest run -p screencomp-e2e -p screencomp` builds beside it, and
 # a library dev-dependency nothing imports would be dead weight cargo-machete
-# rejects. The Nx edge to `screencomp` is declared in project.json instead.
+# rejects. The Nx edge to `screencomp-cli`, the project that builds the binary,
+# is declared in project.json instead.
 [package]
 name = "screencomp-e2e"
 version = "0.0.0"
