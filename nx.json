@@ -23,7 +23,8 @@
     ],
     "boundaries": [
       "{workspaceRoot}/nx.json",
-      "{workspaceRoot}/tools/workspace/check-project-boundaries.mjs"
+      "{workspaceRoot}/tools/workspace/check-project-boundaries.mjs",
+      "{workspaceRoot}/tools/workspace/nx-env.mjs"
     ]
   },
   "boundaries": {
