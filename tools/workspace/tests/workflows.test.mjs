@@ -162,12 +162,13 @@ test("pr-title admits exactly release-plz's commit types, on every title-changin
   const releasePlz = readFileSync(join(root, "release-plz.toml"), "utf8");
   const parsed = [...releasePlz.matchAll(/\{ message = "\^([a-z]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...types].sort(), [...parsed].sort());
-
 });
 
 test("the PR-title action, as the workflow runs it, accepts releasable titles and rejects malformed ones", async () => {
   const step = workflows["pr-title.yml"].jobs["pr-title"].steps.find((s) => s.uses?.startsWith("amannn/"));
-  // The installed copy is the one the workflow runs: same repository, same tag.
+  // The installed copy comes from the repository and tag the workflow names;
+  // bun.lock records the commit that tag resolved to when it was installed.
+  // llmlint: ignore[contracts_have_one_source_or_a_drift_gate] pr-title.yml floats on the major tag `@v6` by design, as the repository's other third-party actions float on theirs, and this suite is offline by rule, so no test here can resolve what that tag points to today; the tag spelling is the one source both sides share, and this test holds them to it.
   const installed = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies["action-semantic-pull-request"];
   assert.equal(installed, `github:${step.uses.replace("@", "#")}`);
 
