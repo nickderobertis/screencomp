@@ -12,11 +12,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-# No resident daemon per checkout: nothing reaps it, and it buys little here.
-export NX_DAEMON="${NX_DAEMON:-false}"
-export NX_NO_CLOUD=true
-export NX_TUI=false
 bash tools/workspace/node-modules.sh
+# Nx's environment comes from nx-env.mjs, the one place every Nx run here takes
+# it from (this wrapper also runs nested, inside another Nx task).
+if ! nx_env="$(node tools/workspace/nx-env.mjs 2>&1)"; then
+    echo "nx: cannot read Nx's environment from tools/workspace/nx-env.mjs: $nx_env" >&2
+    echo "ACTION: fix tools/workspace/nx-env.mjs, then re-run the recipe" >&2
+    exit 1
+fi
+while IFS= read -r setting; do
+    export "${setting%$'\r'}"
+done <<<"$nx_env"
 
 # The bin entry Nx's own package.json declares, since Nx has moved it between releases.
 if ! nx_js="$(node -p "const p=require('path'),m=require.resolve('nx/package.json');p.join(p.dirname(m),require(m).bin.nx)" 2>&1)"; then

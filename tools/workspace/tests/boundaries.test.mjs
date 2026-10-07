@@ -93,8 +93,7 @@ test("the real check fails naming an edge drawn to the e2e suite, and passes wit
       spawnSync(process.execPath, ["tools/workspace/check-project-boundaries.mjs", project], {
         cwd: dir,
         encoding: "utf8",
-        env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true" },
-      });
+              });
     const clean = check("visual-docs-actions");
     assert.equal(clean.status, 0, clean.stderr);
     assert.match(clean.stdout, /visual-docs-actions: every edge allowed/);
@@ -118,7 +117,6 @@ test("the check passes on this checkout", () => {
   const out = execFileSync(process.execPath, ["tools/workspace/check-project-boundaries.mjs"], {
     cwd: root,
     encoding: "utf8",
-    env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true" },
-  });
+      });
   assert.match(out, /every edge allowed/);
 });

@@ -22,10 +22,11 @@
 // edge, then the fix.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { runNx } from "./nx-env.mjs";
 
 const TYPE_TAG = /^type:[a-z][a-z0-9-]*$/;
 
@@ -111,22 +112,11 @@ function failedRun(what, error, action) {
 
 /** The project graph exactly as Nx computes it for the checkout at `root`. */
 function nxGraph(root) {
-  const require = createRequire(join(root, "package.json"));
   const scratch = mkdtempSync(join(tmpdir(), "screencomp-graph-"));
   try {
-    const manifest = require.resolve("nx/package.json");
-    const nx = join(dirname(manifest), require(manifest).bin.nx);
     const file = join(scratch, "graph.json");
-    // Plugins load in-process: nx.json adds none, so isolation only buys a
-    // worker handshake with a fixed 10s deadline, which this nested run misses
-    // on a loaded runner (seen on the Windows leg) while the outer `nx run`
-    // keeps every core busy.
-    execFileSync(process.execPath, [nx, "graph", `--file=${file}`], {
-      cwd: root,
-      env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true", NX_ISOLATE_PLUGINS: "false" },
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    // Nested inside the outer run's `lint` task, so through nx-env.mjs.
+    runNx(root, root, ["graph", `--file=${file}`]);
     const graph = JSON.parse(readFileSync(file, "utf8")).graph;
     const shaped =
       graph?.nodes &&

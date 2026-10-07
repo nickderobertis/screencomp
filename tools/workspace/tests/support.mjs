@@ -2,26 +2,17 @@
 // recipes run it, and a scratch copy of the working tree to mutate.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runNx } from "../nx-env.mjs";
+
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
-const require = createRequire(join(root, "package.json"));
-const manifest = require.resolve("nx/package.json");
-const nxBin = join(dirname(manifest), require(manifest).bin.nx);
-
-/** Run the workspace's pinned Nx in `cwd`, returning its stdout. */
+/** Run the workspace's pinned Nx in `cwd` as every nested run does (nx-env.mjs), returning its stdout. */
 export function nx(cwd, args) {
-  return execFileSync(process.execPath, [nxBin, ...args], {
-    cwd,
-    env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true", NX_TUI: "false" },
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  return runNx(root, cwd, args);
 }
 
 /** The projects a change to `files` selects, as Nx's affected detection computes them. */
