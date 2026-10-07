@@ -209,11 +209,15 @@ test("without setsid the hand-off still detaches through nohup", { skip: posixOn
   withScratch(STAND_INS.hangs, (dir) => {
     const bin = mkdtempSync(join(tmpdir(), "screencomp-no-setsid-"));
     try {
-      for (const tool of readdirSync("/usr/bin")) {
-        if (tool !== "setsid") symlinkSync(join("/usr/bin", tool), join(bin, tool));
+      // macOS keeps bash, sleep and mkdir in /bin, not /usr/bin; the first
+      // directory holding a tool wins, as it would on PATH.
+      for (const from of ["/bin", "/usr/bin"]) {
+        for (const tool of readdirSync(from)) {
+          if (tool !== "setsid" && !existsSync(join(bin, tool))) symlinkSync(join(from, tool), join(bin, tool));
+        }
       }
       const run = hook(dir, { PATH: bin, ASDF_DATA_DIR: join(bin, "no-asdf") });
-      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.status, 0, run.error?.message ?? run.stderr);
       assertDidNotWait(dir, run);
       assert.ok(reached(dir));
     } finally {
