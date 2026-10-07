@@ -240,7 +240,6 @@ fn comment_embeds_inline_previews_when_gallery_url_given() {
         .success();
 
     let md = std::fs::read_to_string(&out).expect("comment file");
-    // Small diff under the default limit: inline before/after images appear.
     assert!(md.contains("| Before | After |"));
     assert!(md.contains("src=\"https://example.test/pr/12/baseline/about-desktop.png\""));
     assert!(md.contains("src=\"https://example.test/pr/12/current/pricing-desktop.png\""));
@@ -616,7 +615,6 @@ fn gallery_has_one_toggle_bar_that_filters_cards() {
         .success();
 
     let html = std::fs::read_to_string(out.join("index.html")).expect("index.html");
-    // Exactly one toggle bar for the whole page, not one repeated per card.
     assert_eq!(html.matches("class=\"toggles\"").count(), 1, "{html}");
     // Default selection is `desktop`; `legacy` only has `mobile`, so its card is
     // filtered out (hidden) while `home` (which has a desktop variant) stays.
@@ -1442,7 +1440,6 @@ fn manifest_writes_pretty_json_index_to_stdout() {
 
 #[test]
 fn classify_requires_exactly_one_baseline_source() {
-    // Neither source: usage error.
     bin()
         .args(["classify", "--current"])
         .arg(current())
@@ -1451,7 +1448,6 @@ fn classify_requires_exactly_one_baseline_source() {
         .code(2)
         .stderr(predicate::str::contains("baseline"));
 
-    // Both sources: mutually exclusive, usage error.
     bin()
         .args(["classify", "--baseline"])
         .arg(baseline())
