@@ -58,3 +58,11 @@ export function scratchCopy() {
 export function removeScratch(dir) {
   rmSync(dir, { recursive: true, force: true });
 }
+
+/**
+ * A `skip` reason for tests whose stand-ins are POSIX: `#!/bin/sh` scripts on a
+ * `…:/usr/bin:/bin` PATH, which Windows cannot resolve. The Linux and macOS
+ * `check` legs run them; false elsewhere.
+ */
+export const posixOnly =
+  process.platform === "win32" && "the stand-ins here need a POSIX PATH; the Linux and macOS legs run this";

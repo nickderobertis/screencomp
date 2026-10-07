@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import { root } from "./support.mjs";
@@ -42,7 +42,9 @@ test("the demo spec runs in demo/ from its own lockfile, into a scratch it remov
   const { run, calls, shotsOut } = runRecipe(true);
   assert.equal(run.status, 0, run.stderr);
   assert.equal(calls[0], "npm ci --no-audit --no-fund --silent");
-  assert.match(calls[1], new RegExp(`^npx playwright test SHOTS_OUT=\\S+ cwd=${join(root, "demo")}$`));
+  const [, cwd] = /^npx playwright test SHOTS_OUT=\S+ cwd=(.+)$/.exec(calls[1]);
+  // resolve(): bash on Windows prints `D:/…`, the same directory as `D:\…`.
+  assert.equal(resolve(cwd), join(root, "demo"));
   assert.ok(!existsSync(shotsOut), "the scratch SHOTS_OUT is removed");
 });
 

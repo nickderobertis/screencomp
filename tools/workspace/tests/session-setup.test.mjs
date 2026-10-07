@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { removeScratch, scratchCopy } from "./support.mjs";
+import { posixOnly, removeScratch, scratchCopy } from "./support.mjs";
 
 const STAND_INS = {
   succeeds: "touch .dev/llmlint-reached\nexit 0\n",
@@ -117,7 +117,7 @@ test("the already-set-up path stays silent and hands off", (t) => {
   });
 });
 
-test("the real setup-llmlint.sh with no uv on PATH neither blocks nor fails the session", () => {
+test("the real setup-llmlint.sh with no uv on PATH neither blocks nor fails the session", { skip: posixOnly }, () => {
   withScratch(null, (dir) => {
     const home = mkdtempSync(join(tmpdir(), "screencomp-home-"));
     try {
@@ -148,7 +148,7 @@ test("a tree without setup-llmlint.sh starts the session with no hand-off", () =
   });
 });
 
-test("without setsid the hand-off still detaches through nohup", () => {
+test("without setsid the hand-off still detaches through nohup", { skip: posixOnly }, () => {
   withScratch(STAND_INS.hangs, (dir) => {
     const bin = mkdtempSync(join(tmpdir(), "screencomp-no-setsid-"));
     try {

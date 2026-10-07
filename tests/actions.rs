@@ -15,17 +15,24 @@ use clap::Parser as _;
 use screencomp::{AppError, Cli, run};
 use tempfile::TempDir;
 
+// The subprocess helpers and fixtures serve only the `#[cfg(unix)]` tests, which
+// run the shipped shell scripts.
+#[cfg(unix)]
 mod common;
+#[cfg(unix)]
 use common::command;
 
+#[cfg(unix)]
 fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+#[cfg(unix)]
 fn baseline() -> PathBuf {
     fixtures().join("baseline")
 }
 
+#[cfg(unix)]
 fn current() -> PathBuf {
     fixtures().join("current")
 }

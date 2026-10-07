@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-import { removeScratch, root, scratchCopy } from "./support.mjs";
+import { posixOnly, removeScratch, root, scratchCopy } from "./support.mjs";
 
 const PIN = /"packageManager": *"bun@([0-9.]+)"/.exec(readFileSync(join(root, "package.json"), "utf8"))[1];
 
@@ -62,7 +62,7 @@ function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath =
   return { dir, run, recorded, stamp: join(dir, "node_modules/.bun-lock-installed") };
 }
 
-test("a stale install runs the pinned bun's frozen install and stamps it", () => {
+test("a stale install runs the pinned bun's frozen install and stamps it", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: PIN });
   try {
     const run = fx.run();
@@ -78,7 +78,7 @@ test("a stale install runs the pinned bun's frozen install and stamps it", () =>
 });
 
 for (const file of ["bun.lock", "package.json", "browser-tests/package.json"]) {
-  test(`${file} changed since the stamped install reinstalls and restamps`, () => {
+  test(`${file} changed since the stamped install reinstalls and restamps`, { skip: posixOnly }, () => {
     const fx = installFixture({ bunVersion: PIN });
     try {
       assert.equal(fx.run().status, 0);
@@ -96,7 +96,7 @@ for (const file of ["bun.lock", "package.json", "browser-tests/package.json"]) {
   });
 }
 
-test("a pin removed after a stamped install is still refused", () => {
+test("a pin removed after a stamped install is still refused", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: PIN });
   try {
     assert.equal(fx.run().status, 0);
@@ -110,7 +110,7 @@ test("a pin removed after a stamped install is still refused", () => {
   }
 });
 
-test("a package.json pinning no bun fails with the next step", () => {
+test("a package.json pinning no bun fails with the next step", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: PIN });
   try {
     const path = join(fx.dir, "package.json");
@@ -126,7 +126,7 @@ test("a package.json pinning no bun fails with the next step", () => {
 });
 
 for (const workspaces of ['"browser-tests/*"', '["../outside"]', '[1]', '"browser-tests"']) {
-  test(`a workspaces list of ${workspaces} is refused before any install`, () => {
+  test(`a workspaces list of ${workspaces} is refused before any install`, { skip: posixOnly }, () => {
     const fx = installFixture({ bunVersion: PIN });
     try {
       const path = join(fx.dir, "package.json");
@@ -141,7 +141,7 @@ for (const workspaces of ['"browser-tests/*"', '["../outside"]', '[1]', '"browse
   });
 }
 
-test("neither the pinned bun nor npm fails with the next step", () => {
+test("neither the pinned bun nor npm fails with the next step", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: "0.0.1", npmOnPath: false });
   try {
     const run = fx.run();
@@ -153,7 +153,7 @@ test("neither the pinned bun nor npm fails with the next step", () => {
   }
 });
 
-test("a machine with no bun installs the pinned one through npm", () => {
+test("a machine with no bun installs the pinned one through npm", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: null });
   try {
     const run = fx.run();
@@ -165,7 +165,7 @@ test("a machine with no bun installs the pinned one through npm", () => {
   }
 });
 
-test("a bun at another version is bypassed for the pinned one", () => {
+test("a bun at another version is bypassed for the pinned one", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: "0.0.1" });
   try {
     const run = fx.run();
@@ -176,7 +176,7 @@ test("a bun at another version is bypassed for the pinned one", () => {
   }
 });
 
-test("a failed install fails with the next step and leaves no stamp", () => {
+test("a failed install fails with the next step and leaves no stamp", { skip: posixOnly }, () => {
   const fx = installFixture({ bunVersion: PIN, status: 1 });
   try {
     const run = fx.run();
@@ -189,7 +189,7 @@ test("a failed install fails with the next step and leaves no stamp", () => {
   }
 });
 
-test("no Node.js fails with the next step", (t) => {
+test("no Node.js fails with the next step", { skip: posixOnly }, (t) => {
   if (spawnSync("sh", ["-c", "command -v node"], { env: { PATH: "/usr/bin:/bin" } }).status === 0) {
     t.skip("this machine has a system Node.js in /usr/bin, so it cannot be taken off PATH here");
     return;
