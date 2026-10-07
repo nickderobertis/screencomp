@@ -123,7 +123,6 @@ fn reusable_workflow_floats_its_own_action_pins() {
 
     let mut refs = 0;
     for line in reusable.lines() {
-        // Skip comments; match only `uses:` of screencomp's own actions.
         if line.trim_start().starts_with('#') {
             continue;
         }

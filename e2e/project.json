@@ -1,18 +1,27 @@
 {
   "name": "screencomp-e2e",
   "$schema": "../node_modules/nx/schemas/project-schema.json",
-  "//": "The compiled binary's end-to-end journeys. Its `test` depends on the crate's `build` and runs under coverage instrumentation into the shared profile directory, which the `coverage` project merges. It reads the demo's managed screencomp.toml (one journey validates it), hence the edge to `demo`. Nothing but the `coverage` aggregate may depend on it.",
+  "//": "The compiled binary's end-to-end journeys. Its `test` depends on the crate's `build` and runs under coverage instrumentation into the shared profile directory, which the `coverage` project merges. Its inputs are only what it reads besides its own tests: the manifests, the shared tests/common and tests/fixtures, and the demo's managed screencomp.toml (one journey validates it). Nothing but the `coverage` aggregate may depend on it.",
   "projectType": "application",
   "sourceRoot": "e2e/tests",
   "tags": ["type:e2e", "lang:rust"],
-  "implicitDependencies": ["screencomp", "demo"],
+  "implicitDependencies": ["screencomp"],
+  "namedInputs": {
+    "suite": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/tests/common/**/*",
+      "{workspaceRoot}/tests/fixtures/**/*",
+      "{workspaceRoot}/demo/screencomp.toml"
+    ]
+  },
   "targets": {
     "format": {
       "command": "just _rust-format screencomp-e2e"
     },
     "format-check": {
       "command": "just _rust-format-check screencomp-e2e",
-      "inputs": ["default", "crate"]
+      "inputs": ["default", "suite"]
     },
     "lint": {
       "executor": "nx:run-commands",
@@ -23,15 +32,15 @@
         ],
         "parallel": false
       },
-      "inputs": ["default", "crate", "boundaries"]
+      "inputs": ["default", "suite", "boundaries"]
     },
     "typecheck": {
       "command": "just _rust-typecheck screencomp-e2e",
-      "inputs": ["default", "crate"]
+      "inputs": ["default", "suite"]
     },
     "test": {
       "command": "just _rust-test screencomp-e2e screencomp",
-      "inputs": ["default", "crate", "^default", "{workspaceRoot}/demo/screencomp.toml"],
+      "inputs": ["default", "suite", "^default"],
       "outputs": ["{workspaceRoot}/target/llvm-cov-target"],
       "dependsOn": [
         { "projects": ["screencomp"], "target": "build" },

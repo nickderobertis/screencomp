@@ -6,7 +6,17 @@
 // session's own output unchanged; those two exits must not hand off at all.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -124,6 +134,34 @@ test("the real setup-llmlint.sh with no uv on PATH neither blocks nor fails the 
       assert.match(readFileSync(log, "utf8"), /uv not found; cannot install llmlint/);
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a tree without setup-llmlint.sh starts the session with no hand-off", () => {
+  withScratch(STAND_INS.succeeds, (dir) => {
+    rmSync(join(dir, "scripts/setup-llmlint.sh"));
+    const run = hook(dir);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /Dev environment not set up yet/);
+    assert.ok(!existsSync(join(dir, ".dev/setup-llmlint.log")));
+  });
+});
+
+test("without setsid the hand-off still detaches through nohup", () => {
+  withScratch(STAND_INS.hangs, (dir) => {
+    // Every system tool but setsid.
+    const bin = mkdtempSync(join(tmpdir(), "screencomp-no-setsid-"));
+    try {
+      for (const tool of readdirSync("/usr/bin")) {
+        if (tool !== "setsid") symlinkSync(join("/usr/bin", tool), join(bin, tool));
+      }
+      const run = hook(dir, { PATH: bin, ASDF_DATA_DIR: join(bin, "no-asdf") });
+      assert.equal(run.status, 0, run.stderr);
+      assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+      assert.ok(reached(dir));
+    } finally {
+      rmSync(bin, { recursive: true, force: true });
     }
   });
 });

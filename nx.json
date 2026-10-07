@@ -34,15 +34,13 @@
       "type:app": [],
       "type:consumer": [],
       "type:e2e": [
-        "type:app",
-        "type:consumer"
+        "type:app"
       ],
       "type:browser-test": [
         "type:app"
       ],
       "type:actions": [
-        "type:app",
-        "type:consumer"
+        "type:app"
       ],
       "type:image": [
         "type:app"

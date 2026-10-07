@@ -43,7 +43,9 @@ test("each suite and surface selects its own project and its dependents only", (
   assert.deepEqual(affectedBy(["e2e/tests/e2e.rs"]), ["coverage", "screencomp-e2e"]);
   assert.deepEqual(affectedBy(["browser-tests/tests/gallery.spec.ts"]), ["browser-tests"]);
   assert.deepEqual(affectedBy(["Dockerfile"]), ["docker-image"]);
-  assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["coverage", "demo", "screencomp-e2e", "visual-docs-actions"]);
+  assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["coverage", "demo", "screencomp-e2e"]);
+  assert.deepEqual(affectedBy(["demo/capture.sh"]), ["demo", "visual-docs-actions"]);
+  assert.deepEqual(affectedBy(["demo/pages/index.html"]), ["demo"]);
   assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["workspace"]);
 });
 

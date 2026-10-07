@@ -2,6 +2,11 @@
 // run them: node-modules.sh (the locked install, healed when stale) against
 // stand-ins for the package managers it calls, and the `nx` wrapper against the
 // real Nx in a scratch copy of the tree.
+//
+// bun and npm are stood in because a real install resolves packages from the
+// npm registry, and this tier is offline. The real install is the one every
+// gate run starts from: each recipe reaches Nx through this script, so a tree
+// whose package.json, bun.lock and pin do not compose fails the gate itself.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,7 +23,7 @@ const PIN = /"packageManager": *"bun@([0-9.]+)"/.exec(readFileSync(join(root, "p
  * of stand-ins: `bun` reporting `bunVersion` (absent when null) and `npm`, each
  * appending its argv to `calls` and exiting `status`.
  */
-function installFixture({ bunVersion, status = 0, nodeOnPath = true }) {
+function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath = true }) {
   const dir = mkdtempSync(join(tmpdir(), "screencomp-node-modules-"));
   for (const file of ["tools/workspace/node-modules.sh", "package.json", "bun.lock"]) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
@@ -36,7 +41,7 @@ function installFixture({ bunVersion, status = 0, nodeOnPath = true }) {
   if (bunVersion !== null) {
     standIn("bun", `if [ "$1" = "--version" ]; then echo ${bunVersion}; exit 0; fi\necho "bun $*" >> "${calls}"\n${install}`);
   }
-  standIn("npm", `echo "npm $*" >> "${calls}"\n${install}`);
+  if (npmOnPath) standIn("npm", `echo "npm $*" >> "${calls}"\n${install}`);
   if (nodeOnPath) standIn("node", "exit 0\n");
   const run = () =>
     spawnSync("bash", [join(dir, "tools/workspace/node-modules.sh")], {
@@ -57,6 +62,47 @@ test("a stale install runs the pinned bun's frozen install and stamps it", () =>
     const again = fx.run();
     assert.equal(again.status, 0);
     assert.equal(fx.recorded().length, 1, "a matching stamp installs nothing");
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a bun.lock changed since the stamped install reinstalls and restamps", () => {
+  const fx = installFixture({ bunVersion: PIN });
+  try {
+    assert.equal(fx.run().status, 0);
+    writeFileSync(join(fx.dir, "bun.lock"), `${readFileSync(join(fx.dir, "bun.lock"), "utf8")}\n`);
+    const run = fx.run();
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(fx.recorded().length, 2, "the changed lock reinstalls");
+    assert.equal(readFileSync(fx.stamp, "utf8"), readFileSync(join(fx.dir, "bun.lock"), "utf8"));
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a package.json pinning no bun fails with the next step", () => {
+  const fx = installFixture({ bunVersion: PIN });
+  try {
+    const path = join(fx.dir, "package.json");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/"packageManager": *"[^"]*",?/, ""));
+    const run = fx.run();
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /pins no bun version/);
+    assert.match(run.stderr, /ACTION: /);
+    assert.deepEqual(fx.recorded(), []);
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("neither the pinned bun nor npm fails with the next step", () => {
+  const fx = installFixture({ bunVersion: "0.0.1", npmOnPath: false });
+  try {
+    const run = fx.run();
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, new RegExp(`bun ${PIN.replaceAll(".", "\\.")} .* is not on PATH, and there is no npm`));
+    assert.deepEqual(fx.recorded(), []);
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }

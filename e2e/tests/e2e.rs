@@ -1625,7 +1625,6 @@ fn config_from_flag_and_env_override_defaults() {
     )
     .unwrap();
 
-    // Via --config flag.
     bin()
         .args(["comment", "--config"])
         .arg(&cfg)
@@ -1638,7 +1637,6 @@ fn config_from_flag_and_env_override_defaults() {
         .stdout(predicate::str::contains("<!-- ui-shots -->"))
         .stdout(predicate::str::contains("## UI shots"));
 
-    // Via SCREENCOMP_CONFIG environment variable.
     bin()
         .env("SCREENCOMP_CONFIG", &cfg)
         .args(["comment", "--baseline"])

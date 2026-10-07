@@ -109,7 +109,7 @@ test-browser tier="affected" project="":
 # where OS packages are missing.
 # Install the Chromium the browser suites drive, with its OS packages.
 browser-install:
-    cd browser-tests && ../node_modules/.bin/playwright install --with-deps chromium
+    cd browser-tests && node_modules/.bin/playwright install --with-deps chromium
 
 # Build API docs, failing on any rustdoc warning.
 doc:
@@ -386,7 +386,7 @@ _lint-visual-docs: _ensure-actionlint
 
 # The gallery browser suite against the freshly built debug binary.
 _browser-test:
-    cd browser-tests && PATH="{{justfile_directory()}}/target/debug:$PATH" ../node_modules/.bin/playwright test
+    cd browser-tests && PATH="{{justfile_directory()}}/target/debug:$PATH" node_modules/.bin/playwright test
 
 # The demo's own capture spec on the host, from the demo's own npm lockfile
 # (demo/ is mirrored onto screencomp-demo, which installs it with npm), into a
@@ -404,8 +404,6 @@ _demo-browser-test:
 # The gate tooling's own tests (tier selection, project boundaries).
 _workspace-test:
     node --test tools/workspace/tests/*.test.mjs
-
-# --- internal helpers -------------------------------------------------------
 
 # Install missing cargo-based dev tools as prebuilt binaries via cargo-binstall.
 # Building these from source compiles them against the pinned toolchain, and the
