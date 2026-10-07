@@ -93,7 +93,7 @@ for (const [outcome, script] of Object.entries(STAND_INS)) {
   });
 }
 
-/** Wait (bounded) for the detached hand-off to record its exit status. */
+/** Wait (bounded) for the detached hand-off to record what it left installed. */
 function finished(dir, waitMs = 10_000) {
   const status = join(dir, ".dev/setup-llmlint.status");
   const until = Date.now() + waitMs;
@@ -103,17 +103,30 @@ function finished(dir, waitMs = 10_000) {
   return existsSync(status) ? readFileSync(status, "utf8").trim() : null;
 }
 
-test("a failed hand-off is reported at the next session start, and a passing one clears it", () => {
-  withScratch(STAND_INS.fails, (dir) => {
-    assert.equal(hook(dir).status, 0);
-    assert.equal(finished(dir), "1");
-    writeFileSync(join(dir, "scripts/setup-llmlint.sh"), `#!/usr/bin/env bash\n${STAND_INS.succeeds}`);
-    const next = hook(dir);
-    assert.equal(next.status, 0, next.stderr);
-    assert.match(next.stdout, /The last llmlint setup failed \(exit 1; log: \.dev\/setup-llmlint\.log\)/);
-    assert.match(next.stdout, /ACTION: .*run 'just setup-llmlint'/);
-    assert.equal(finished(dir), "0");
-    assert.doesNotMatch(hook(dir).stdout, /llmlint setup failed/);
+test("a setup that leaves llmlint missing is reported at the next session start, and an install clears it", { skip: posixOnly }, () => {
+  withScratch(null, (dir) => {
+    const home = mkdtempSync(join(tmpdir(), "screencomp-home-"));
+    try {
+      // The real installer, with no uv to install from: it exits 0 regardless.
+      const env = { HOME: home, PATH: "/usr/bin:/bin", ASDF_DATA_DIR: join(home, ".asdf") };
+      assert.equal(hook(dir, env).status, 0);
+      assert.equal(finished(dir), "missing");
+      const next = hook(dir, env);
+      assert.equal(next.status, 0, next.stderr);
+      assert.match(next.stdout, /The last llmlint setup left llmlint uninstalled \(log: \.dev\/setup-llmlint\.log\)/);
+      assert.match(next.stdout, /ACTION: .*run 'just setup-llmlint'/);
+      assert.equal(finished(dir), "missing", "the retry still finds no uv");
+      // An installer that does install: llmlint lands in ~/.local/bin.
+      writeFileSync(
+        join(dir, "scripts/setup-llmlint.sh"),
+        '#!/usr/bin/env bash\nmkdir -p "$HOME/.local/bin"\nprintf \'#!/bin/sh\\n\' >"$HOME/.local/bin/llmlint"\nchmod +x "$HOME/.local/bin/llmlint"\n',
+      );
+      assert.match(hook(dir, env).stdout, /llmlint uninstalled/, "still reported until a run installs it");
+      assert.equal(finished(dir), "ok");
+      assert.doesNotMatch(hook(dir, env).stdout, /llmlint uninstalled/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

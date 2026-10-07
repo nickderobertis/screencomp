@@ -15,8 +15,9 @@
 # Every path past the CI and opt-out exits also hands off to
 # scripts/setup-llmlint.sh (the llmlint tier: llmlint + oneharness), launched
 # detached so it can neither block nor fail the session; its log is
-# .dev/setup-llmlint.log and its exit status .dev/setup-llmlint.status, and the
-# next session start reports a failed run with the step that fixes it.
+# .dev/setup-llmlint.log. The installer always exits 0, so what it left behind
+# is judged instead: .dev/setup-llmlint.status says whether llmlint resolves
+# afterwards, and the next session start reports a run that left it missing.
 set -eu
 # setup.sh installs rust-just so the `just` command surface is available.
 
@@ -37,18 +38,18 @@ handoff_llmlint() {
     echo "[screencomp] cannot create .dev/ for the llmlint setup log; run 'just setup-llmlint' by hand" >&2
     return 0
   fi
-  local status
-  status="$(cat .dev/setup-llmlint.status 2>/dev/null || true)"
-  if [ -n "$status" ] && [ "$status" != 0 ]; then
+  if [ "$(cat .dev/setup-llmlint.status 2>/dev/null || true)" = missing ]; then
     printf '%s\n' \
-      "[screencomp] The last llmlint setup failed (exit $status; log: .dev/setup-llmlint.log); retrying it in the background." \
-      "ACTION: if the llmlint tier is still missing, run 'just setup-llmlint' to see the failure and fix what it names."
+      "[screencomp] The last llmlint setup left llmlint uninstalled (log: .dev/setup-llmlint.log); retrying it in the background." \
+      "ACTION: if 'llmlint --version' still fails, run 'just setup-llmlint' to see why and fix what it names."
   fi
   rm -f .dev/setup-llmlint.status
   local launcher="nohup"
   command -v setsid >/dev/null 2>&1 && launcher="setsid"
+  # The installer puts llmlint in ~/.local/bin, which may not be on PATH yet.
   # llmlint: ignore[work_goes_through_command_surface] This hook runs before `just` may exist (on a fresh machine it advises installing it), so it calls the installer `just setup-llmlint` wraps directly, as the create-repo session-setup template does.
-  "$launcher" bash -c 'bash scripts/setup-llmlint.sh; echo "$?" >.dev/setup-llmlint.status' \
+  "$launcher" bash -c 'export PATH="$HOME/.local/bin:$PATH"; bash scripts/setup-llmlint.sh
+      if command -v llmlint >/dev/null 2>&1; then echo ok; else echo missing; fi >.dev/setup-llmlint.status' \
     >.dev/setup-llmlint.log 2>&1 </dev/null &
   return 0
 }
