@@ -1,4 +1,3 @@
-// The scratch-copy helpers the other gate-tooling tests share.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
