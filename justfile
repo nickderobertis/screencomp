@@ -509,10 +509,9 @@ _ensure-hadolint:
     curl -fsSL "$url" -o "$dest/hadolint"
     chmod +x "$dest/hadolint"
 
-# --- LLM-judge tier (llmlint): never part of `check` -----------------------------
-# Non-deterministic and harness-backed (it drives a coding harness through
-# oneharness, which `oneharness.toml` selects), so it stays out of the
-# deterministic, offline gate. The diff-scoped run is the blocking `llmlint` PR
+# The LLM-judge tier (llmlint) is never part of `check`: it is non-deterministic
+# and drives a coding harness through oneharness (`oneharness.toml` selects it),
+# so it stays out of the deterministic, offline gate. The diff-scoped run is the blocking `llmlint` PR
 # check (.github/workflows/llmlint.yml). Install it with `just setup-llmlint`.
 
 # Install/refresh the llmlint toolchain (llmlint + oneharness). Idempotent; the

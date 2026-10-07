@@ -30,10 +30,14 @@ fi
 # from are byte-identical to the ones the last install used.
 if ! manifests="$(node -e '
     const root = require("./package.json");
-    const members = Array.isArray(root.workspaces) ? root.workspaces : [];
+    const members = root.workspaces ?? [];
+    const plain = /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
+    if (!Array.isArray(members) || !members.every((m) => typeof m === "string" && plain.test(m))) {
+        throw new Error("\"workspaces\" must be a list of plain relative directories, got " + JSON.stringify(members));
+    }
     console.log(["package.json", ...members.map((m) => m + "/package.json")].join("\n"));
 ' 2>&1)"; then
-    echo "node-modules: package.json is not valid JSON: $manifests" >&2
+    echo "node-modules: cannot read package.json's workspaces: $(printf '%s\n' "$manifests" | grep -m1 -E '^(Error|SyntaxError)' || printf '%s' "$manifests")" >&2
     echo "ACTION: fix package.json, then re-run 'just bootstrap'" >&2
     exit 1
 fi

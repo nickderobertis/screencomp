@@ -38,6 +38,7 @@ handoff_llmlint() {
   fi
   local launcher="nohup"
   command -v setsid >/dev/null 2>&1 && launcher="setsid"
+  # llmlint: ignore[work_goes_through_command_surface] This hook runs before `just` may exist (on a fresh machine it advises installing it), so it calls the installer `just setup-llmlint` wraps directly, as the create-repo session-setup template does.
   "$launcher" bash scripts/setup-llmlint.sh >.dev/setup-llmlint.log 2>&1 </dev/null &
   return 0
 }

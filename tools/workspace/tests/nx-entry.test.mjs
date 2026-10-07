@@ -125,6 +125,22 @@ test("a package.json pinning no bun fails with the next step", () => {
   }
 });
 
+for (const workspaces of ['"browser-tests/*"', '["../outside"]', '[1]', '"browser-tests"']) {
+  test(`a workspaces list of ${workspaces} is refused before any install`, () => {
+    const fx = installFixture({ bunVersion: PIN });
+    try {
+      const path = join(fx.dir, "package.json");
+      writeFileSync(path, readFileSync(path, "utf8").replace(/"workspaces": *\[[^\]]*\]/, `"workspaces": ${workspaces}`));
+      const run = fx.run();
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, /cannot read package\.json's workspaces: .*"workspaces" must be a list of plain relative directories/);
+      assert.deepEqual(fx.recorded(), []);
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("neither the pinned bun nor npm fails with the next step", () => {
   const fx = installFixture({ bunVersion: "0.0.1", npmOnPath: false });
   try {
