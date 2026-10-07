@@ -2,13 +2,12 @@
 // status-check contexts every pull request must report, the gate's tier hand-off,
 // and the review-only, PR-title and llmlint jobs' shapes.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import conventionalCommitsConfig from "conventional-changelog-conventionalcommits";
-import { CommitParser } from "conventional-commits-parser";
 import { parse } from "yaml";
 
 import { root } from "./support.mjs";
@@ -109,15 +108,44 @@ test("notignored is a review comment of its own, needed by no job and in no fixe
 });
 
 /**
- * The PR-title action's own verdict (src/validatePrTitle.js at its v6 tag): parse
- * the title with the conventionalcommits preset's parser, then require a type, a
- * subject, and a type matching one of the configured patterns wrapped in `^ $`.
- * The parser and preset are the exact versions the action bundles.
+ * The PR-title action's own verdict on `title`: its built entry point (the file
+ * the runner executes, installed from the same tag the workflow uses) run with
+ * the workflow step's `with:` inputs, against a local stand-in for the one REST
+ * call it makes, which serves an open pull request carrying that title.
  */
-async function titleAccepted(title, types) {
-  const { parser } = await conventionalCommitsConfig();
-  const result = new CommitParser(parser).parse(title);
-  return Boolean(result.type && result.subject) && types.some((type) => new RegExp(`^${type}$`).test(result.type));
+async function actionVerdict(inputs, title) {
+  const server = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ number: 1, title, labels: [] }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const scratch = mkdtempSync(join(tmpdir(), "pr-title-"));
+  try {
+    const event = join(scratch, "event.json");
+    writeFileSync(event, JSON.stringify({ pull_request: { number: 1, base: { user: { login: "o" }, repo: { name: "r" } } } }));
+    writeFileSync(join(scratch, "output"), "");
+    // The host's environment (Windows sockets need SystemRoot), minus any
+    // runner context or action input a CI host would otherwise leak in.
+    const host = Object.entries(process.env).filter(([key]) => !/^(GITHUB|INPUT)_/i.test(key));
+    const env = {
+      ...Object.fromEntries(host),
+      GITHUB_TOKEN: "unused",
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_EVENT_PATH: event,
+      GITHUB_OUTPUT: join(scratch, "output"),
+      INPUT_GITHUBBASEURL: `http://127.0.0.1:${server.address().port}`,
+    };
+    for (const [key, value] of Object.entries(inputs)) env[`INPUT_${key.toUpperCase()}`] = value;
+    const entry = join(root, "node_modules/action-semantic-pull-request/dist/index.js");
+    const child = spawn(process.execPath, [entry], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    const status = await new Promise((resolve) => child.on("close", resolve));
+    return { status, stdout };
+  } finally {
+    server.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 test("pr-title admits exactly release-plz's commit types, on every title-changing event", async () => {
@@ -135,11 +163,28 @@ test("pr-title admits exactly release-plz's commit types, on every title-changin
   const parsed = [...releasePlz.matchAll(/\{ message = "\^([a-z]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...types].sort(), [...parsed].sort());
 
+});
+
+test("the PR-title action, as the workflow runs it, accepts releasable titles and rejects malformed ones", async () => {
+  const step = workflows["pr-title.yml"].jobs["pr-title"].steps.find((s) => s.uses?.startsWith("amannn/"));
+  // The installed copy is the one the workflow runs: same repository, same tag.
+  const installed = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies["action-semantic-pull-request"];
+  assert.equal(installed, `github:${step.uses.replace("@", "#")}`);
+
   for (const title of ["feat: add x", "fix(cli): handle y", "feat!: drop z", "chore: release v1.2.3"]) {
-    assert.ok(await titleAccepted(title, types), `accepts ${title}`);
+    const { status, stdout } = await actionVerdict(step.with, title);
+    assert.equal(status, 0, `accepts ${title}: ${stdout}`);
   }
-  for (const title of ["Add x", "feature: add x", "feat add x", "feat:", "Fix: y"]) {
-    assert.ok(!(await titleAccepted(title, types)), `rejects ${title}`);
+  for (const [title, reason] of [
+    ["Add x", /No release type found/],
+    ["feature: add x", /Unknown release type "feature"/],
+    ["feat add x", /No release type found/],
+    ["feat:", /No release type found/],
+    ["Fix: y", /Unknown release type "Fix"/],
+  ]) {
+    const { status, stdout } = await actionVerdict(step.with, title);
+    assert.equal(status, 1, `rejects ${title}: ${stdout}`);
+    assert.match(stdout, reason, title);
   }
 });
 
