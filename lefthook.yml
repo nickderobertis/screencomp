@@ -28,6 +28,18 @@ pre-push:
   parallel: false
   commands:
     clippy:
-      run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     test:
-      run: cargo nextest run --locked -E 'not binary(e2e)'
+      # The crate's in-process suites; the binary e2e suite is its own workspace
+      # member (e2e/) and runs in the gate.
+      run: cargo nextest run --locked -p screencomp
+    llmlint-validate:
+      # The deterministic llmlint gate (no model, no credential): a broken config,
+      # a stale `llmlint: ignore`, or an unbumped fragment fails here before CI.
+      # Skips, saying so, where llmlint is not installed (`just setup-llmlint`).
+      run: |
+        if ! command -v llmlint >/dev/null 2>&1; then
+          echo "llmlint not installed; skipping 'llmlint validate' (run 'just setup-llmlint' to enable it)"
+          exit 0
+        fi
+        llmlint validate
