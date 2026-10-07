@@ -7,17 +7,9 @@
 // recipe (`just check "$TIER"`) and `base` as NX_BASE, so the tier is a flag on
 // the one recipe and never a second implementation of the gate.
 //
-// screencomp batches releases: release-plz's release pull request accumulates
-// every releasable merge since the last release, so the commit that ships is one
-// no merge job swept (AGENTS.md, "Release & git"). So the broader tier runs on
-// that pull request, and the default branch stays on the affected tier:
-//
-//   * a pull request from release-plz's branch -> `all` (the full sweep);
-//   * any other pull request                   -> `affected`, against the merge
-//     base of the pull request's base commit and the checked-out head;
-//   * a push to main                           -> `affected`, against the merge
-//     base of the commit the push replaced and the pushed head;
-//   * anything else (a dispatch, a schedule)   -> `all`.
+// Releases are batched behind release-plz's release pull request, so that pull
+// request runs the sweep and everything else the affected tier (AGENTS.md,
+// "Release & git"); `selectTier` below is the whole policy.
 //
 // A base that cannot be derived (a first push, a force-push whose old tip is not
 // in the checkout, a shallow clone) fails closed into the sweep and says so,

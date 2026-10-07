@@ -286,7 +286,7 @@ fn comment_manifest_mode_embeds_current_only_from_gallery_url() {
 }
 
 #[test]
-fn comment_aggregated_upserts_one_comment_across_projects() {
+fn comment_aggregated_renders_one_marked_comment_across_projects() {
     // A many-project monorepo: two affected projects folded into ONE comment,
     // keyed by a single stable marker, driven through the compiled binary.
     let dir = TempDir::new().unwrap();
@@ -1903,7 +1903,6 @@ fn init_enable_hook_wires_the_git_hooks_path() {
         .success()
         .stdout(predicate::str::contains("Enabled the local pre-push guard"));
 
-    // Git is now pointed at the committed hooks directory.
     let out = command("git")
         .arg("-C")
         .arg(dir.path())

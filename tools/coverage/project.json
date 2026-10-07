@@ -1,0 +1,41 @@
+{
+  "name": "coverage",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "//": "The coverage aggregate: the 95% line floor over the crate's sources, enforced once over the profiles the crate's and the e2e suite's `test` targets write (each runs `cargo llvm-cov --no-report` after `coverage-clean`). A project of its own so that only a change reaching the crate or its e2e suite selects it; nothing may depend on it.",
+  "projectType": "application",
+  "tags": [
+    "type:aggregate",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "screencomp",
+    "screencomp-e2e"
+  ],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs coverage",
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "coverage-clean": {
+      "command": "just _coverage-clean"
+    },
+    "coverage": {
+      "command": "just _coverage",
+      "outputs": [
+        "{workspaceRoot}/target/llvm-cov-target"
+      ],
+      "dependsOn": [
+        {
+          "projects": [
+            "screencomp",
+            "screencomp-e2e"
+          ],
+          "target": "test"
+        }
+      ]
+    }
+  }
+}

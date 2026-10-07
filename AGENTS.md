@@ -84,7 +84,7 @@ repository's (reviewed here). `demo/` is not a bun workspace member, and any
 single-lockfile check excludes `demo/` by name for this reason.
 
 **Coverage decision.** The gate enforces 95% line coverage of the crate's
-sources (`cargo llvm-cov report --fail-under-lines 95`, the `workspace:coverage`
+sources (`cargo llvm-cov report --fail-under-lines 95`, the `coverage` project's
 target in `just check`), the skill's default bar, measured on every PR rather
 than tracked as a badge. Lower it only with a documented reason here.
 

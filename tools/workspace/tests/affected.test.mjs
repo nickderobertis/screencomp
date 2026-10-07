@@ -9,6 +9,7 @@ import { affectedBy } from "./support.mjs";
 
 const CRATE_AND_DEPENDENTS = [
   "browser-tests",
+  "coverage",
   "docker-image",
   "screencomp",
   "screencomp-e2e",
@@ -38,10 +39,11 @@ test("a change confined to the composite actions or their scripts selects only t
 });
 
 test("each suite and surface selects its own project and its dependents only", () => {
-  assert.deepEqual(affectedBy(["e2e/tests/e2e.rs"]), ["screencomp-e2e", "workspace"]);
+  // The gate's own tooling never selects the coverage aggregate or a test suite.
+  assert.deepEqual(affectedBy(["e2e/tests/e2e.rs"]), ["coverage", "screencomp-e2e"]);
   assert.deepEqual(affectedBy(["browser-tests/tests/gallery.spec.ts"]), ["browser-tests"]);
   assert.deepEqual(affectedBy(["Dockerfile"]), ["docker-image"]);
-  assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["demo", "screencomp-e2e", "visual-docs-actions", "workspace"]);
+  assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["coverage", "demo", "screencomp-e2e", "visual-docs-actions"]);
   assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["workspace"]);
 });
 

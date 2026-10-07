@@ -1,7 +1,7 @@
 {
   "name": "screencomp-e2e",
   "$schema": "../node_modules/nx/schemas/project-schema.json",
-  "//": "The compiled binary's end-to-end journeys. Its `test` depends on the crate's `build` and runs under coverage instrumentation into the shared profile directory, which the workspace's `coverage` aggregate merges. It reads the demo's managed screencomp.toml (one journey validates it), hence the edge to `demo`. Nothing but the workspace's coverage aggregate may depend on it.",
+  "//": "The compiled binary's end-to-end journeys. Its `test` depends on the crate's `build` and runs under coverage instrumentation into the shared profile directory, which the `coverage` project merges. It reads the demo's managed screencomp.toml (one journey validates it), hence the edge to `demo`. Nothing but the `coverage` aggregate may depend on it.",
   "projectType": "application",
   "sourceRoot": "e2e/tests",
   "tags": ["type:e2e", "lang:rust"],
@@ -35,7 +35,7 @@
       "outputs": ["{workspaceRoot}/target/llvm-cov-target"],
       "dependsOn": [
         { "projects": ["screencomp"], "target": "build" },
-        { "projects": ["workspace"], "target": "coverage-clean" }
+        { "projects": ["coverage"], "target": "coverage-clean" }
       ],
       "parallelism": false
     }

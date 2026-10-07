@@ -17,6 +17,7 @@ const nodes = {
   "browser-tests": { tags: ["type:browser-test"] },
   "visual-docs-actions": { tags: ["type:actions"] },
   workspace: { tags: ["type:workspace"] },
+  coverage: { tags: ["type:aggregate"] },
 };
 const judge = (edges, cargoEdges = []) =>
   boundaryViolations({ nodes, edges, cargoEdges, allow, checked: new Set(Object.keys(nodes)) });
@@ -33,14 +34,18 @@ test("the repository's edges are allowed", () => {
       ["browser-tests", "screencomp"],
       ["visual-docs-actions", "screencomp"],
       ["workspace", "screencomp"],
-      ["workspace", "screencomp-e2e"],
+      ["coverage", "screencomp"],
+      ["coverage", "screencomp-e2e"],
     ]),
     [],
   );
 });
 
-test("nothing but the workspace aggregate may depend on a test suite", () => {
+test("nothing but the coverage aggregate may depend on a test suite, and nothing on it", () => {
   for (const [source, target] of [
+    ["workspace", "screencomp-e2e"],
+    ["coverage", "browser-tests"],
+    ["workspace", "coverage"],
     ["screencomp", "screencomp-e2e"],
     ["visual-docs-actions", "screencomp-e2e"],
     ["visual-docs-actions", "browser-tests"],

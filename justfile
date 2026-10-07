@@ -97,9 +97,14 @@ test-e2e tier="affected":
     @just _nx {{tier}} -t test "--exclude=*,!tag:type:e2e"
 
 # The browser suites (real Chromium; never in the gate): the gallery's inline
-# script (`browser-tests`) and the demo's capture spec (`demo`).
-test-browser tier="affected":
-    @just _nx {{tier}} -t browser-test
+# script (`browser-tests`) and the demo's capture spec (`demo`), or one `project`.
+test-browser tier="affected" project="":
+    @just _nx {{tier}} -t browser-test {{ if project == "" { "" } else { "--exclude=*,!" + project } }}
+
+# Install the Chromium the browser suites drive, with its OS packages (sudo
+# where they are missing). Run `bash tools/workspace/node-modules.sh` first.
+browser-install:
+    cd browser-tests && ../node_modules/.bin/playwright install --with-deps chromium
 
 # Build API docs, failing on any rustdoc warning.
 doc:
@@ -225,13 +230,7 @@ lint-actions: _ensure-actionlint
 lint-docker: _ensure-hadolint
     hadolint Dockerfile
 
-# Full quality gate (skill-standard `check` verb), run by CI after `bootstrap`.
-# Every project's format check, lint (clippy, boundaries, the visual-docs and
-# Docker linters), type check, tests (unit, integration, the visual-docs contract
-# suite, the binary e2e suite) and build, the crate's docs, then the
-# repository-level targets: the {{cov_min}}% coverage aggregate, the supply-chain
-# audit and the release build + publish dry-run. `just check` runs the affected
-# tier; `just check all` the full sweep (AGENTS.md says where each runs).
+# The quality gate, run by CI after `bootstrap` (AGENTS.md, "Quality gate"); `just check all` sweeps every project.
 check tier="affected":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -271,12 +270,9 @@ upgrade:
 
 # Noisy environment report (kept out of the quality gate).
 doctor:
-    @echo "# toolchain"; rustup show active-toolchain; rustc --version; cargo --version; node --version; bun --version
-    @echo "# tools"; for t in asdf direnv just lefthook node bun cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint shellcheck docker hyperfine critcmp samply llmlint; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
+    @echo "# toolchain"; rustup show active-toolchain; rustc --version; cargo --version
+    @echo "# tools"; for t in asdf direnv just lefthook cargo-nextest cargo-llvm-cov cargo-deny cargo-machete actionlint hadolint docker hyperfine critcmp samply; do printf '%s: ' "$t"; command -v "$t" || echo "missing"; done
     @echo "# installed targets"; rustup target list --installed
-    @echo "# projects"; NX_SHOW_OUTPUT=1 ./tools/workspace/nx show projects
-
-# --- Nx plumbing ---------------------------------------------------------------
 
 # Run Nx targets at a tier: `affected` against the merge base, or `all`.
 [positional-arguments]
@@ -315,8 +311,8 @@ _base:
     fi
     printf '%s\n' "$base"
 
-# --- Per-project target bodies (called from each project.json) -------------------
-
+# The per-project target bodies below are what each project.json calls.
+# llmlint: ignore-block[diagnostics_error_or_absent] These compiles need no -D warnings of their own: every gate tier runs the same project's `lint` (clippy -D warnings over the same targets and features, which reports every rustc warning), so a warning already fails the gate, as AGENTS.md's diagnostics policy states; repeating it as RUSTFLAGS here would rebuild every dependency whenever clippy and these builds alternate.
 _rust-format crate:
     cargo fmt -p {{crate}}
 
@@ -372,6 +368,7 @@ _msrv:
 # The visual-docs contract suite (tests/actions.rs), uninstrumented.
 _actions-test:
     cargo nextest run --locked -p screencomp --test actions
+# llmlint: ignore-end[diagnostics_error_or_absent]
 
 # actionlint over the reusable workflow, its smoke tests and the documented
 # callers; shellcheck over the scripts the actions run (actionlint only lints the
@@ -396,7 +393,7 @@ _demo-browser-test:
     cd demo
     npm ci --no-audit --no-fund --silent
     SHOTS_OUT="$out" npx playwright test
-    test -s "$out/captures.json" || { echo "the demo capture wrote no captures.json" >&2; exit 1; }
+    test -s "$out/captures.json" || { echo "the demo capture wrote no captures.json; ACTION: check demo/tests/screenshots.spec.ts, which writes it to \$SHOTS_OUT" >&2; exit 1; }
 
 # The gate tooling's own tests (tier selection, project boundaries).
 _workspace-test:

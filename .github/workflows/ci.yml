@@ -18,18 +18,10 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # The gate. A clean checkout, `just bootstrap` (dev toolchain and the locked Nx
-  # install from scratch), then `just check` at the tier this run is for — every
-  # project's format check, clippy, type check, tests (unit, integration, the
-  # visual-docs contract suite, the binary e2e suite), build and docs, then the
-  # 95% coverage aggregate, supply chain (deny + machete + advisories) and the
-  # release build + publish dry-run. tools/workspace/ci-tier.mjs picks the tier
-  # from the event: release-plz's release pull request runs the full sweep
-  # (`all`) — releases are batched there (AGENTS.md, "Release & git") — and every
-  # other pull request and push to main runs the affected tier against an
-  # explicitly derived merge base. A red sweep fails these same jobs. This is the
-  # single required correctness gate; it runs on every platform the binary ships
-  # to. Branch protection requires every `check (<os>)` context.
+  # The gate: a clean checkout, `just bootstrap`, then `just check` at the tier
+  # tools/workspace/ci-tier.mjs selects (AGENTS.md, "Release & git"), on every
+  # platform the binary ships to. A red sweep fails these same jobs. Branch
+  # protection requires every `check (<os>)` context, so nothing here may skip one.
   check:
     strategy:
       fail-fast: false

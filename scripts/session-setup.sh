@@ -32,7 +32,10 @@ cd "$ROOT"
 # reaches it.
 handoff_llmlint() {
   [ -x scripts/setup-llmlint.sh ] || return 0
-  mkdir -p .dev 2>/dev/null || return 0
+  if ! mkdir -p .dev 2>/dev/null; then
+    echo "[screencomp] cannot create .dev/ for the llmlint setup log; run 'just setup-llmlint' by hand" >&2
+    return 0
+  fi
   local launcher="nohup"
   command -v setsid >/dev/null 2>&1 && launcher="setsid"
   "$launcher" bash scripts/setup-llmlint.sh >.dev/setup-llmlint.log 2>&1 </dev/null &

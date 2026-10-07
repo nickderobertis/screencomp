@@ -37,7 +37,7 @@
       "command": "just _rust-test screencomp",
       "inputs": ["default", "crate"],
       "outputs": ["{workspaceRoot}/target/llvm-cov-target"],
-      "dependsOn": [{ "projects": ["workspace"], "target": "coverage-clean" }],
+      "dependsOn": [{ "projects": ["coverage"], "target": "coverage-clean" }],
       "parallelism": false
     },
     "doc": {

@@ -41,7 +41,7 @@ jobs:
         run: uv tool install rust-just
       - name: Install llmlint (and oneharness)
         run: |
-          bash scripts/setup-llmlint.sh
+          just setup-llmlint
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-node@v4
         with:

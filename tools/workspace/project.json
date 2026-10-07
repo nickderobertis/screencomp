@@ -1,15 +1,14 @@
 {
   "name": "workspace",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "//": "The repository-level targets: the coverage aggregate over the crate's and the e2e suite's profiles (and the clean that precedes them), the supply-chain audit, the release build and publish dry-run, and the MSRV check. It also owns the gate's own tooling in this directory (the Nx wrapper, the boundary check, the CI tier selector) and their tests. It depends on the crate and the e2e suite, so a change reaching either reruns the aggregate.",
+  "//": "The repository-level targets that are not tests: the supply-chain audit, the release build and publish dry-run, and the MSRV check. It also owns the gate's own tooling in this directory (the Nx wrapper, the locked-install healer, the boundary check, the CI tier selector) and their tests. It depends on the crate whose manifest and package those targets check.",
   "projectType": "application",
   "tags": [
     "type:workspace",
     "lang:javascript"
   ],
   "implicitDependencies": [
-    "screencomp",
-    "screencomp-e2e"
+    "screencomp"
   ],
   "targets": {
     "lint": {
@@ -29,24 +28,6 @@
         "{workspaceRoot}/scripts/{session-setup,setup-lib,setup-llmlint,llmlint-require-credential}.sh",
         "{workspaceRoot}/release-plz.toml",
         "{workspaceRoot}/oneharness.toml"
-      ]
-    },
-    "coverage-clean": {
-      "command": "just _coverage-clean"
-    },
-    "coverage": {
-      "command": "just _coverage",
-      "outputs": [
-        "{workspaceRoot}/target/llvm-cov-target"
-      ],
-      "dependsOn": [
-        {
-          "projects": [
-            "screencomp",
-            "screencomp-e2e"
-          ],
-          "target": "test"
-        }
       ]
     },
     "supply-chain": {
