@@ -13,11 +13,6 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-stamp=node_modules/.bun-lock-installed
-if [ -e node_modules/nx/package.json ] && [ -e "$stamp" ] && cmp -s bun.lock "$stamp"; then
-    exit 0
-fi
-
 if ! command -v node >/dev/null 2>&1; then
     echo "node-modules: Node.js is not installed; Nx runs on it" >&2
     echo "ACTION: install Node.js 22 or newer (https://nodejs.org), then re-run 'just bootstrap'" >&2
@@ -30,6 +25,31 @@ if [ -z "$version" ]; then
     echo "ACTION: restore \"packageManager\": \"bun@<version>\" in package.json" >&2
     exit 1
 fi
+
+# The install is current while the lockfile and every manifest it was resolved
+# from are byte-identical to the ones the last install used.
+if ! manifests="$(node -e '
+    const root = require("./package.json");
+    const members = Array.isArray(root.workspaces) ? root.workspaces : [];
+    console.log(["package.json", ...members.map((m) => m + "/package.json")].join("\n"));
+' 2>&1)"; then
+    echo "node-modules: package.json is not valid JSON: $manifests" >&2
+    echo "ACTION: fix package.json, then re-run 'just bootstrap'" >&2
+    exit 1
+fi
+fingerprint() {
+    local file
+    cat bun.lock
+    while IFS= read -r file; do
+        printf '\n--- %s\n' "$file"
+        cat "$file"
+    done <<<"$manifests"
+}
+stamp=node_modules/.bun-lock-installed
+if [ -e node_modules/nx/package.json ] && [ -e "$stamp" ] && cmp -s <(fingerprint) "$stamp"; then
+    exit 0
+fi
+
 if command -v bun >/dev/null 2>&1 && [ "$(bun --version)" = "$version" ]; then
     bun=(bun)
 elif command -v npm >/dev/null 2>&1; then
@@ -45,4 +65,4 @@ if ! "${bun[@]}" install --frozen-lockfile --silent >&2; then
     echo "ACTION: if package.json changed, run 'bun install' and commit bun.lock; otherwise check access to the npm registry" >&2
     exit 1
 fi
-cp bun.lock "$stamp"
+fingerprint >"$stamp"

@@ -39,10 +39,13 @@ setup-check:
     @bash scripts/setup-check.sh
 
 # Install developer tooling, the locked Nx install and git hooks (idempotent).
-bootstrap: _ensure-tools _ensure-lefthook hooks-install
-    @bash tools/workspace/node-modules.sh
+bootstrap: _ensure-tools _ensure-lefthook hooks-install node-modules
     @cargo fetch --locked
     @echo "bootstrap complete"
+
+# Install the locked JavaScript dependencies (Nx, the browser suites) from bun.lock.
+node-modules:
+    @bash tools/workspace/node-modules.sh
 
 # Fetch locked dependencies and verify the pinned toolchain is active.
 sync:
@@ -105,8 +108,7 @@ test-e2e tier="affected":
 test-browser tier="affected" project="":
     @just _nx "$1" -t browser-test ${2:+"--exclude=*,!$2"}
 
-# Needs the locked install first (`bash tools/workspace/node-modules.sh`); sudo
-# where OS packages are missing.
+# Needs `just node-modules` first; sudo where OS packages are missing.
 # Install the Chromium the browser suites drive, with its OS packages.
 browser-install:
     cd browser-tests && node_modules/.bin/playwright install --with-deps chromium

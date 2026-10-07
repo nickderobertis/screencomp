@@ -1,10 +1,7 @@
 # AGENTS — tools (the Nx project graph)
 
-- Projects: `screencomp` (`src/project.json`), `screencomp-e2e` (`e2e/`),
-  `browser-tests`, and, defined here because their files must stay where
-  consumers and tools find them, `visual-docs-actions`, `docker-image`, `demo`,
-  plus `coverage` (the aggregate) and `workspace` (repository-level checks and
-  the gate's tooling).
+- A project whose files must stay where consumers and tools find them is
+  defined under `tools/<project>/`, never beside those files.
 - No project is rooted at the repository root: it would own every root file, the
   composite actions among them, so a change to an action would select the crate.
   A file outside every project root reaches its project only through a

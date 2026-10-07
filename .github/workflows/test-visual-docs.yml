@@ -226,7 +226,7 @@ jobs:
         with:
           bun-version-file: package.json
       - name: Install the locked JavaScript dependencies
-        run: bash tools/workspace/node-modules.sh
+        run: just node-modules
       - name: Install Playwright chromium
         run: just browser-install
       - name: Drive the gallery's inline filtering in a real browser

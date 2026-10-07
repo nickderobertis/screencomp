@@ -9,7 +9,17 @@
 // whose package.json, bun.lock and pin do not compose fails the gate itself.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -25,7 +35,7 @@ const PIN = /"packageManager": *"bun@([0-9.]+)"/.exec(readFileSync(join(root, "p
  */
 function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath = true }) {
   const dir = mkdtempSync(join(tmpdir(), "screencomp-node-modules-"));
-  for (const file of ["tools/workspace/node-modules.sh", "package.json", "bun.lock"]) {
+  for (const file of ["tools/workspace/node-modules.sh", "package.json", "bun.lock", "browser-tests/package.json"]) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     cpSync(join(root, file), join(dir, file));
   }
@@ -42,7 +52,7 @@ function installFixture({ bunVersion, status = 0, nodeOnPath = true, npmOnPath =
     standIn("bun", `if [ "$1" = "--version" ]; then echo ${bunVersion}; exit 0; fi\necho "bun $*" >> "${calls}"\n${install}`);
   }
   if (npmOnPath) standIn("npm", `echo "npm $*" >> "${calls}"\n${install}`);
-  if (nodeOnPath) standIn("node", "exit 0\n");
+  if (nodeOnPath) symlinkSync(process.execPath, join(bin, "node"));
   const run = () =>
     spawnSync("bash", [join(dir, "tools/workspace/node-modules.sh")], {
       encoding: "utf8",
@@ -58,7 +68,7 @@ test("a stale install runs the pinned bun's frozen install and stamps it", () =>
     const run = fx.run();
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(fx.recorded(), ["bun install --frozen-lockfile --silent"]);
-    assert.equal(readFileSync(fx.stamp, "utf8"), readFileSync(join(fx.dir, "bun.lock"), "utf8"));
+    assert.ok(readFileSync(fx.stamp, "utf8").startsWith(readFileSync(join(fx.dir, "bun.lock"), "utf8")));
     const again = fx.run();
     assert.equal(again.status, 0);
     assert.equal(fx.recorded().length, 1, "a matching stamp installs nothing");
@@ -67,15 +77,34 @@ test("a stale install runs the pinned bun's frozen install and stamps it", () =>
   }
 });
 
-test("a bun.lock changed since the stamped install reinstalls and restamps", () => {
+for (const file of ["bun.lock", "package.json", "browser-tests/package.json"]) {
+  test(`${file} changed since the stamped install reinstalls and restamps`, () => {
+    const fx = installFixture({ bunVersion: PIN });
+    try {
+      assert.equal(fx.run().status, 0);
+      const before = readFileSync(fx.stamp, "utf8");
+      writeFileSync(join(fx.dir, file), `${readFileSync(join(fx.dir, file), "utf8")}\n`);
+      const run = fx.run();
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(fx.recorded().length, 2, `a changed ${file} reinstalls`);
+      assert.notEqual(readFileSync(fx.stamp, "utf8"), before);
+      assert.equal(fx.run().status, 0);
+      assert.equal(fx.recorded().length, 2, "and the new stamp holds");
+    } finally {
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a pin removed after a stamped install is still refused", () => {
   const fx = installFixture({ bunVersion: PIN });
   try {
     assert.equal(fx.run().status, 0);
-    writeFileSync(join(fx.dir, "bun.lock"), `${readFileSync(join(fx.dir, "bun.lock"), "utf8")}\n`);
+    const path = join(fx.dir, "package.json");
+    writeFileSync(path, readFileSync(path, "utf8").replace(/"packageManager": *"[^"]*",?/, ""));
     const run = fx.run();
-    assert.equal(run.status, 0, run.stderr);
-    assert.equal(fx.recorded().length, 2, "the changed lock reinstalls");
-    assert.equal(readFileSync(fx.stamp, "utf8"), readFileSync(join(fx.dir, "bun.lock"), "utf8"));
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /pins no bun version/);
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }
@@ -103,6 +132,18 @@ test("neither the pinned bun nor npm fails with the next step", () => {
     assert.equal(run.status, 1);
     assert.match(run.stderr, new RegExp(`bun ${PIN.replaceAll(".", "\\.")} .* is not on PATH, and there is no npm`));
     assert.deepEqual(fx.recorded(), []);
+  } finally {
+    rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("a machine with no bun installs the pinned one through npm", () => {
+  const fx = installFixture({ bunVersion: null });
+  try {
+    const run = fx.run();
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(fx.recorded(), [`npm exec --yes --package=bun@${PIN} -- bun install --frozen-lockfile --silent`]);
+    assert.ok(existsSync(fx.stamp));
   } finally {
     rmSync(fx.dir, { recursive: true, force: true });
   }

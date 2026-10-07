@@ -36,7 +36,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # llmlint: ignore-block[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent] A GitHub Release cut by hand is a supported fallback (header above) and this job is its only gate, so it stays on the release-plz path too, as AGENTS.md "Release & git" records; its commands are kept as they were, widened only by --workspace so they still cover the whole crate now that the e2e suite is a workspace member, and clippy's -D warnings on the same targets is what makes a compiler warning fatal here.
+      # llmlint: ignore-block[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent] A hand-cut Release is a supported fallback and this job is its only gate (AGENTS.md, "Release & git"); clippy's -D warnings over the same targets makes a compiler warning fatal here.
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
       # llmlint: ignore-end[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent]
