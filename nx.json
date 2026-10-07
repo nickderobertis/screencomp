@@ -29,7 +29,7 @@
     ]
   },
   "boundaries": {
-    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. The binary-driving and browser suites are depended on by nothing but the `coverage` aggregate (which merges the e2e suite's profiles), so no change to another project can reach them.",
+    "//": "Which project types may depend on which, by tag; every project carries exactly one `type:` tag. Enforced by tools/workspace/check-project-boundaries.mjs in every project's `lint` target, over the real Nx project graph joined with Cargo's path dependencies. Nothing depends on the browser suite, and only the `coverage` aggregate (which merges its profiles) on the binary-driving suite, so a change to either suite never selects another project; they are selected only by changes to what they test.",
     "allow": {
       "type:app": [],
       "type:consumer": [],

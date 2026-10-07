@@ -67,7 +67,6 @@ fn init_caller_matches_the_reusable_workflow_interface() {
     let reusable = std::fs::read_to_string(&reusable_path)
         .expect("the reusable workflow the caller references must exist in this repo");
 
-    // The caller's `uses:` points at that very file.
     assert!(
         caller.contains(".github/workflows/visual-docs-reusable.yml@"),
         "{caller}"

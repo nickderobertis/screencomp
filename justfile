@@ -128,7 +128,7 @@ deps-check:
 
 # Build under the declared MSRV (the pinned toolchain equals rust-version).
 msrv:
-    @./tools/workspace/nx run workspace:msrv
+    @./tools/workspace/nx run crate-checks:msrv
 
 # Install git hooks into the working copy.
 hooks-install: _ensure-lefthook

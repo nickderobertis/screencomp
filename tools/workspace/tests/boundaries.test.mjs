@@ -17,6 +17,7 @@ const nodes = {
   "browser-tests": { tags: ["type:browser-test"] },
   "visual-docs-actions": { tags: ["type:actions"] },
   workspace: { tags: ["type:workspace"] },
+  "crate-checks": { tags: ["type:workspace"] },
   coverage: { tags: ["type:aggregate"] },
 };
 const judge = (edges, cargoEdges = []) =>
@@ -33,7 +34,7 @@ test("the repository's edges are allowed", () => {
       ["screencomp-e2e", "screencomp"],
       ["browser-tests", "screencomp"],
       ["visual-docs-actions", "screencomp"],
-      ["workspace", "screencomp"],
+      ["crate-checks", "screencomp"],
       ["coverage", "screencomp"],
       ["coverage", "screencomp-e2e"],
     ]),

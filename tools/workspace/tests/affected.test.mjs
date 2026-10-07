@@ -10,11 +10,11 @@ import { affectedBy } from "./support.mjs";
 const CRATE_AND_DEPENDENTS = [
   "browser-tests",
   "coverage",
+  "crate-checks",
   "docker-image",
   "screencomp",
   "screencomp-e2e",
   "visual-docs-actions",
-  "workspace",
 ];
 
 test("a change under src/ selects the crate, its e2e suite and every dependent", () => {

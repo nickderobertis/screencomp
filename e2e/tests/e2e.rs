@@ -969,7 +969,6 @@ fn doctor_reports_a_clean_capture_layout() {
 #[test]
 fn doctor_exit_code_gate_catches_a_capture_without_an_index() {
     let dir = TempDir::new().unwrap();
-    // A capture directory missing its captures.json index.
     std::fs::write(dir.path().join("home.png"), b"oops").unwrap();
 
     bin()

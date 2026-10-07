@@ -24,7 +24,8 @@
 - Coverage is combined, never per crate: both Rust `test` targets run `cargo
   llvm-cov --no-report` into `target/llvm-cov-target` after
   `coverage:coverage-clean`, and `coverage:coverage` enforces 95% over the
-  merge. It is its own project so that tooling changes never select it.
+  merge. It is its own project so that tooling changes never select it, as
+  `crate-checks` is so that crate changes never select `workspace`'s tests.
 - `workspace/tests/` (`node --test`, the `workspace:test` target) pins the graph's
   behaviour: affected selection, boundaries, CI tier selection, the workflow
   contracts and the SessionStart hook. Update them with any graph change.

@@ -1,14 +1,11 @@
 {
   "name": "workspace",
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "//": "The repository-level targets that are not tests: the supply-chain audit, the release build and publish dry-run, and the MSRV check. It also owns the gate's own tooling in this directory (the Nx wrapper, the locked-install healer, the boundary check, the CI tier selector) and their tests. It depends on the crate whose manifest and package those targets check.",
+  "//": "The gate's own tooling in this directory (the Nx wrapper, the locked-install healer, the boundary check, the CI tier selector) and its tests. It depends on no project, so a change to the crate never reruns these tests; the crate-reading repository checks live in `crate-checks`.",
   "projectType": "application",
   "tags": [
     "type:workspace",
     "lang:javascript"
-  ],
-  "implicitDependencies": [
-    "screencomp"
   ],
   "targets": {
     "lint": {
@@ -28,29 +25,6 @@
         "{workspaceRoot}/scripts/{session-setup,setup-lib,setup-llmlint,llmlint-require-credential}.sh",
         "{workspaceRoot}/release-plz.toml",
         "{workspaceRoot}/oneharness.toml"
-      ]
-    },
-    "supply-chain": {
-      "command": "just _supply-chain",
-      "inputs": [
-        "default",
-        "crate",
-        "{workspaceRoot}/deny.toml"
-      ]
-    },
-    "release-check": {
-      "command": "just _release-check",
-      "inputs": [
-        "default",
-        "crate",
-        "{workspaceRoot}/README.md"
-      ]
-    },
-    "msrv": {
-      "command": "just _msrv",
-      "inputs": [
-        "default",
-        "crate"
       ]
     }
   }
