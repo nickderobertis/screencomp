@@ -21,8 +21,6 @@ concurrency:
 
 jobs:
   suppressions:
-    # A fork's pull request is granted a read-only token, so the comment upsert
-    # would fail on something the contributor has no way to fix.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:

@@ -150,7 +150,6 @@ test("a tree without setup-llmlint.sh starts the session with no hand-off", () =
 
 test("without setsid the hand-off still detaches through nohup", () => {
   withScratch(STAND_INS.hangs, (dir) => {
-    // Every system tool but setsid.
     const bin = mkdtempSync(join(tmpdir(), "screencomp-no-setsid-"));
     try {
       for (const tool of readdirSync("/usr/bin")) {

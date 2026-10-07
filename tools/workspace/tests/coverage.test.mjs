@@ -28,7 +28,8 @@ test("both Rust suites write deferred profiles after the clean, into the declare
       `${name}: test must follow coverage:coverage-clean`,
     );
   }
-  assert.match(recipe("_rust-test"), /cargo llvm-cov --no-report nextest --locked --all-features -p \{\{ ?crate ?\}\}/);
+  assert.match(recipe("_rust-test"), /args=\(--locked --all-features -p "\$1"\)/);
+  assert.match(recipe("_rust-test"), /cargo llvm-cov --no-report nextest "\$\{args\[@\]\}"/);
   assert.match(recipe("_coverage-clean"), /cargo llvm-cov clean --workspace/);
 });
 

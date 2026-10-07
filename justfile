@@ -321,30 +321,43 @@ _base:
     printf '%s\n' "$base"
 
 # llmlint: ignore-block[diagnostics_error_or_absent] These compiles need no -D warnings of their own: every gate tier runs the same project's `lint` (clippy -D warnings over the same targets and features, which reports every rustc warning), so a warning already fails the gate, as AGENTS.md's diagnostics policy states; repeating it as RUSTFLAGS here would rebuild every dependency whenever clippy and these builds alternate.
+[positional-arguments]
 _rust-format crate:
-    cargo fmt -p {{crate}}
+    cargo fmt -p "$1"
 
+[positional-arguments]
 _rust-format-check crate:
-    cargo fmt -p {{crate}} --check
+    cargo fmt -p "$1" --check
 
+[positional-arguments]
 _rust-lint crate:
-    cargo clippy --locked -p {{crate}} --all-targets --all-features -- -D warnings
+    cargo clippy --locked -p "$1" --all-targets --all-features -- -D warnings
 
+[positional-arguments]
 _rust-typecheck crate:
-    cargo check --locked -p {{crate}} --all-targets --all-features
+    cargo check --locked -p "$1" --all-targets --all-features
 
+[positional-arguments]
 _rust-build crate:
-    cargo build --locked -p {{crate}}
+    cargo build --locked -p "$1"
 
+[positional-arguments]
 _rust-doc crate:
-    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features -p {{crate}}
+    RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features -p "$1"
 
 # A crate's suite under coverage instrumentation, with the report deferred: the
 # raw profiles land in target/llvm-cov-target, which `_coverage` merges. `binary`
 # names a crate whose binary the suite spawns: it is built (instrumented) in the
 # same run, and only `crate`'s own tests execute.
+[positional-arguments]
 _rust-test crate binary="":
-    cargo llvm-cov --no-report nextest --locked --all-features -p {{crate}} {{ if binary == "" { "" } else { "-p " + binary + " -E 'package(" + crate + ")'" } }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--locked --all-features -p "$1")
+    if [ -n "$2" ]; then
+        args+=(-p "$2" -E "package($1)")
+    fi
+    exec cargo llvm-cov --no-report nextest "${args[@]}"
 
 # Empty the shared profile directory before any instrumented suite writes to it,
 # so the aggregate never merges a profile an earlier run left behind.
