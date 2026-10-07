@@ -1267,13 +1267,15 @@ run.
 
 ## Development
 
-Requires a Rust toolchain via [rustup](https://rustup.rs); the channel is pinned
-in `rust-toolchain.toml`.
+Requires a Rust toolchain via [rustup](https://rustup.rs) (the channel is pinned
+in `rust-toolchain.toml`) and Node.js 22+ for the Nx project graph the gate runs
+through.
 
 ```sh
 rustup show          # confirm the pinned toolchain
-just bootstrap       # install dev tools (nextest, llvm-cov, deny, machete, lefthook) + git hooks
-just check           # the complete quality gate (alias: just full-check)
+just bootstrap       # install dev tools (nextest, llvm-cov, deny, machete, lefthook), git hooks, Nx (bun)
+just check           # the quality gate over the projects your branch affects (alias: just full-check)
+just check all       # the same gate over every project
 ```
 
 Common recipes (`just --list` for all):
@@ -1283,8 +1285,9 @@ Common recipes (`just --list` for all):
 | `just run -- …`   | Run the CLI                                       |
 | `just format` / `fmt-check` | Format / verify formatting              |
 | `just typecheck` / `lint` | Type-check / lint (`-D warnings`)         |
-| `just check`      | The full quality gate (alias: `full-check`)      |
-| `just test` / `test-e2e` | Unit+integration / end-to-end suites       |
+| `just check [all]` | The quality gate, affected or every project (alias: `full-check`) |
+| `just test` / `test-e2e` | Affected suites / the binary end-to-end suite |
+| `just test-browser` | The browser suites (real Chromium; not in the gate) |
 | `just test-cov`   | Coverage with an enforced threshold              |
 | `just security` / `deps-check` | Advisories / license+bans+unused-deps |
 | `just doc`        | Build docs (`-D` rustdoc warnings)               |
@@ -1303,7 +1306,7 @@ preserve full diagnostics. Noisy inspection lives in separate recipes
 
 ### End-to-end testing policy
 
-E2E tests (`tests/e2e.rs`, run by `just test-e2e`) execute the compiled binary
+E2E tests (`e2e/tests/e2e.rs`, run by `just test-e2e`) execute the compiled binary
 and assert on **critical user journeys** from the user's perspective — exit
 codes, stdout/stderr separation, file effects, and the JSON/Markdown contracts —
 not just "the binary starts". Smoke checks are a subset, never the whole suite.

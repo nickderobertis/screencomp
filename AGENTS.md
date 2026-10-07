@@ -63,38 +63,30 @@ follow-ups.
 
 ## Stack and composition
 
-This repo is composed from the create-repo skill's reference pieces:
+Composed from the create-repo skill's references (`dero-skills` v1.47.3):
+`base.md`; `shapes/cli.md` (the binary is driven as a subprocess; one
+asset-naming contract across GitHub Releases, `scripts/install.sh`, `action.yml`
+and the GHCR image); `languages/rust.md` (pinned toolchain, deny-warnings
+rustfmt/clippy, nextest, llvm-cov, deny + machete, `just msrv`);
+`intersections/rust-cli.md` (the binary suite is the `publish = false` member
+`e2e/`, whose `test` depends on the crate's `build`; archives built on native
+runners); `ci.md` (clean checkout → `just bootstrap` → `just check` at the run's
+tier on Linux/macOS/Windows, install-path jobs, PR-title lint, the review-only
+`notignored` comment; benchmarks never gate); `llmlint.md`; `releasing.md`
+(release-plz); `project-graph.md` (Nx; see "Quality gate").
 
-- **Product shape — CLI** (`shapes/cli.md`). A compiled, installable command-line
-  tool: the e2e suite drives the real binary as a subprocess and asserts on exit
-  codes, stdout/stderr separation, and file effects; the one asset-naming
-  contract is shared across every install surface (GitHub Releases,
-  `scripts/install.sh`, the composite `action.yml`, and the GHCR image).
-- **Language — Rust** (`languages/rust.md`). Pinned stable toolchain in
-  `rust-toolchain.toml`; `rustfmt` and `clippy` run as strict deny-warnings
-  gates; `cargo nextest` runs unit, integration, and the binary e2e suite;
-  `cargo llvm-cov` enforces coverage in the gate; `cargo deny` + `cargo machete`
-  are the supply-chain gate. MSRV is declared (`rust-version`) and checked via
-  `just msrv`.
-- **Cross-cutting — CI** (`ci.md`, always pulled in). Every CI run starts from a
-  clean checkout, runs `just bootstrap`, then the `just check` gate across the
-  Linux/macOS/Windows matrix that matches the shipped binary; separate jobs prove
-  the end-user install path (the composite action in both source and download
-  modes) and lint the workflows/Dockerfile. The informational benchmark tier
-  lives in its own workflow and never gates.
+**Excluded:** `shapes/library.md` — `run` is public only for the crate's own
+in-process tests; nothing consumes the crate as a library. **Exception:**
+`demo/package-lock.json` is a JavaScript lockfile beside the root `bun.lock`:
+`demo/` is the consumer repository `screencomp-demo`'s content, mirrored verbatim
+by `sync-demo.yml` and installed there with npm, so its lockfile is that
+repository's (reviewed here). `demo/` is not a bun workspace member, and any
+single-lockfile check excludes `demo/` by name for this reason.
 
-Composed across two axes — the CLI shape plus the Rust language, with `ci.md` on
-top. **Excluded:** `monorepo.md` — this is a single deliverable (one binary
-crate, no second app or package or language), so the cross-cutting monorepo
-guidance does not apply. No shape↔language intersection reference exists for
-Rust CLIs yet, so the two single-axis references are used directly (snapshot- and
-asset-naming concerns that such a reference would cover are handled in the e2e
-suite and the release workflow).
-
-**Coverage decision.** The gate enforces 95% line coverage
-(`cargo llvm-cov --fail-under-lines 95` in `just check`), the skill's default
-bar, measured on every PR rather than tracked as a badge. Lower it only with a
-documented reason here.
+**Coverage decision.** The gate enforces 95% line coverage of the crate's
+sources (`cargo llvm-cov report --fail-under-lines 95`, the `workspace:coverage`
+target in `just check`), the skill's default bar, measured on every PR rather
+than tracked as a badge. Lower it only with a documented reason here.
 
 ## Layout
 
@@ -107,12 +99,19 @@ documented reason here.
 - `src/domain/` — pure logic, no I/O.
 - `src/io/` — all filesystem access.
 - `src/config.rs` / `src/errors.rs` — config loading; typed errors + exit codes.
-- `tests/` — in-process integration and binary-spawning e2e suites.
+- `tests/` — the crate's in-process suites: `integration.rs` and `actions.rs`
+  (the contract suite over the visual-docs surfaces).
+- `e2e/` — the `screencomp-e2e` workspace member: the binary-spawning suite.
+- `tools/` — Nx projects whose files live elsewhere, and the gate's tooling.
 
 ## Toolchain & dependencies
 
 - The toolchain is pinned in `rust-toolchain.toml`; keep `rust-version` in
-  `Cargo.toml` in sync. Cargo is the source of truth; `Cargo.lock` is committed.
+  `Cargo.toml`'s `[workspace.package]` in sync. Cargo is the source of truth;
+  `Cargo.lock` is committed.
+- Nx runs on Node 22+; bun is pinned by `package.json`'s `packageManager` and
+  installed by `tools/workspace/node-modules.sh`. `.tool-versions` pins only
+  `just`. Nx/Node files and `e2e/` are excluded from the published crate.
 - Add dependencies only with a concrete need; keep features minimal. Mutate
   dependencies only through `just upgrade`, then re-run the gate.
 - No async runtime, network client, or image codec — none are needed.
@@ -173,13 +172,15 @@ documented reason here.
 
 ## Quality gate
 
-`just check` (aliased as `just full-check`) runs fmt → typecheck → lint → tests
-→ e2e → coverage → deps → unused → security → doc → release build → publish
-dry-run, stopping at the first failure. It is the single gate CI runs after
-`just bootstrap`, mirrored across Linux/macOS/Windows as a hard pass/fail gate.
-`check` is the skill-standard verb; `typecheck` is the bare `cargo check`
-type-check phase, and `lint`/`format` are the skill-standard names for the strict
-clippy and `rustfmt` recipes (`clippy`/`fmt` remain as short aliases).
+`just check` (aliases `full-check`, `gate`) runs `format-check lint typecheck
+test build doc coverage supply-chain release-check` through the Nx project graph
+(`nx.json`; Nx on bun from the root `bun.lock`; Cargo keeps the one
+`Cargo.lock`): over the affected projects (`nx affected` against NX_BASE, else
+`git merge-base origin/main HEAD`), or over every project with `just check all`.
+`test`, `test-e2e`, `test-cov`, `lint`, `format`, `fmt-check` and `typecheck`
+take the same trailing tier. "Release & git" says where each tier runs;
+`tools/AGENTS.md` holds the graph's rules (project roots, inputs, boundaries, the
+combined coverage). Browser suites (`just test-browser`) stay out of the gate.
 
 The performance suite (`benches/`, the `bench*`/`profile` recipes, the perf CI
 job) is informational and stays out of `full-check`: its timings are
@@ -192,6 +193,13 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
 - Releases are tag-driven (`vX.Y.Z`); the workflow builds per-platform archives
   with sha256 checksums and a multi-arch image, and never publishes untested
   artifacts. crates.io publish is a separately gated step.
+- Releases are **batched**: release-plz's PR (`release-plz-*`) accumulates
+  merges, so the shipped commit is one no merge job swept. The full sweep (`just
+  check all`) runs on that PR in the `check (<os>)` jobs (`ci-tier.mjs` picks the
+  tier; a red sweep fails those contexts); other PRs and pushes to main run the
+  affected tier against an explicitly derived merge base.
+- Keep `release.yml`'s `test` job (it re-gates on `release: published`): a
+  hand-cut GitHub Release is a supported fallback, and this job is its only gate.
 - The CLI ships through several surfaces that must stay consistent: release
   binaries, the `scripts/install.sh` installer, crates.io, the GHCR image
   (`Dockerfile`), and the composite actions (`action.yml` install,
@@ -222,7 +230,9 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
 - Release-gating is by commit subject: `release-plz.toml`'s `release_commits`
   releases only `feat`/`fix`/`perf` (or any `type!:` breaking) commits, so a
   squash-merge subject without one of those prefixes ships nothing. Title PRs
-  accordingly.
+  accordingly; `pr-title.yml` admits exactly release-plz.toml's parser types.
+- CI secret for the llmlint tier: `OPENAI_API_KEY` (codex, first in
+  `oneharness.toml`); `llmlint.yml` fails fast without it, never passing unjudged.
 - Manage git state end-to-end; branch off the default branch for changes. Do not
   commit or push unless asked.
 

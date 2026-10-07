@@ -7,3 +7,5 @@
   arg tree), `AppError`, and `ConfigError`.
 - Read environment variables and config files only at a command boundary, never
   scattered through modules.
+- `project.json` here is the `screencomp` Nx project, rooted at `src/` on
+  purpose (see `tools/AGENTS.md`); it is excluded from the published crate.
