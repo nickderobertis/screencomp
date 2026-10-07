@@ -93,6 +93,30 @@ for (const [outcome, script] of Object.entries(STAND_INS)) {
   });
 }
 
+/** Wait (bounded) for the detached hand-off to record its exit status. */
+function finished(dir, waitMs = 10_000) {
+  const status = join(dir, ".dev/setup-llmlint.status");
+  const until = Date.now() + waitMs;
+  while (Date.now() < until && !(existsSync(status) && readFileSync(status, "utf8").trim() !== "")) {
+    spawnSync("sleep", ["0.1"]);
+  }
+  return existsSync(status) ? readFileSync(status, "utf8").trim() : null;
+}
+
+test("a failed hand-off is reported at the next session start, and a passing one clears it", () => {
+  withScratch(STAND_INS.fails, (dir) => {
+    assert.equal(hook(dir).status, 0);
+    assert.equal(finished(dir), "1");
+    writeFileSync(join(dir, "scripts/setup-llmlint.sh"), `#!/usr/bin/env bash\n${STAND_INS.succeeds}`);
+    const next = hook(dir);
+    assert.equal(next.status, 0, next.stderr);
+    assert.match(next.stdout, /The last llmlint setup failed \(exit 1; log: \.dev\/setup-llmlint\.log\)/);
+    assert.match(next.stdout, /ACTION: .*run 'just setup-llmlint'/);
+    assert.equal(finished(dir), "0");
+    assert.doesNotMatch(hook(dir).stdout, /llmlint setup failed/);
+  });
+});
+
 test("the opt-in provisioning path hands off too", () => {
   withScratch(STAND_INS.fails, (dir) => {
     const run = hook(dir, { SCREENCOMP_AUTO_SETUP: "1" });

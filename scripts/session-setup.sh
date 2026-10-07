@@ -15,7 +15,8 @@
 # Every path past the CI and opt-out exits also hands off to
 # scripts/setup-llmlint.sh (the llmlint tier: llmlint + oneharness), launched
 # detached so it can neither block nor fail the session; its log is
-# .dev/setup-llmlint.log.
+# .dev/setup-llmlint.log and its exit status .dev/setup-llmlint.status, and the
+# next session start reports a failed run with the step that fixes it.
 set -eu
 # setup.sh installs rust-just so the `just` command surface is available.
 
@@ -36,10 +37,19 @@ handoff_llmlint() {
     echo "[screencomp] cannot create .dev/ for the llmlint setup log; run 'just setup-llmlint' by hand" >&2
     return 0
   fi
+  local status
+  status="$(cat .dev/setup-llmlint.status 2>/dev/null || true)"
+  if [ -n "$status" ] && [ "$status" != 0 ]; then
+    printf '%s\n' \
+      "[screencomp] The last llmlint setup failed (exit $status; log: .dev/setup-llmlint.log); retrying it in the background." \
+      "ACTION: if the llmlint tier is still missing, run 'just setup-llmlint' to see the failure and fix what it names."
+  fi
+  rm -f .dev/setup-llmlint.status
   local launcher="nohup"
   command -v setsid >/dev/null 2>&1 && launcher="setsid"
   # llmlint: ignore[work_goes_through_command_surface] This hook runs before `just` may exist (on a fresh machine it advises installing it), so it calls the installer `just setup-llmlint` wraps directly, as the create-repo session-setup template does.
-  "$launcher" bash scripts/setup-llmlint.sh >.dev/setup-llmlint.log 2>&1 </dev/null &
+  "$launcher" bash -c 'bash scripts/setup-llmlint.sh; echo "$?" >.dev/setup-llmlint.status' \
+    >.dev/setup-llmlint.log 2>&1 </dev/null &
   return 0
 }
 trap handoff_llmlint EXIT
