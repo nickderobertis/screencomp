@@ -1,13 +1,15 @@
 {
   "name": "screencomp-workspace",
   "private": true,
-  "description": "The Nx project graph's toolchain for the screencomp repository (Nx, and the YAML parser the workflow-contract tests read workflows with), plus the Playwright suite's dependencies. Never published: bun installs it from the one root bun.lock (`just bootstrap`, or healed by tools/workspace/node-modules.sh). The shipped CLI's version comes from Cargo.toml.",
+  "description": "The Nx project graph's toolchain for the screencomp repository (Nx; the YAML parser the workflow-contract tests read workflows with; and the PR-title action's own commit parser and preset, at the versions it bundles, which those tests judge titles with), plus the Playwright suite's dependencies. Never published: bun installs it from the one root bun.lock (`just bootstrap`, or healed by tools/workspace/node-modules.sh). The shipped CLI's version comes from Cargo.toml.",
   "license": "MIT",
   "packageManager": "bun@1.3.14",
   "workspaces": [
     "browser-tests"
   ],
   "devDependencies": {
+    "conventional-changelog-conventionalcommits": "9.1.0",
+    "conventional-commits-parser": "6.2.0",
     "nx": "23.1.1",
     "yaml": "2.9.0"
   }

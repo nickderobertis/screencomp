@@ -7,6 +7,8 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import conventionalCommitsConfig from "conventional-changelog-conventionalcommits";
+import { CommitParser } from "conventional-commits-parser";
 import { parse } from "yaml";
 
 import { root } from "./support.mjs";
@@ -106,7 +108,19 @@ test("notignored is a review comment of its own, needed by no job and in no fixe
   }
 });
 
-test("pr-title admits exactly release-plz's commit types, on every title-changing event", () => {
+/**
+ * The PR-title action's own verdict (src/validatePrTitle.js at its v6 tag): parse
+ * the title with the conventionalcommits preset's parser, then require a type, a
+ * subject, and a type matching one of the configured patterns wrapped in `^ $`.
+ * The parser and preset are the exact versions the action bundles.
+ */
+async function titleAccepted(title, types) {
+  const { parser } = await conventionalCommitsConfig();
+  const result = new CommitParser(parser).parse(title);
+  return Boolean(result.type && result.subject) && types.some((type) => new RegExp(`^${type}$`).test(result.type));
+}
+
+test("pr-title admits exactly release-plz's commit types, on every title-changing event", async () => {
   const workflow = workflows["pr-title.yml"];
   assert.deepEqual(workflow.on.pull_request.types, ["opened", "edited", "synchronize", "reopened", "ready_for_review"]);
   assert.deepEqual(workflow.permissions, { "pull-requests": "read" });
@@ -120,6 +134,13 @@ test("pr-title admits exactly release-plz's commit types, on every title-changin
   const releasePlz = readFileSync(join(root, "release-plz.toml"), "utf8");
   const parsed = [...releasePlz.matchAll(/\{ message = "\^([a-z]+)"/g)].map((match) => match[1]);
   assert.deepEqual([...types].sort(), [...parsed].sort());
+
+  for (const title of ["feat: add x", "fix(cli): handle y", "feat!: drop z", "chore: release v1.2.3"]) {
+    assert.ok(await titleAccepted(title, types), `accepts ${title}`);
+  }
+  for (const title of ["Add x", "feature: add x", "feat add x", "feat:", "Fix: y"]) {
+    assert.ok(!(await titleAccepted(title, types)), `rejects ${title}`);
+  }
 });
 
 test("llmlint validates, then requires the credential, then always runs the judged diff", () => {
