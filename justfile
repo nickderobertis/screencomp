@@ -54,23 +54,26 @@ run *args:
     cargo run --locked -- {{args}}
 
 # Format the affected projects in place (`just format all` for every project).
+[positional-arguments]
 format tier="affected":
-    @just _nx {{tier}} -t format
+    @just _nx "$1" -t format
 
 alias fmt := format
 
 # Check formatting without writing.
+[positional-arguments]
 fmt-check tier="affected":
-    @just _nx {{tier}} -t format-check
+    @just _nx "$1" -t format-check
 
 # Type-check every target and feature of the affected Rust projects.
+[positional-arguments]
 typecheck tier="affected":
-    @just _nx {{tier}} -t typecheck
+    @just _nx "$1" -t typecheck
 
-# Lint the affected projects, every enabled lint an error: clippy, the project
-# boundaries, actionlint/shellcheck over the visual-docs surfaces, hadolint.
+# Lint the affected projects (clippy -D warnings, boundaries, actionlint/shellcheck, hadolint).
+[positional-arguments]
 lint tier="affected":
-    @just _nx {{tier}} -t lint
+    @just _nx "$1" -t lint
 
 alias clippy := lint
 
@@ -78,31 +81,33 @@ alias clippy := lint
 clippy-fix:
     cargo clippy --fix --allow-dirty --allow-staged --locked --workspace --all-targets --all-features -- -D warnings
 
-# The affected projects' tests: the crate's unit/integration/actions suites and
-# the binary e2e suite under coverage instrumentation, the visual-docs contract
-# suite, and the gate tooling's own tests.
+# The affected projects' tests (the Rust suites run under coverage instrumentation).
+[positional-arguments]
 test tier="affected":
-    @just _nx {{tier}} -t test
+    @just _nx "$1" -t test
 
 # Re-run the crate's in-process tests on change (requires cargo-watch).
 test-watch:
     cargo watch -x "nextest run --locked -p screencomp"
 
-# Tests plus the {{cov_min}}% line-coverage aggregate over the crate's sources.
+# Tests plus the 95% line-coverage aggregate over the crate's sources.
+[positional-arguments]
 test-cov tier="affected":
-    @just _nx {{tier}} -t test coverage
+    @just _nx "$1" -t test coverage
 
 # End-to-end tests that execute the compiled binary (the `screencomp-e2e` project).
+[positional-arguments]
 test-e2e tier="affected":
-    @just _nx {{tier}} -t test "--exclude=*,!tag:type:e2e"
+    @just _nx "$1" -t test "--exclude=*,!tag:type:e2e"
 
-# The browser suites (real Chromium; never in the gate): the gallery's inline
-# script (`browser-tests`) and the demo's capture spec (`demo`), or one `project`.
+# The browser suites in real Chromium (never in the gate), or only `project`.
+[positional-arguments]
 test-browser tier="affected" project="":
-    @just _nx {{tier}} -t browser-test {{ if project == "" { "" } else { "--exclude=*,!" + project } }}
+    @just _nx "$1" -t browser-test ${2:+"--exclude=*,!$2"}
 
-# Install the Chromium the browser suites drive, with its OS packages (sudo
-# where they are missing). Run `bash tools/workspace/node-modules.sh` first.
+# Needs the locked install first (`bash tools/workspace/node-modules.sh`); sudo
+# where OS packages are missing.
+# Install the Chromium the browser suites drive, with its OS packages.
 browser-install:
     cd browser-tests && ../node_modules/.bin/playwright install --with-deps chromium
 
@@ -231,10 +236,12 @@ lint-docker: _ensure-hadolint
     hadolint Dockerfile
 
 # The quality gate, run by CI after `bootstrap` (AGENTS.md, "Quality gate"); `just check all` sweeps every project.
+[positional-arguments]
 check tier="affected":
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{tier}}" in
+    tier="$1"
+    case "$tier" in
         affected)
             base="$(just _base)"
             ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check
@@ -243,11 +250,11 @@ check tier="affected":
             ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check
             ;;
         *)
-            echo "unknown tier '{{tier}}': use 'affected' (the default) or 'all'" >&2
+            printf "unknown tier '%s': use 'affected' (the default) or 'all'\n" "$tier" >&2
             exit 2
             ;;
     esac
-    printf '✓ check passed (%s tier)\n' "{{tier}}"
+    printf '✓ check passed (%s tier)\n' "$tier"
 
 # Backward-compatible alias for the `check` gate (kept for docs/bench refs).
 alias full-check := check
@@ -311,7 +318,6 @@ _base:
     fi
     printf '%s\n' "$base"
 
-# The per-project target bodies below are what each project.json calls.
 # llmlint: ignore-block[diagnostics_error_or_absent] These compiles need no -D warnings of their own: every gate tier runs the same project's `lint` (clippy -D warnings over the same targets and features, which reports every rustc warning), so a warning already fails the gate, as AGENTS.md's diagnostics policy states; repeating it as RUSTFLAGS here would rebuild every dependency whenever clippy and these builds alternate.
 _rust-format crate:
     cargo fmt -p {{crate}}

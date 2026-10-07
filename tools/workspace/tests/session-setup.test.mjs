@@ -128,6 +128,16 @@ test("the real setup-llmlint.sh with no uv on PATH neither blocks nor fails the 
   });
 });
 
+test("an unwritable .dev/ skips the hand-off with guidance and still returns 0", () => {
+  withScratch(STAND_INS.succeeds, (dir) => {
+    writeFileSync(join(dir, ".dev"), "a file where the log directory would go");
+    const run = hook(dir);
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(run.seconds < 5, `took ${run.seconds}s`);
+    assert.match(run.stderr, /cannot create \.dev\/ for the llmlint setup log; run 'just setup-llmlint' by hand/);
+  });
+});
+
 for (const [why, env] of [
   ["CI", { GITHUB_ACTIONS: "true" }],
   ["the opt-out", { SCREENCOMP_SKIP_SETUP: "1" }],
