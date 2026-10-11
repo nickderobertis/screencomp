@@ -150,7 +150,7 @@ async function actionVerdict(inputs, title) {
 
 test("pr-title admits exactly release-plz's commit types, on every title-changing event", async () => {
   const workflow = workflows["pr-title.yml"];
-  assert.deepEqual(workflow.on.pull_request.types, ["opened", "edited", "synchronize", "reopened", "ready_for_review"]);
+  assert.deepEqual(workflow.on.pull_request.types, ["opened", "edited", "synchronize", "reopened"]);
   assert.deepEqual(workflow.permissions, { "pull-requests": "read" });
   const job = workflow.jobs["pr-title"];
   assert.ok(job, "a job named pr-title");
