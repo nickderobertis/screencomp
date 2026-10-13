@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "source": "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet",
+  "cases": [
+    {"pattern":"feature/*","matches":["feature/my-branch","feature/your-branch"],"misses":["feature/beta/my-branch"]},
+    {"pattern":"feature/**","matches":["feature/beta-a/my-branch","feature/your-branch","feature/mona/the/octocat"],"misses":["main"]},
+    {"pattern":"*","matches":["main","releases"],"misses":["all/the/branches"]},
+    {"pattern":"**","matches":["all/the/branches","every/tag"],"misses":[]},
+    {"pattern":"*feature","matches":["mona-feature","feature","ver-10-feature"],"misses":["feature/other"]},
+    {"pattern":"v2*","matches":["v2","v2.0","v2.9"],"misses":["v1.0"]},
+    {"pattern":"*.js","matches":["app.js","index.js"],"misses":["js/index.js"]},
+    {"pattern":"**.js","matches":["index.js","js/index.js","src/js/app.js"],"misses":["index.jsx"]},
+    {"pattern":"docs/*","matches":["docs/README.md"],"misses":["docs/nested/README.md"]},
+    {"pattern":"**/README.md","matches":["README.md","docs/README.md"],"misses":["README.txt"]}
+  ],
+  "unsupported": ["*.jsx?", "v[12].[0-9]+.[0-9]+", "!main", "escaped\\*"]
+}

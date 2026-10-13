@@ -32,3 +32,11 @@
 - `workspace/tests/` (`node --test`, the `workspace:test` target) pins the graph's
   behaviour: affected selection, boundaries, CI tier selection, the workflow
   contracts and the SessionStart hook. Update them with any graph change.
+
+- `github-workflows` reads the whole workflow graph to resolve scheduling,
+  including the reusable workflow; this deliberate input overlap selects its
+  offline graph proof alongside the owning actions project. Its budgets depend
+  on the uncached telemetry test, never on crate builds or browser captures.
+- `release-packaging:test` owns the self-building release packaging
+  journey; its separate project selects crate, installer and release inputs
+  without making offline workflow-policy changes rebuild the binary.

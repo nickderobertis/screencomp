@@ -143,8 +143,16 @@ build:
     cargo build --locked
 
 # Optimized release build.
-build-release:
-    cargo build --release --locked
+[positional-arguments]
+build-release target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--release --locked)
+    if [ -n "$1" ]; then
+        [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "invalid Rust target '$1'; use a target from .github/workflows/release.yml" >&2; exit 1; }
+        args+=(--bin screencomp --target "$1")
+    fi
+    RUSTFLAGS="${RUSTFLAGS:-} -D warnings" cargo build "${args[@]}"
 
 # Verify publish metadata and the crate package without uploading anything.
 dist-plan:
@@ -246,10 +254,10 @@ check tier="affected":
     case "$tier" in
         affected)
             base="$(just _base)"
-            ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check budgets
             ;;
         all)
-            ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check budgets
             ;;
         *)
             printf "unknown tier '%s': use 'affected' (the default) or 'all'\n" "$tier" >&2
@@ -574,3 +582,31 @@ lint-llm-diff base="origin/main" *args:
 lint-llm-validate *args:
     @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; }
     llmlint validate "$@"
+
+_github-workflows-install:
+    @node .github/install.mjs
+
+_github-workflows-test: _github-workflows-install
+    node --test .github/tests/*.test.mjs
+
+_github-workflows-syntax:
+    node .github/check.mjs
+
+[linux]
+_github-workflows-lint: _ensure-actionlint _github-workflows-syntax
+    actionlint .github/workflows/ci.yml .github/workflows/release.yml
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+[macos]
+_github-workflows-lint: _github-workflows-syntax
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+[windows]
+_github-workflows-lint: _github-workflows-syntax
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+_github-workflows-budgets: _github-workflows-install
+    node .github/run-budgets.mjs
+
+_release-packaging-check:
+    node --test scripts/tests/release-artifact.test.mjs

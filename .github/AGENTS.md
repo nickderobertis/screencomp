@@ -1,11 +1,12 @@
 # AGENTS — .github
 
-- CI is a hard pass/fail gate: every run does a clean checkout, `just bootstrap`,
-  then `just check <tier>` (the `check` matrix job) across Linux/macOS/Windows,
-  the tier chosen by `tools/workspace/ci-tier.mjs`. Never let a job pass with
-  warnings. The `check (<os>)`, `workflows`, `action` and `action-download`
-  contexts must report on every pull request: no `if:`, path filter or `needs`
-  that could skip them (`workflows.test.mjs` checks).
+- Linux/Windows CI runs on PRs and main pushes. The Mac proof runs only for
+  PRs requiring it under `macos-policy.mjs`; `macos-context` always reports
+  `check (macos-latest)` from explicit prerequisite outcomes, identifying an
+  authorized omission without claiming Mac tests ran. Protected names stay fixed.
+- `.github/package.json` + `.github/bun.lock` are a private tooling package,
+  separate from the root workspace. `github-workflows:test` records ignored
+  telemetry without caching; budgets reject it after policy/graph sources change.
 - Pin actions to a stable major or a commit SHA. Default `permissions` to
   `contents: read`; grant a write scope only on the job that needs it (the binary
   upload job gets `contents: write`, the image push job `packages: write`).

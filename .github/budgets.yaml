@@ -1,0 +1,33 @@
+schema_version: 1
+budgets:
+  - id: screencomp-macos-jobs-per-run
+    description: >-
+      Maximum Mac job instances per resolved workflow run, including matrices
+      and reusable calls. inner_measure_reason: one run can occupy several shared
+      Mac slots even when the lifecycle run count stays within its bound.
+      The brief explicitly requests both jobs/run and Mac-spending runs/change;
+      the manager approved separate budgets for these scheduling constraints.
+      Telemetry covers twelve event classes, three diff classes, same-repository
+      and fork ownership, all released architectures and optional publishing;
+      opted-in manual diagnostics are included in this per-run measurement.
+    measure: reported
+    command: [node, macos-budget.mjs, --metric, jobs-per-run, --telemetry, .telemetry/macos-policy.json]
+    unit: jobs
+    direction: max
+    threshold: 1
+    labels: [github-workflows, macos]
+  - id: screencomp-macos-runs-per-change
+    description: >-
+      Maximum Mac-spending workflow runs in a single-push lifecycle: ordinary PR,
+      base merge, semantic release PR and merge, tag, release and downstream
+      triggers. Explicit manual diagnostics are excluded from this lifecycle.
+      The brief explicitly requests both jobs/run and Mac-spending runs/change;
+      the manager approved separate budgets for these scheduling constraints.
+      Telemetry covers twelve event classes, three diff classes, same-repository
+      and fork ownership, all released architectures and optional publishing.
+    measure: reported
+    command: [node, macos-budget.mjs, --metric, runs-per-change, --telemetry, .telemetry/macos-policy.json]
+    unit: runs
+    direction: max
+    threshold: 2
+    labels: [github-workflows, macos]

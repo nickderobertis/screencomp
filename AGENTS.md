@@ -75,6 +75,9 @@ tier on Linux/macOS/Windows, install-path jobs, PR-title lint, the review-only
 `notignored` comment; benchmarks never gate); `llmlint.md`; `releasing.md`
 (release-plz); `project-graph.md` (Nx; see "Quality gate").
 
+**Exception:** `.github/package.json` and `.github/bun.lock` form the private,
+locked workflow-policy tooling package; it is outside the root bun workspace.
+
 **Excluded:** `shapes/library.md` — `run` is public only for the crate's own
 in-process tests; nothing consumes the crate as a library. **Exception:**
 `demo/package-lock.json` is a JavaScript lockfile beside the root `bun.lock`:

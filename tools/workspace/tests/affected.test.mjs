@@ -14,6 +14,7 @@ const CRATE_AND_DEPENDENTS = [
   "coverage",
   "crate-checks",
   "docker-image",
+  "release-packaging",
   "screencomp",
   "screencomp-bench",
   "screencomp-cli",
@@ -32,7 +33,7 @@ test("a change confined to the crate's suites or benchmarks selects only them", 
   assert.deepEqual(affectedBy(["benches/commands.rs"]), ["screencomp-bench"]);
 });
 
-test("a change confined to the composite actions or their scripts selects only their project", () => {
+test("action changes select their owner, with the reusable workflow also selecting its graph proof", () => {
   for (const file of [
     "action.yml",
     "visual-docs/action.yml",
@@ -43,7 +44,7 @@ test("a change confined to the composite actions or their scripts selects only t
     "scripts/visual-docs-pages-build.sh",
     "scripts/visual-docs-gh-pages.sh",
   ]) {
-    assert.deepEqual(affectedBy([file]), ["visual-docs-actions"], file);
+    assert.deepEqual(affectedBy([file]), (file === "action.yml" ? ["release-packaging", "visual-docs-actions"] : file === ".github/workflows/visual-docs-reusable.yml" ? ["github-workflows", "visual-docs-actions"] : ["visual-docs-actions"]), file);
   }
 });
 
@@ -55,11 +56,19 @@ test("each suite and surface selects its own project and its dependents only", (
   assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["coverage", "demo", "screencomp-e2e"]);
   assert.deepEqual(affectedBy(["demo/capture.sh"]), ["demo", "visual-docs-actions"]);
   assert.deepEqual(affectedBy(["demo/pages/index.html"]), ["demo"]);
-  assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["workspace"]);
+  assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["github-workflows", "workspace"]);
   assert.deepEqual(affectedBy(["scripts/hooks-install.sh"]), ["workspace"]);
   assert.deepEqual(affectedBy(["lefthook.yml"]), ["workspace"]);
 });
 
 test("a documentation-only change outside every project selects nothing", () => {
   assert.deepEqual(affectedBy(["CONTRIBUTING.md"]), []);
+});
+
+test("workflow tooling selects its telemetry and budgets without a crate dependency", () => {
+  for (const path of [".github/macos-policy.mjs", ".github/budgets.yaml"]) assert.deepEqual(affectedBy([path]), ["github-workflows"]);
+});
+
+test("release packaging contract participants select the owning production journey", () => {
+  for (const file of ["action.yml", ".github/workflows/release.yml", "scripts/tests/release-artifact.test.mjs"]) assert.ok(affectedBy([file]).includes("release-packaging"), file);
 });
