@@ -7,6 +7,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 const root = resolve(import.meta.dirname, '../..');
 const helper = join(root, 'scripts/release-artifact.mjs');
+const pkgName = metadata => metadata.packages.find(p => p.name === 'screencomp').name;
 test('release production commands build, pack, checksum, install and run the real host artifact', { timeout: 240000 }, () => {
   const out = mkdtempSync(join(tmpdir(), 'screencomp-packaging-test-'));
   try {
@@ -23,6 +24,14 @@ test('release production commands build, pack, checksum, install and run the rea
     const contract = JSON.parse(readFileSync(join(out, `${stem}.contract.json`), 'utf8'));
     const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
     assert.ok(golden.targets.includes(target));
+    assert.equal(pkgName(metadata), golden.binary);
+    const expectedStem = golden.archiveStem.replace('$tag', tag).replace('$target', target);
+    const extension = target.includes('windows') ? golden.windowsExtension : golden.unixExtension;
+    assert.equal(contract.archive, `${expectedStem}.${extension}`);
+    assert.equal(contract.checksum, `${expectedStem}.${golden.checksumExtension}`);
+    const forms = readdirSync(out).some(file => file === contract.archive) ? ['archive'] : [];
+    assert.deepEqual(forms, golden.packagingForms);
+    assert.deepEqual(readdirSync(out).sort(), [contract.archive, contract.checksum, `${expectedStem}.contract.json`].sort());
     assert.equal(contract.schemaVersion, golden.schemaVersion);
     assert.equal(contract.tag, tag); assert.equal(contract.version, version); assert.equal(contract.target, target);
     const expectedContents = target.includes('windows') ? golden.contents.map(f => f === 'screencomp' ? golden.windowsBinary : f) : golden.contents;
@@ -31,9 +40,12 @@ test('release production commands build, pack, checksum, install and run the rea
     const archive = join(out, contract.archive);
     const sum = createHash('sha256').update(readFileSync(archive)).digest('hex');
     assert.equal(readFileSync(join(out, contract.checksum), 'utf8'), `${sum}  ${contract.archive}\n`);
-    const contents = execFileSync('tar', ['-tf', archive], { encoding: 'utf8' }).trim().split(/\r?\n/);
+    const listing = target.includes('windows')
+      ? execFileSync('powershell.exe', ['-NoProfile', '-Command', 'Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [System.IO.Compression.ZipFile]::OpenRead($env:SCREENCOMP_ARCHIVE); try { $zip.Entries | ForEach-Object { $_.FullName } } finally { $zip.Dispose() }'], { encoding: 'utf8', env: { ...process.env, SCREENCOMP_ARCHIVE: archive } })
+      : execFileSync('tar', ['-tf', archive], { encoding: 'utf8' });
+    const contents = listing.trim().split(/\r?\n/);
     assert.deepEqual(contents.sort(), [...expectedContents].sort());
-    assert.match(built.stdout, /changed/);
-    assert.match(built.stderr, /installed screencomp/);
+    assert.equal(built.stdout, `packaged ${contract.archive}\n`);
+    assert.equal(built.stderr, '');
   } finally { rmSync(out, { recursive: true, force: true }); }
 });

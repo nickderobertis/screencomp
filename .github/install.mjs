@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 const manager = JSON.parse(readFileSync(new URL('package.json', import.meta.url), 'utf8')).packageManager;
-const version = manager.replace(/^bun@/, '');
-if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('GitHub tooling requires pinned bun');
+if (typeof manager !== 'string' || !/^bun@\d+\.\d+\.\d+$/.test(manager)) throw new Error('GitHub tooling requires packageManager bun@X.Y.Z; fix .github/package.json');
+const version = manager.slice(4);
 const installed = spawnSync('bun', ['--version'], { encoding: 'utf8', shell: process.platform === 'win32' });
 const native = installed.status === 0 && installed.stdout.trim() === version;
 const result = spawnSync(native ? 'bun' : 'npm', native ? ['install', '--frozen-lockfile', '--cwd', '.github'] : ['exec', '--yes', `--package=bun@${version}`, '--', 'bun', 'install', '--frozen-lockfile', '--cwd', '.github'], { encoding: 'utf8', shell: process.platform === 'win32' });

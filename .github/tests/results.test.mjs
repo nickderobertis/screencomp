@@ -18,6 +18,9 @@ test('always carrier executes the real result command for failures, cancellation
   }
   const omitted = { policy: { result: 'success', outputs: { macosRequired: 'false', isReleaseOnly: 'false' } }, 'check-macos': { result: 'skipped' } };
   assert.notEqual(run(omitted).status, 0);
+  for (const eventName of ['', 'unknown', undefined]) assert.notEqual(run(omitted, eventName).status, 0);
+  assert.notEqual(run(omitted, 'push', 'yes').status, 0);
+  assert.notEqual(run(omitted, 'push', 'true').status, 0);
   assert.equal(run(omitted, 'push').status, 0);
   assert.notEqual(run({}).status, 0);
   assert.notEqual(run({ policy: { result: 'success', outputs: {} } }).status, 0);

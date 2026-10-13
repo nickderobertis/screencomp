@@ -582,20 +582,20 @@ _github-workflows-install:
 _github-workflows-test: _github-workflows-install
     node --test .github/tests/*.test.mjs
 
-_github-workflows-typecheck:
+_github-workflows-syntax:
     node .github/check.mjs
 
 [linux]
-_github-workflows-lint: _ensure-actionlint
+_github-workflows-lint: _ensure-actionlint _github-workflows-syntax
     actionlint .github/workflows/ci.yml .github/workflows/release.yml
     node tools/workspace/check-project-boundaries.mjs github-workflows
 
 [macos]
-_github-workflows-lint:
+_github-workflows-lint: _github-workflows-syntax
     node tools/workspace/check-project-boundaries.mjs github-workflows
 
 [windows]
-_github-workflows-lint:
+_github-workflows-lint: _github-workflows-syntax
     node tools/workspace/check-project-boundaries.mjs github-workflows
 
 _github-workflows-budgets: _github-workflows-install

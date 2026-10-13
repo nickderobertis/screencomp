@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { history, prEvent } from './history.mjs';
@@ -39,10 +39,53 @@ test('real git classifier admits only same-repository semantic release changes',
       h.git('add', '.'); h.git('commit', '-qm', name);
       assert.equal(h.classify(prEvent({ branch: 'release-plz-x' }), h.git('rev-parse', 'HEAD')).macosRequired, true);
     }
+    const malformedRepo = prEvent({ branch: 'release-plz-x' });
+    malformedRepo.repository.full_name = 42; malformedRepo.pull_request.head.repo.full_name = 42; malformedRepo.pull_request.base.repo.full_name = 42;
+    assert.equal(h.classify(malformedRepo, h.heads['version-only']).macosRequired, true);
     // A source edit on an otherwise valid release branch cannot hide behind a version bump.
     h.git('checkout', '-q', '-B', 'mixed', h.heads['version-only']);
     writeFileSync(join(h.dir, 'src/lib.rs'), 'pub fn mixed() {}');
     h.git('add', '.'); h.git('commit', '-qm', 'mixed');
     assert.equal(h.classify(prEvent({ branch: 'release-plz-x' }), h.git('rev-parse', 'HEAD')).macosRequired, true);
+  } finally { h.clean(); }
+});
+
+test('semantic manifest variants and non-modification diffs are driven through generated histories', () => {
+  const h = history();
+  try {
+    const event = prEvent({ branch: 'release-plz-x' });
+    assert.equal(h.classify(event, h.base).macosRequired, true);
+    for (const kind of ['added', 'deleted', 'renamed']) {
+      h.git('checkout', '-q', '-B', kind, h.base);
+      if (kind === 'added') writeFileSync(join(h.dir, 'new.txt'), 'new content');
+      if (kind === 'deleted') h.git('rm', 'CHANGELOG.md');
+      if (kind === 'renamed') h.git('mv', 'CHANGELOG.md', 'OTHER.md');
+      h.git('add', '.'); h.git('commit', '-qm', kind);
+      assert.equal(h.classify(event, h.git('rev-parse', 'HEAD')).macosRequired, true);
+    }
+    h.git('checkout', '-q', '-B', 'manifest-contracts', h.base);
+    const manifest = readFileSync(join(h.dir, 'Cargo.toml'), 'utf8').replace('[dependencies]', 'metadata = { version = "1.0.0" }\n[dependencies]') + '[workspace.package]\nversion = "0.4.9"\nrust-version = "1.89"\n';
+    writeFileSync(join(h.dir, 'Cargo.toml'), manifest);
+    mkdirSync(join(h.dir, 'e2e'));
+    const e2e = '[package]\nname = "screencomp-e2e"\nversion = "0.4.9"\npublish = false\n';
+    writeFileSync(join(h.dir, 'e2e/Cargo.toml'), e2e);
+    const pkg = { name: 'screencomp', version: '0.4.9', dependencies: { tool: '1' } };
+    writeFileSync(join(h.dir, 'package.json'), JSON.stringify(pkg));
+    h.git('add', '.'); h.git('commit', '-qm', 'manifest baseline'); const base = h.git('rev-parse', 'HEAD');
+    const cases = [
+      ['workspace-version', 'Cargo.toml', manifest.replace('[workspace.package]\nversion = "0.4.9"', '[workspace.package]\nversion = "0.4.10"'), true],
+      ['nested-metadata-content', 'Cargo.toml', manifest.replace('metadata = { version = "1.0.0" }', 'metadata = { version = "2.0.0" }'), false],
+      ['workspace-content', 'Cargo.toml', manifest.replace('rust-version = "1.89"', 'rust-version = "1.90"'), false],
+      ['e2e-version', 'e2e/Cargo.toml', e2e.replace('0.4.9', '0.4.10'), true],
+      ['e2e-content', 'e2e/Cargo.toml', e2e.replace('publish = false', 'publish = true'), false],
+      ['json-version', 'package.json', JSON.stringify({ ...pkg, version: '0.4.10' }), true],
+      ['json-content', 'package.json', JSON.stringify({ ...pkg, version: '0.4.10', dependencies: { tool: '2' } }), false],
+      ['json-malformed', 'package.json', '{', false],
+    ];
+    for (const [branch, path, content, allowed] of cases) {
+      h.git('checkout', '-q', '-B', branch, base); writeFileSync(join(h.dir, path), content);
+      h.git('add', '.'); h.git('commit', '-qm', branch);
+      assert.equal(h.classify(event, h.git('rev-parse', 'HEAD'), { baseRef: base }).isReleaseOnly, allowed, branch);
+    }
   } finally { h.clean(); }
 });

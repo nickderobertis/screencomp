@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { executionMode } from '../../scripts/release-artifact.mjs';
 import { history, prEvent } from './history.mjs';
-import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, workflows } from '../workflow-graph.mjs';
+import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, validateWorkflow, workflows } from '../workflow-graph.mjs';
 const required = ['action', 'action-download', 'check (macos-latest)', 'check (ubuntu-latest)', 'check (windows-latest)', 'llmlint', 'pr-title', 'workflows'];
 const classes = JSON.parse(readFileSync(join(root, '.github/event-classes.json'), 'utf8')).classes;
 test('actual workflow graph resolves every event/diff/ownership route and records lifecycle telemetry', () => {
@@ -77,6 +80,13 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
   const helper = readFileSync(join(root, 'scripts/release-artifact.mjs'), 'utf8');
+  // Mach-O execution and Rosetta require a Mac host. The native subprocess
+  // journey proves the shared builder/installer; this structural check covers
+  // Darwin architecture declarations and the release job's native commands.
+  for (const [target, mode] of Object.entries(contract.darwinExecution)) {
+    assert.ok(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).includes(target));
+    assert.equal(executionMode({ platform: 'darwin', arch: 'arm64', target }), mode);
+  }
   assert.match(helper, /arch', \['-x86_64', 'bash'/);
   assert.match(helper, /arch', \['-x86_64', installedBinary/);
   assert.match(helper, /hash\(binary\) !== hash\(installedBinary\)/);
@@ -95,4 +105,36 @@ test("fan-out follows actual workflow_run names and keeps the exact artifact hea
   assert.equal(runs[1].rows[0].head, scenario.head);
   graph["build.yml"].on.workflow_run = { workflows: ["Smoke"] };
   assert.throws(() => resolveFanout(scenario, graph), /cycle/);
+});
+
+test('workflow parsing rejects unsupported scheduling filters rather than counting zero', () => {
+  const workflow = workflows()['ci.yml'];
+  for (const on of [{ pull_request: { unknown: ['value'] } }, { push: { tags: 'v*' } }, { made_up_event: null }]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, on }), /unsupported/);
+  assert.throws(() => validateWorkflow('invalid.yml', null), /invalid workflow/);
+});
+
+test('reusable matrix resolution matches the actual shell producer for every architecture and project defaults', () => {
+  const graph = workflows(); const producer = graph['visual-docs-reusable.yml'].jobs.arches.steps.find(s => s.id === 'read').run;
+  const dir = mkdtempSync(join(tmpdir(), 'screencomp-arches-contract-')); const output = join(dir, 'output');
+  const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, classification: {}, head: 'exact-head' };
+  try {
+    const arches = [...new Set(releaseTargets(graph).map(t => t.startsWith('aarch64') ? 'arm64' : 'x86_64'))];
+    for (const projects of [[], [{ id: 'one' }, { id: 'two', current: 'shots/custom', verify: 'shots/repeat', manifest: 'baseline.json', 'gallery-title': 'Two' }]]) {
+      writeFileSync(output, '');
+      const inputs = { arches: JSON.stringify(arches), projects: JSON.stringify(projects), 'gallery-title': 'Default' };
+      execFileSync('bash', ['-c', producer], { cwd: root, env: { ...process.env, ARCHES_OVERRIDE: inputs.arches, PROJECTS_INPUT: inputs.projects, DEFAULT_TITLE: inputs['gallery-title'], GITHUB_OUTPUT: output }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const actual = JSON.parse(readFileSync(output, 'utf8').trim().slice('matrix='.length));
+      const resolved = resolveRun('visual-docs-reusable.yml', scenario, graph, inputs);
+      assert.deepEqual(JSON.parse(resolved.results.arches.outputs.matrix), actual);
+    }
+    const bad = spawnSync('bash', ['-c', producer], { cwd: root, encoding: 'utf8', env: { ...process.env, ARCHES_OVERRIDE: '["arm64"]', PROJECTS_INPUT: '[{"id":"../bad"}]', DEFAULT_TITLE: 'Default', GITHUB_OUTPUT: output } });
+    assert.notEqual(bad.status, 0); assert.match(bad.stderr, /projects needs unique/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('matrix and capture-output boundaries reject malformed shapes and preserve additional include instances', () => {
+  for (const matrix of [[], 'null', { os: 'macos-latest' }, { exclude: {} }, { exclude: [null] }, { include: [null] }]) assert.throws(() => matrices(matrix, {}), /matrix/);
+  assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }]);
+  const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: {} };
+  for (const inputs of [{ arches: '[42]' }, { arches: '["arm64"]', projects: '{}' }, { arches: '["arm64"]', projects: '[{"id":"a","current":"../outside"}]' }]) assert.throws(() => resolveRun('visual-docs-reusable.yml', scenario, graph, inputs), /unresolved capture arches|invalid capture project/);
 });

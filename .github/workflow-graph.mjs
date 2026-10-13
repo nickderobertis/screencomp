@@ -5,8 +5,38 @@ import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { Lexer, Parser, Evaluator, data } from '@actions/expressions';
 export const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+export function validateWorkflow(file, workflow) {
+  if (!workflow || typeof workflow !== 'object' || !workflow.jobs || Array.isArray(workflow.jobs)) throw new Error(`invalid workflow object ${file}`);
+  const on = typeof workflow.on === 'string' ? { [workflow.on]: null } : Array.isArray(workflow.on) ? Object.fromEntries(workflow.on.map(e => [e, null])) : workflow.on;
+  if (!on || typeof on !== 'object') throw new Error(`missing event declarations ${file}`);
+  const supported = {
+    push: ['branches', 'branches-ignore', 'tags', 'tags-ignore', 'paths', 'paths-ignore'],
+    pull_request: ['types', 'branches', 'branches-ignore', 'paths', 'paths-ignore'],
+    release: ['types'], workflow_run: ['workflows', 'types', 'branches', 'branches-ignore'],
+    repository_dispatch: ['types'], schedule: ['cron'], workflow_dispatch: ['inputs'], workflow_call: ['inputs', 'outputs', 'secrets'],
+  };
+  for (const [event, filter] of Object.entries(on)) {
+    if (!(event in supported)) throw new Error(`unsupported event ${file}:${event}`);
+    if (event === 'schedule') {
+      if (!Array.isArray(filter) || !filter.every(f => f && typeof f.cron === 'string' && Object.keys(f).length === 1)) throw new Error(`unsupported schedule ${file}`);
+      continue;
+    }
+    if (filter === null) continue;
+    if (!filter || typeof filter !== 'object' || Array.isArray(filter)) throw new Error(`invalid event filter ${file}:${event}`);
+    for (const [key, value] of Object.entries(filter)) {
+      if (!supported[event].includes(key)) throw new Error(`unsupported trigger filter ${file}:${event}:${key}`);
+      if (!['inputs', 'outputs', 'secrets'].includes(key) && (!Array.isArray(value) || !value.every(v => typeof v === 'string' && !v.startsWith('!') && !/[{}]/.test(v)))) throw new Error(`unsupported trigger filter values ${file}:${event}:${key}`);
+    }
+  }
+  for (const [id, job] of Object.entries(workflow.jobs)) {
+    if (!job || typeof job !== 'object' || Array.isArray(job) || (!job.uses && !job['runs-on'])) throw new Error(`invalid job ${file}:${id}`);
+    if (job.if !== undefined && !['string', 'boolean'].includes(typeof job.if)) throw new Error(`invalid condition ${file}:${id}`);
+    if (job.needs !== undefined && ![job.needs].flat().every(n => typeof n === 'string')) throw new Error(`invalid needs ${file}:${id}`);
+  }
+  return workflow;
+}
 export function workflows() {
-  return Object.fromEntries(readdirSync(join(root, '.github/workflows')).filter(f => /\.ya?ml$/.test(f)).sort().map(f => [f, parse(readFileSync(join(root, '.github/workflows', f), 'utf8'))]));
+  return Object.fromEntries(readdirSync(join(root, '.github/workflows')).filter(f => /\.ya?ml$/.test(f)).sort().map(f => [f, validateWorkflow(f, parse(readFileSync(join(root, '.github/workflows', f), 'utf8')))]));
 }
 export function sourceDigest() {
   const hash = createHash('sha256');
@@ -31,6 +61,8 @@ const datum = value => {
   return new data.Dictionary(...Object.entries(value).map(([key, value]) => ({ key, value: datum(value) })));
 };
 export function evaluate(source, context, results = []) {
+  if (typeof source === 'boolean') return source;
+  if (typeof source !== 'string') throw new Error('invalid Actions expression');
   const expression = source.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, '');
   const functions = new Map([
     ['always', { name: 'always', minArgs: 0, maxArgs: 0, call: () => datum(true) }],
@@ -49,6 +81,7 @@ export function interpolate(value, context) {
 export function matrices(matrix, context) {
   if (!matrix) return [{}];
   if (typeof matrix === 'string') matrix = evaluate(matrix, context);
+  if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)) throw new Error('unresolved matrix object');
   const axes = Object.entries(matrix).filter(([key]) => !['include', 'exclude'].includes(key));
   let rows = [{}];
   for (const [key, raw] of axes) {
@@ -57,16 +90,18 @@ export function matrices(matrix, context) {
     rows = rows.flatMap(row => values.map(value => ({ ...row, [key]: value })));
   }
   const exclude = interpolate(matrix.exclude ?? [], context);
+  if (!Array.isArray(exclude) || !exclude.every(row => row && typeof row === 'object' && !Array.isArray(row))) throw new Error('invalid matrix exclude rows');
   rows = rows.filter(row => !exclude.some(ex => Object.entries(ex).every(([k,v]) => row[k] === v)));
   const include = interpolate(matrix.include ?? [], context);
-  if (!Array.isArray(include)) throw new Error('unresolved matrix include');
+  if (!Array.isArray(include) || !include.every(row => row && typeof row === 'object' && !Array.isArray(row))) throw new Error('unresolved matrix include rows');
   if (!axes.length) return include.length ? include : rows;
+  const added = [];
   for (const inc of include) {
     let merged = false;
     for (const row of rows) if (axes.every(([k]) => !(k in inc) || row[k] === inc[k])) { Object.assign(row, inc); merged = true; }
-    if (!merged) rows.push(inc);
+    if (!merged) added.push(inc);
   }
-  return rows;
+  return [...rows, ...added];
 }
 function glob(path, pattern) {
   const regex = pattern.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*').replace(/\?/g, '.');
@@ -80,7 +115,12 @@ export function triggered(workflow, scenario) {
   const filter = on[scenario.eventName] ?? {};
   const types = filter.types ?? (scenario.eventName === 'pull_request' ? ['opened', 'synchronize', 'reopened'] : null);
   if (types && !types.includes(scenario.event.action)) return false;
-  const branch = scenario.eventName === 'pull_request' ? scenario.event.pull_request?.base?.ref : scenario.event.ref?.replace('refs/heads/', '');
+  const branch = scenario.eventName === 'pull_request' ? scenario.event.pull_request?.base?.ref : scenario.eventName === 'workflow_run' ? scenario.event.workflow_run?.head_branch : scenario.event.ref?.replace('refs/heads/', '');
+  const tag = scenario.event.ref?.startsWith('refs/tags/') ? scenario.event.ref.slice(10) : null;
+  if ((filter.tags || filter['tags-ignore']) && !tag) return false;
+  if (tag && (filter.branches || filter['branches-ignore']) && !filter.tags) return false;
+  if (filter.tags && !filter.tags.some(p => glob(tag, p))) return false;
+  if (filter['tags-ignore']?.some(p => glob(tag, p))) return false;
   if (filter.branches && !filter.branches.some(p => glob(branch ?? '', p))) return false;
   if (filter['branches-ignore']?.some(p => glob(branch ?? '', p))) return false;
   if (filter.paths && !scenario.paths.some(p => filter.paths.some(g => glob(p, g)))) return false;
@@ -116,9 +156,11 @@ export function resolveRun(file, scenario, graph = workflows(), inputs = {}, sta
       if (id === 'policy') outputs = Object.fromEntries(Object.entries(scenario.classification).map(([k,v]) => [k, String(v)]));
       if (id === 'arches') {
         const arches = JSON.parse(inputs.arches || 'null');
-        if (!Array.isArray(arches) || !arches.length) throw new Error('unresolved capture arches; caller needs an explicit architecture fixture');
+        if (!Array.isArray(arches) || !arches.length || !arches.every(arch => ['x86_64', 'arm64', 'aarch64'].includes(arch))) throw new Error('unresolved capture arches; caller needs an explicit architecture fixture');
         const projects = JSON.parse(inputs.projects || '[]');
-        outputs.matrix = JSON.stringify({ include: arches.flatMap(arch => (projects.length ? projects : [{ id: '', current: 'shots/current', verify: 'shots/verify' }]).map(p => ({ arch, project: p.id, current: p.current, verify: p.verify, manifest: p.manifest ?? '', gallery_title: inputs['gallery-title'] }))) });
+        const safePath = value => typeof value === 'string' && value.length > 0 && !value.startsWith('/') && !value.includes('\\') && value.split('/').every(p => p && p !== '.' && p !== '..');
+        if (!Array.isArray(projects) || !projects.every(p => p && typeof p === 'object' && typeof p.id === 'string' && /^[A-Za-z0-9_-]+$/.test(p.id) && ['current', 'verify'].every(k => !(k in p) || (safePath(p[k]) && p[k].startsWith('shots/'))) && (!('manifest' in p) || safePath(p.manifest)) && (!('gallery-title' in p) || (typeof p['gallery-title'] === 'string' && p['gallery-title'].length > 0))) || new Set(projects.map(p => p.id)).size !== projects.length) throw new Error('invalid capture project fields');
+        outputs.matrix = JSON.stringify({ include: arches.flatMap(arch => (projects.length ? projects : [{ id: '', current: 'shots/current', verify: 'shots/verify' }]).map(p => ({ arch, project: p.id, current: p.current ?? `shots/current/${p.id}`, verify: p.verify ?? `shots/verify/${p.id}`, manifest: p.manifest ?? (p.id === '' ? '' : `shots/baseline/${p.id}/${arch}.json`), gallery_title: p['gallery-title'] ?? inputs['gallery-title'] }))) });
       }
       results[id] = { result: enabled ? 'success' : 'skipped', outputs };
       for (const matrix of matrices(job.strategy?.matrix, context)) {

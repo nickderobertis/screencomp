@@ -36,8 +36,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: extractions/setup-just@v2
       - name: Install locked policy tooling
-        run: node .github/install.mjs
+        run: just _github-workflows-install
       - name: Classify Mac coverage
         id: policy
         env:
@@ -110,8 +111,6 @@ jobs:
     needs: policy
     if: needs.policy.outputs.macosRequired == 'true' || (github.event_name == 'workflow_dispatch' && inputs.macos-diagnostic)
     runs-on: macos-latest
-    # bash on every leg (Git Bash on Windows), so the tier hand-off below reads
-    # the same everywhere.
     defaults:
       run:
         shell: bash

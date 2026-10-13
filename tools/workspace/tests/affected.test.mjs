@@ -32,7 +32,7 @@ test("a change confined to the crate's suites or benchmarks selects only them", 
   assert.deepEqual(affectedBy(["benches/commands.rs"]), ["screencomp-bench"]);
 });
 
-test("a change confined to the composite actions or their scripts selects only their project", () => {
+test("action changes select their owner, with the reusable workflow also selecting its graph proof", () => {
   for (const file of [
     "action.yml",
     "visual-docs/action.yml",
