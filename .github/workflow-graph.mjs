@@ -76,7 +76,8 @@ export function interpolate(value, context) {
   return value.replace(/\$\{\{.*?\}\}/g, expr => String(evaluate(expr, context)));
 }
 export function matrices(matrix, context) {
-  if (!matrix) return [{}];
+  if (matrix === undefined) return [{}];
+  if (matrix === null || matrix === false || matrix === 0 || matrix === '') throw new Error('unresolved matrix object');
   if (typeof matrix === 'string') matrix = evaluate(matrix, context);
   if (!matrix || typeof matrix !== 'object' || Array.isArray(matrix)) throw new Error('unresolved matrix object');
   const axes = Object.entries(matrix).filter(([key]) => !['include', 'exclude'].includes(key));
@@ -157,7 +158,11 @@ export function resolveRun(file, scenario, graph = workflows(), inputs = {}, sta
       const explicitStatus = /\b(always|success|failure|cancelled)\(/.test(condition);
       const enabled = (explicitStatus || outcomes.every(r => r === 'success')) && Boolean(evaluate(condition, context, outcomes));
       let outputs = {};
-      if (id === 'policy') outputs = Object.fromEntries(Object.entries(scenario.classification).map(([k,v]) => [k, String(v)]));
+      if (id === 'policy') {
+        const stepOutputs = Object.fromEntries(['macosRequired', 'isReleaseOnly'].map(k => [k, String(scenario.classification[k])]));
+        const outputContext = { ...context, steps: { policy: { outputs: stepOutputs } } };
+        outputs = Object.fromEntries(Object.entries(job.outputs ?? {}).map(([key, expression]) => [key, String(interpolate(expression, outputContext))]));
+      }
       if (id === 'arches') {
         const arches = JSON.parse(inputs.arches || 'null');
         if (!Array.isArray(arches) || !arches.length || !arches.every(arch => ['x86_64', 'arm64', 'aarch64'].includes(arch))) throw new Error('unresolved capture arches; caller needs an explicit architecture fixture');

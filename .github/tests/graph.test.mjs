@@ -145,7 +145,7 @@ test('reusable matrix resolution matches the actual shell producer for every arc
 });
 
 test('matrix and capture-output boundaries reject malformed shapes and preserve additional include instances', () => {
-  for (const matrix of [[], 'null', { os: 'macos-latest' }, { exclude: {} }, { exclude: [null] }, { include: [null] }]) assert.throws(() => matrices(matrix, {}), /matrix/);
+  for (const matrix of [null, false, 0, '', [], 'null', { os: 'macos-latest' }, { exclude: {} }, { exclude: [null] }, { include: [null] }]) assert.throws(() => matrices(matrix, {}), /matrix/);
   assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }]);
   const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: {} };
   for (const inputs of [{ arches: '[42]' }, { arches: '["arm64"]', projects: '{}' }, { arches: '["arm64"]', projects: '[{"id":"a","current":"../outside"}]' }]) assert.throws(() => resolveRun('visual-docs-reusable.yml', scenario, graph, inputs), /unresolved capture arches|invalid capture project/);
@@ -189,4 +189,14 @@ test('actual workflow routing honors include/ignore filters for branches, tags, 
     const graph = { 'ci.yml': validateWorkflow('ci.yml', { ...ci, on }) };
     assert.equal(resolveEvent(scenario, graph).length > 0, expected, JSON.stringify({ on, event, paths }));
   }
+});
+
+test('policy outputs resolve the actual workflow mappings instead of substituting classifier fields', () => {
+  const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: { isReleaseOnly: false, macosRequired: true }, paths: [] };
+  const ordinary = resolveRun('ci.yml', scenario, graph);
+  assert.deepEqual(ordinary.results.policy.outputs, { macosRequired: 'true', isReleaseOnly: 'false' });
+  graph['ci.yml'].jobs.policy.outputs.macosRequired = '${{ steps.policy.outputs.isReleaseOnly }}';
+  const changedMapping = resolveRun('ci.yml', scenario, graph);
+  assert.equal(changedMapping.results.policy.outputs.macosRequired, 'false');
+  assert.equal(changedMapping.rows.find(row => row.job === 'check-macos').enabled, false);
 });

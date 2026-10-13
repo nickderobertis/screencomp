@@ -8,7 +8,7 @@ const telemetry = JSON.parse(readFileSync(resolve(args[3]), 'utf8'));
 if (telemetry.schemaVersion !== 1 || telemetry.sourceDigest !== sourceDigest()) throw new Error('missing or stale Mac policy telemetry; run github-workflows:test');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const strings = value => Array.isArray(value) && value.every(v => typeof v === 'string');
-const rowValid = row => object(row) && ['workflow', 'job', 'runner', 'event', 'displayName', 'head'].every(k => typeof row[k] === 'string') && typeof row.macos === 'boolean' && typeof row.enabled === 'boolean' && object(row.matrix) && strings(row.targets) && strings(row.needs) && (row.tag === null || typeof row.tag === 'string');
+const rowValid = row => object(row) && ['workflow', 'job', 'runner', 'event', 'displayName', 'head'].every(k => typeof row[k] === 'string') && typeof row.macos === 'boolean' && typeof row.enabled === 'boolean' && row.macos === (row.enabled && row.runner.startsWith('macos-')) && object(row.matrix) && strings(row.targets) && strings(row.needs) && (row.tag === null || typeof row.tag === 'string');
 const runValid = run => object(run) && typeof run.workflow === 'string' && Array.isArray(run.rows) && run.rows.every(rowValid);
 const scenarioValid = s => object(s) && typeof s.id === 'string' && Array.isArray(s.runs) && s.runs.every(runValid);
 const lifecycleValid = l => object(l) && typeof l.id === 'string' && strings(l.events) && Array.isArray(l.spendingRuns) && l.spendingRuns.every(r => object(r) && ['workflow', 'event', 'scenario'].every(k => typeof r[k] === 'string') && Array.isArray(r.jobs) && r.jobs.every(rowValid));
