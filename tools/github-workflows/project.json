@@ -39,25 +39,6 @@
       "inputs": [
         "default"
       ]
-    },
-    "release-check": {
-      "command": "just _github-workflows-release-check",
-      "inputs": [
-        "{projectRoot}/**/*",
-        "sharedGlobals",
-        "crate",
-        "{workspaceRoot}/src/**/*",
-        "{workspaceRoot}/.github/workflows/release.yml",
-        "{workspaceRoot}/action.yml",
-        "{workspaceRoot}/scripts/release-artifact.mjs",
-        "{workspaceRoot}/scripts/tests/release-artifact.test.mjs",
-        "{workspaceRoot}/scripts/install.sh",
-        "{workspaceRoot}/.github/release-contract.json",
-        "{workspaceRoot}/tests/fixtures/**/*",
-        "{workspaceRoot}/README.md",
-        "{workspaceRoot}/LICENSE",
-        "{workspaceRoot}/CHANGELOG.md"
-      ]
     }
   }
 }

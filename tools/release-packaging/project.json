@@ -1,0 +1,39 @@
+{
+  "name": "release-packaging",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": [
+    "type:workspace",
+    "lang:javascript"
+  ],
+  "implicitDependencies": [
+    "screencomp-cli"
+  ],
+  "targets": {
+    "lint": {
+      "command": "node tools/workspace/check-project-boundaries.mjs release-packaging",
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "release-check": {
+      "command": "just _release-packaging-check",
+      "inputs": [
+        "default",
+        "crate",
+        "{workspaceRoot}/src/**/*",
+        "{workspaceRoot}/.github/workflows/release.yml",
+        "{workspaceRoot}/action.yml",
+        "{workspaceRoot}/scripts/release-artifact.mjs",
+        "{workspaceRoot}/scripts/tests/release-artifact.test.mjs",
+        "{workspaceRoot}/scripts/install.sh",
+        "{workspaceRoot}/.github/release-contract.json",
+        "{workspaceRoot}/tests/fixtures/**/*",
+        "{workspaceRoot}/README.md",
+        "{workspaceRoot}/LICENSE",
+        "{workspaceRoot}/CHANGELOG.md"
+      ]
+    }
+  }
+}

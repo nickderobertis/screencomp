@@ -7,6 +7,12 @@ import { parse } from 'yaml';
 import { Lexer, Parser, Evaluator, data } from '@actions/expressions';
 export const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const supportedPattern = p => typeof p === 'string' && !/[?+\[\]{}!\\]/.test(p) && !/\*{3,}/.test(p);
+function validateJobDeclarations(file, id, job) {
+  const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (job.strategy !== undefined && !object(job.strategy)) throw new Error(`invalid strategy ${file}:${id}`);
+  if (job.env !== undefined && !object(job.env)) throw new Error(`invalid environment ${file}:${id}`);
+  if (job.env?.DARWIN_TARGETS !== undefined && (typeof job.env.DARWIN_TARGETS !== 'string' || !/^\S+(?:\s+\S+)*$/.test(job.env.DARWIN_TARGETS))) throw new Error(`invalid Darwin targets ${file}:${id}`);
+}
 export function validateWorkflow(file, workflow) {
   if (!workflow || typeof workflow !== 'object' || !workflow.jobs || typeof workflow.jobs !== 'object' || Array.isArray(workflow.jobs) || !Object.keys(workflow.jobs).length) throw new Error(`invalid workflow object ${file}`);
   const on = typeof workflow.on === 'string' ? { [workflow.on]: null } : Array.isArray(workflow.on) ? Object.fromEntries(workflow.on.map(e => [e, null])) : workflow.on;
@@ -47,6 +53,7 @@ export function validateWorkflow(file, workflow) {
   }
   for (const [id, job] of Object.entries(workflow.jobs)) {
     if (!job || typeof job !== 'object' || Array.isArray(job) || (!job.uses && !job['runs-on'])) throw new Error(`invalid job ${file}:${id}`);
+    validateJobDeclarations(file, id, job);
     if (job.if !== undefined && !['string', 'boolean'].includes(typeof job.if)) throw new Error(`invalid condition ${file}:${id}`);
     if (job.needs !== undefined && ![job.needs].flat().every(n => typeof n === 'string')) throw new Error(`invalid needs ${file}:${id}`);
   }
@@ -163,6 +170,7 @@ export function resolveRun(file, scenario, graph = workflows(), inputs = {}, sta
   while (pending.size) {
     let progress = false;
     for (const [id, job] of pending) {
+      validateJobDeclarations(file, id, job);
       const needsIds = [job.needs ?? []].flat();
       if (needsIds.some(n => !results[n])) continue;
       const needs = Object.fromEntries(needsIds.map(n => [n, results[n]]));

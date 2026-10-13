@@ -608,5 +608,5 @@ _github-workflows-lint: _github-workflows-syntax
 _github-workflows-budgets: _github-workflows-install
     node .github/run-budgets.mjs
 
-_github-workflows-release-check:
+_release-packaging-check:
     node --test scripts/tests/release-artifact.test.mjs

@@ -37,8 +37,6 @@
   including the reusable workflow; this deliberate input overlap selects its
   offline graph proof alongside the owning actions project. Its budgets depend
   on the uncached telemetry test, never on crate builds or browser captures.
-- `github-workflows:release-check` owns the self-building release packaging
-  journey and keys its cache on crate and installer/publication inputs. It is a
-  scoped exception to the binary-project dependency rule: no implicit crate
-  dependency belongs on the offline workflow test/budget project. The release
-  workflow still verifies staged products before publication.
+- `release-packaging:release-check` owns the self-building release packaging
+  journey; its separate project selects crate, installer and release inputs
+  without making offline workflow-policy changes rebuild the binary.

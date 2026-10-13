@@ -202,3 +202,11 @@ test('policy outputs resolve the actual workflow mappings instead of substitutin
   assert.equal(changedMapping.results.policy.outputs.macosRequired, 'false');
   assert.equal(changedMapping.rows.find(row => row.job === 'check-macos').enabled, false);
 });
+
+test('workflow resolution rejects malformed strategy and Darwin environment declarations', () => {
+  const scenario = { eventName: 'push', event: {}, head: 'head', classification: {} };
+  for (const patch of [{ strategy: 'matrix' }, { strategy: [] }, { strategy: null }, { env: 'targets' }, { env: [] }, { env: { DARWIN_TARGETS: 42 } }, { env: { DARWIN_TARGETS: [] } }]) {
+    const workflow = { on: { push: null }, jobs: { build: { 'runs-on': 'macos-15', ...patch } } };
+    assert.throws(() => resolveRun('fixture.yml', scenario, { 'fixture.yml': workflow }), /invalid (strategy|environment|Darwin targets)/, JSON.stringify(patch));
+  }
+});
