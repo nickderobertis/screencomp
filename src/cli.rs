@@ -379,7 +379,7 @@ pub struct DoctorArgs {
     #[arg(long, value_name = "DIR", required_unless_present = "env")]
     pub input: Option<Utf8PathBuf>,
 
-    /// Preflight the *environment* instead of a capture: is the pre-push guard
+    /// Preflight the *environment* instead of a capture: is an existing manual guard
     /// enabled (`core.hooksPath`), does the scaffolded workflow's pinned version
     /// match this CLI, and is Docker available to capture? Surfaces the
     /// integration gaps that otherwise bite only at push time. Ignores `--input`.
@@ -440,13 +440,10 @@ pub struct InitArgs {
     #[arg(long, value_name = "ARCH", default_value = "auto")]
     pub arch: String,
 
-    /// Also enable the scaffolded pre-push guard by pointing Git at the committed
-    /// hooks directory (`git config core.hooksPath .githooks`), so the strict
-    /// gate's local half actually runs instead of waiting on an undocumented
-    /// manual step. Without it, `init` only prints the command. Overwrites any
-    /// existing `core.hooksPath` (e.g. a lefthook/husky setup), so opt in only
-    /// when `.githooks` is your hook manager.
+    /// Compatibility flag: CI handles visual verification, so a duplicate
+    /// pre-push hook is unnecessary. Creates no hook and leaves Git config intact.
     #[arg(long)]
+    // llmlint: ignore[names_match_behavior] The public --enable-hook spelling must remain accepted for existing callers; its changed side-effect contract deliberately enables no hook because CI owns verification, and the help plus human output explain that compatibility behavior. Renaming it would break those callers.
     pub enable_hook: bool,
 
     /// Overwrite files that already exist instead of leaving them untouched.

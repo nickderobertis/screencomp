@@ -12,7 +12,8 @@ lighter CI-auto-accept model) you can change UI, pass your whole local gate, and
 push without ever learning the visual baseline moved. The hook closes that gap on
 your machine, before CI ever runs.
 
-`screencomp init` scaffolds this hook at `.githooks/pre-push`; it detects the host
+For setups without CI, install this optional hook manually. `screencomp init`
+does not install or enable it. The hook detects the host
 arch at runtime, so the one committed hook is correct on every developer's machine.
 The steps below are for wiring the copy-paste template by hand or with a hook
 manager.
@@ -72,7 +73,7 @@ needed, and every clone enables it with one command:
 
 ```sh
 mkdir -p .githooks
-cp examples/pre-push .githooks/pre-push   # `screencomp init` writes this for you
+cp examples/pre-push .githooks/pre-push
 chmod +x .githooks/pre-push
 git config core.hooksPath .githooks       # once per clone
 ```

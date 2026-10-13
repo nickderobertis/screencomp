@@ -2196,7 +2196,7 @@ fn init_json_reports_each_file_action() {
 #[test]
 fn init_scaffolds_json_baselines() {
     // The scaffold references `.json` digest baselines (the new index shape),
-    // not the old `.sha256` text manifests: the hook and the config point at
+    // not the old `.sha256` text manifests: the config documents
     // `shots/baseline/<arch>.json`.
     let dir = TempDir::new().unwrap();
     let root = path_str(dir.path());
@@ -2204,12 +2204,9 @@ fn init_scaffolds_json_baselines() {
         .0
         .unwrap();
 
-    let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    assert!(
-        hook.contains("shots/baseline/${ARCH}.json"),
-        "hook must point at a .json baseline: {hook}"
-    );
-    assert!(!hook.contains(".sha256"), "{hook}");
+    let config = std::fs::read_to_string(dir.path().join("screencomp.toml")).unwrap();
+    assert!(config.contains("shots/baseline/<arch>.json"), "{config}");
+    assert!(!dir.path().join(".githooks/pre-push").exists());
 }
 
 /// Whether `git` is installed, so git-dependent assertions skip cleanly.
@@ -2218,7 +2215,7 @@ fn git_available() -> bool {
 }
 
 #[test]
-fn doctor_env_json_flags_a_scaffolded_but_unenabled_guard() {
+fn doctor_env_json_flags_a_manual_but_unenabled_guard() {
     let dir = TempDir::new().unwrap();
     // A committed hook with no `core.hooksPath` (a bare temp dir is not a repo):
     // the inert-guard gap, reported as a problem in the JSON contract.
@@ -2330,7 +2327,7 @@ fn doctor_env_reports_a_custom_hooks_path() {
 }
 
 #[test]
-fn init_enable_hook_json_reports_enabled_in_a_repo() {
+fn init_enable_hook_json_reports_no_enabled_hook() {
     if !git_available() {
         return;
     }
@@ -2356,7 +2353,7 @@ fn init_enable_hook_json_reports_enabled_in_a_repo() {
         "json",
     ]);
     assert_eq!(code.unwrap(), 0);
-    assert!(out.contains(r#""hook_enabled":"enabled""#), "{out}");
+    assert!(!out.contains("hook_enabled"), "{out}");
 }
 
 #[test]

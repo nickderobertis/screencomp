@@ -218,7 +218,7 @@ check`/`clippy` still cover `benches/` via `--all-targets` so it cannot rot, and
 - The visual-docs surfaces default to the **strict gate** and must stay
   consistent on it: the reusable workflow and the composite action default
   `fail-on-drift: true` + `update-manifest: false`, and `init` scaffolds a matching
-  caller plus a `.githooks/pre-push` guard. CI fails on unexpected drift; the
+  caller without installing local hooks. CI fails on unexpected drift; the
   developer owns the baseline. gh-pages bounding follows the same default-on,
   opt-out shape: the reusable workflow defaults `gh-pages-maintenance: true`
   (gating the `cleanup-preview`/`prune-history` jobs) and `init` forwards the

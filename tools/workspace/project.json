@@ -22,7 +22,8 @@
         "{workspaceRoot}/nx.json",
         "{workspaceRoot}/**/project.json",
         "{workspaceRoot}/.github/workflows/{ci,llmlint,notignored,pr-title,release-plz}.yml",
-        "{workspaceRoot}/scripts/{session-setup,setup-lib,setup-llmlint,llmlint-require-credential}.sh",
+        "{workspaceRoot}/scripts/{session-setup,setup-lib,setup-llmlint,llmlint-require-credential,hooks-install}.sh",
+        "{workspaceRoot}/lefthook.yml",
         "{workspaceRoot}/release-plz.toml",
         "{workspaceRoot}/oneharness.toml"
       ]

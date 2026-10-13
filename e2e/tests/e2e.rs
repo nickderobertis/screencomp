@@ -1656,6 +1656,13 @@ fn init_scaffolds_a_working_setup() {
         .success()
         .stdout(predicate::str::contains("created"))
         .stdout(predicate::str::contains("Next steps"))
+        .stdout(predicate::str::contains("Run the same Linux-container capture locally"))
+        .stdout(predicate::str::contains("screencomp index --input shots/current --toggles-from-path"))
+        .stdout(predicate::str::contains("screencomp gallery --input shots/current --output shots/gallery"))
+        .stdout(predicate::str::contains(format!("screencomp manifest --input shots/current --output shots/baseline/{}.json", host_arch())))
+        .stdout(predicate::str::contains("commit\nintended baseline changes before pushing"))
+        .stdout(predicate::str::contains("git config core.hooksPath").not())
+        .stdout(predicate::str::contains(".githooks/pre-push").not())
         // The reusable workflow deploys to the gh-pages branch (peaceiris), so the
         // scaffold must point at that Pages source, not "GitHub Actions".
         .stdout(predicate::str::contains("Deploy from a branch: gh-pages"))
@@ -1705,36 +1712,7 @@ fn init_scaffolds_a_working_setup() {
     assert!(!workflow.contains("platform:"), "{workflow}");
     assert!(dir.path().join(".gitignore").exists());
 
-    // The strict scaffold also drops the local pre-push guard, executable and with
-    // the robust scope-exit handling. The hook detects the host arch at runtime
-    // (rather than baking it) so the same committed hook is correct everywhere.
-    let hook_path = dir.path().join(".githooks/pre-push");
-    let hook = std::fs::read_to_string(&hook_path).unwrap();
-    assert!(hook.contains("uname -m"), "{hook}");
-    assert!(hook.contains("ARCH=\"arm64\""), "{hook}");
-    assert!(hook.contains("ARCH=\"x86_64\""), "{hook}");
-    assert!(hook.contains("DOCKER_PLATFORM=\"linux/arm64\""), "{hook}");
-    assert!(hook.contains("DOCKER_PLATFORM=\"linux/amd64\""), "{hook}");
-    // The committed baseline is the new JSON index, not a `.sha256` text manifest.
-    assert!(
-        hook.contains("MANIFEST=\"shots/baseline/${ARCH}.json\""),
-        "{hook}"
-    );
-    // The classify call no longer passes --arch (it defaults from the config).
-    assert!(
-        hook.contains(
-            "screencomp classify --baseline-manifest \"$MANIFEST\" --current \"$CURRENT\" --exit-code"
-        ),
-        "{hook}"
-    );
-    // Only exit 3 means "relevant"; an errored scope check skips, not captures.
-    assert!(hook.contains("scope_status"), "{hook}");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&hook_path).unwrap().permissions().mode();
-        assert!(mode & 0o111 != 0, "hook must be executable: {mode:o}");
-    }
+    assert!(!dir.path().join(".githooks/pre-push").exists());
 }
 
 #[test]
@@ -1858,51 +1836,78 @@ fn git(dir: &TempDir, args: &[&str]) {
 }
 
 #[test]
-fn init_hook_survives_proxies_and_matches_ci_clean_install() {
-    // The scaffolded capture must work in containerized/proxied dev environments
-    // and match CI's fresh checkout — the gaps that cost the most setup time.
-    let dir = TempDir::new().unwrap();
-    bin()
-        .args(["init", "--dir"])
-        .arg(dir.path())
-        .args(["--arch", "auto"])
-        .assert()
-        .success();
-    let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    // A host directory masks node_modules, so `npm ci` installs inside the
-    // container without churning the bind-mounted tree.
-    assert!(hook.contains(":/work/node_modules\""), "{hook}");
-    // Host CA pass-through so a TLS-intercepting proxy doesn't break `npm ci`.
-    assert!(hook.contains("NODE_EXTRA_CA_CERTS"), "{hook}");
-    assert!(hook.contains("ca_args"), "{hook}");
-    // A missing CLI is loud and opt-in-strict, never a silent skip.
-    assert!(hook.contains("SCREENCOMP_GUARD_REQUIRE"), "{hook}");
-    assert!(hook.contains("cannot run"), "{hook}");
-}
-
-#[test]
-fn init_enable_hook_wires_the_git_hooks_path() {
+fn init_preserves_user_hooks_and_reports_only_scaffold_files() {
     if !git_available() {
         return;
     }
     let dir = TempDir::new().unwrap();
     git(&dir, &["init", "-q"]);
+    git(&dir, &["config", "core.hooksPath", "user-hooks"]);
+    let hook = dir.path().join(".githooks/pre-push");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "user-owned hook\n").unwrap();
+    for extra in [
+        vec![],
+        vec!["--enable-hook"],
+        vec!["--enable-hook", "--force"],
+    ] {
+        let output = bin()
+            .args(["init", "--dir"])
+            .arg(dir.path())
+            .args(["--format", "json"])
+            .args(&extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout.split(|b| *b == b'\n').count(), 2);
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(!report.contains("hook_enabled"), "{report}");
+        let mut expected_files = Vec::new();
+        for artifact in [
+            "screencomp.toml",
+            ".github/workflows/visual-docs.yml",
+            ".gitignore",
+        ] {
+            let path = dir.path().join(artifact);
+            assert!(path.is_file());
+            let action = if extra.contains(&"--force") && artifact != ".gitignore" {
+                "overwritten"
+            } else if extra.is_empty() {
+                "created"
+            } else {
+                "skipped"
+            };
+            let escaped = path.to_str().unwrap().replace('\\', "\\\\");
+            expected_files.push(format!(r#"{{"path":"{escaped}","action":"{action}"}}"#));
+        }
+        assert_eq!(
+            report,
+            format!("{{\"files\":[{}]}}\n", expected_files.join(","))
+        );
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "user-owned hook\n");
+        let config = command("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["config", "--get", "core.hooksPath"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&config.stdout).trim(), "user-hooks");
+    }
+}
 
+#[test]
+fn init_enable_hook_explains_ci_without_installing_a_hook() {
+    let dir = TempDir::new().unwrap();
     bin()
         .args(["init", "--dir"])
         .arg(dir.path())
-        .args(["--arch", "auto", "--enable-hook"])
+        .arg("--enable-hook")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Enabled the local pre-push guard"));
-
-    let out = command("git")
-        .arg("-C")
-        .arg(dir.path())
-        .args(["config", "--get", "core.hooksPath"])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), ".githooks");
+        .stdout(predicate::str::contains("CI handles visual verification"))
+        .stderr(predicate::str::is_empty());
+    assert!(!dir.path().join(".githooks").exists());
 }
 
 #[test]
@@ -1912,8 +1917,8 @@ fn init_and_doctor_from_inside_a_hook_act_on_the_named_dir_not_the_hooks_repo() 
     }
     // Git exports `GIT_DIR` to every hook it runs, and a child `git` honours it
     // over `-C <dir>`. A user running `screencomp init --enable-hook` from a
-    // hook (or this suite running under the pre-push hook) must still configure
-    // and read the repository named by `--dir`, never the hook's own.
+    // hook must preserve Git settings; doctor must read the repository named
+    // by `--dir`, never the hook's own.
     let hooks_repo = TempDir::new().unwrap();
     git(&hooks_repo, &["init", "-q"]);
     git(
@@ -1924,6 +1929,9 @@ fn init_and_doctor_from_inside_a_hook_act_on_the_named_dir_not_the_hooks_repo() 
 
     let dir = TempDir::new().unwrap();
     git(&dir, &["init", "-q"]);
+    git(&dir, &["config", "core.hooksPath", ".githooks"]);
+    std::fs::create_dir_all(dir.path().join(".githooks")).unwrap();
+    std::fs::write(dir.path().join(".githooks/pre-push"), "user hook").unwrap();
     bin()
         .env("GIT_DIR", &hooks_git_dir)
         .args(["init", "--dir"])
@@ -1931,7 +1939,7 @@ fn init_and_doctor_from_inside_a_hook_act_on_the_named_dir_not_the_hooks_repo() 
         .args(["--arch", "auto", "--enable-hook", "--format", "json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""hook_enabled":"enabled""#));
+        .stdout(predicate::str::contains("hook_enabled").not());
 
     let hooks_path = |repo: &TempDir| {
         let out = command("git")
@@ -1960,7 +1968,7 @@ fn init_and_doctor_from_inside_a_hook_act_on_the_named_dir_not_the_hooks_repo() 
 
 #[test]
 fn init_enable_hook_outside_a_repo_reports_without_failing() {
-    // The scaffold still succeeds; only the enable step is skipped, with guidance.
+    // The compatibility flag requires no Git repository.
     let dir = TempDir::new().unwrap();
     bin()
         .args(["init", "--dir"])
@@ -1968,17 +1976,13 @@ fn init_enable_hook_outside_a_repo_reports_without_failing() {
         .args(["--arch", "auto", "--enable-hook", "--format", "json"])
         .assert()
         .success()
-        // A bare temp dir is not a git repo, so enabling fails (or git is absent).
-        .stdout(
-            predicate::str::contains(r#""hook_enabled":"failed""#)
-                .or(predicate::str::contains(r#""hook_enabled":"git-unavailable""#)),
-        );
+        .stdout(predicate::str::contains("hook_enabled").not());
+    assert!(!dir.path().join(".githooks").exists());
 }
 
 #[test]
-fn doctor_env_flags_a_scaffolded_but_unenabled_guard() {
-    // The inert-guard gap: init drops .githooks/pre-push but core.hooksPath is
-    // never set, so the repo looks protected while nothing runs.
+fn doctor_env_flags_a_manual_but_unenabled_guard() {
+    // Independently installed hooks still receive environment diagnostics.
     let dir = TempDir::new().unwrap();
     bin()
         .args(["init", "--dir"])
@@ -1986,6 +1990,9 @@ fn doctor_env_flags_a_scaffolded_but_unenabled_guard() {
         .args(["--arch", "auto"])
         .assert()
         .success();
+
+    std::fs::create_dir_all(dir.path().join(".githooks")).unwrap();
+    std::fs::write(dir.path().join(".githooks/pre-push"), "manual hook").unwrap();
 
     bin()
         .args(["doctor", "--env", "--exit-code", "--dir"])
@@ -2049,6 +2056,10 @@ fn doctor_env_reports_an_enabled_guard_in_step() {
         .assert()
         .success();
 
+    git(&dir, &["config", "core.hooksPath", ".githooks"]);
+    std::fs::create_dir_all(dir.path().join(".githooks")).unwrap();
+    std::fs::write(dir.path().join(".githooks/pre-push"), "manual hook").unwrap();
+
     // Guard enabled and the scaffolded workflow pins this very CLI version, so the
     // environment is ready (Docker is advisory and never fails the preflight).
     bin()
@@ -2059,4 +2070,39 @@ fn doctor_env_reports_an_enabled_guard_in_step() {
         .stdout(predicate::str::contains("pre-push guard: enabled"))
         .stdout(predicate::str::contains("matches this CLI"))
         .stdout(predicate::str::contains("ok: environment ready"));
+}
+
+#[test]
+fn init_ci_scaffold_needs_no_local_guard_for_doctor() {
+    let dir = TempDir::new().unwrap();
+    bin()
+        .args(["init", "--dir"])
+        .arg(dir.path())
+        .assert()
+        .success();
+    bin()
+        .args(["doctor", "--env", "--exit-code", "--dir"])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "pre-push guard: not installed (CI handles visual verification)",
+        ))
+        .stdout(predicate::str::contains("init --enable-hook").not());
+    bin()
+        .args([
+            "doctor",
+            "--env",
+            "--exit-code",
+            "--format",
+            "json",
+            "--dir",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#""pre_push_guard":"not-scaffolded""#,
+        ))
+        .stdout(predicate::str::contains(r#""ok":true"#));
 }

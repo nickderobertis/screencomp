@@ -57,6 +57,8 @@ test("each suite and surface selects its own project and its dependents only", (
   assert.deepEqual(affectedBy(["demo/capture.sh"]), ["demo", "visual-docs-actions"]);
   assert.deepEqual(affectedBy(["demo/pages/index.html"]), ["demo"]);
   assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["github-workflows", "workspace"]);
+  assert.deepEqual(affectedBy(["scripts/hooks-install.sh"]), ["workspace"]);
+  assert.deepEqual(affectedBy(["lefthook.yml"]), ["workspace"]);
 });
 
 test("a documentation-only change outside every project selects nothing", () => {
