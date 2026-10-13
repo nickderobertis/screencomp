@@ -36,8 +36,8 @@ fn repository_env() -> &'static [String] {
 /// A subprocess with Git's repository-locating environment cleared, so a `git`
 /// it runs resolves the repository from its working directory alone.
 ///
-/// Spawn everything through this, never [`Command::new`] directly. The pre-push
-/// hook runs both suites and Git exports `GIT_DIR` to a hook it runs, so a `git`
+/// Spawn everything through this, never [`Command::new`] directly. These suites
+/// may run inside Git hooks, and Git exports `GIT_DIR` to a hook it runs, so a `git`
 /// that inherited it — or one of the shipped shell scripts these tests execute —
 /// acts on the repository being pushed instead of the temporary directory under
 /// test: staging every tracked file's removal, committing it, renaming the

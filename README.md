@@ -38,7 +38,7 @@ two such captures, `screencomp`:
   moment they diverge.
 - **`doctor`** — a [preflight](#preflight-doctor) that prints the resolved
   arch subtree and sanity-checks the `captures.json` index before you classify;
-  `doctor --env` instead checks the *setup* (is the pre-push guard enabled, does
+  `doctor --env` instead checks the *setup* (is an existing manual guard enabled, does
   the workflow pin match this CLI, is Docker present).
 - **`arches`** — prints the project's configured `[capture].arches` (one per
   line, or a JSON array); the CI matrix reads it to fan out one capture lane per
@@ -117,14 +117,11 @@ just build-release   # binary at target/release/screencomp
 Decide how CI should react to a visual change before wiring the workflow — this is
 the one choice that shapes everything downstream:
 
-- **Strict gate + local pre-push guard (recommended).** CI **fails** when a
-  capture drifts from the committed baseline. You regenerate and commit the
-  baseline locally — the [pre-push guard](#local-pre-push-guard-the-strict-gates-local-half)
-  re-captures only when screenshot-relevant files change and blocks the push until
-  you do — so an intended change is already committed by the time CI runs: green on
-  intended changes, red only on drift you missed. Pushes nothing back, so it needs
-  no elevated token and just works under branch protection. This is what
-  [`screencomp init`](#scaffold-a-setup-init) scaffolds.
+- **Strict CI gate (recommended).** CI **fails** when a capture drifts from the
+  committed baseline. Run the pinned-container capture locally, review the gallery,
+  and commit intended baseline changes before pushing. Pushes need no duplicate
+  local hook. This needs no elevated token and works under branch protection.
+  It is what [`screencomp init`](#scaffold-a-setup-init) scaffolds.
 - **CI auto-accept (lighter).** CI regenerates the baseline and pushes it to the
   PR branch; drift never turns the check red. Less to set up, but an unintended
   visual change can slip through unnoticed, and the manifest push needs a
@@ -482,29 +479,23 @@ scaffold matches the machine it is generated on. This scaffolds the
 [strict gate](#pick-your-gate) turnkey — the safe path is the one-command one:
 
 - `screencomp.toml` — config, including `[capture].arches` (the single source of
-  truth for which arches you maintain) and the `[guard]` globs the pre-push hook uses.
+  truth for which arches you maintain) and optional `[guard]` globs for manual use.
 - `.github/workflows/visual-docs.yml` — a caller for the
   [reusable workflow](#batteries-included-reusable-workflow) with `fail-on-drift:
   true`, so CI fails on unexpected drift. It passes no arch — CI reads
   `[capture].arches`.
-- `.githooks/pre-push` — the local guard, executable; it detects your host arch at
-  runtime, so the one committed hook is correct on every developer's machine. Enable
-  it once per clone with `git config core.hooksPath .githooks` — or pass
-  `screencomp init --enable-hook` to have `init` run that for you (it otherwise just
-  prints the command, and a scaffolded-but-unenabled guard runs nothing). The hook
-  runs the capture container as your host user (`--user "$(id -u):$(id -g)"`), so
-  what it writes through the bind mount stays yours instead of landing root-owned,
-  and passes your host CA bundle into it so it survives TLS-intercepting proxies.
-  Under that mapping the `node_modules` mask and `HOME` are host directories the
-  hook creates and removes — see
-  [the capture-container form](#capturing-in-a-containerized-remote-or-proxied-environment).
 - the `.gitignore` lines that commit the tiny digest baselines while ignoring
   generated PNGs and galleries.
 
 It never overwrites existing files (pass `--force` to), and appends the
 `.gitignore` block idempotently, so it is safe to re-run. After wiring your
-capture into both the workflow and the hook, seed the baseline once and commit it
-(the `init` output prints the exact command). The gate is strict by default; to
+capture into the workflow, run it locally, review the gallery, and commit the
+baseline (the `init` output prints the exact command). The gate is strict by default.
+
+`init` creates no hook and never changes `core.hooksPath`, including on reruns
+with `--force`. The accepted `--enable-hook` flag explains that CI handles visual
+verification and a duplicate hook is unnecessary. JSON reports only the three
+scaffold artifacts and omits `hook_enabled` because nothing was enabled. To
 switch to [CI auto-accept](#pick-your-gate) set `fail-on-drift: false` and
 `update-manifest: true` in the workflow.
 
@@ -897,12 +888,13 @@ docker: available
 problems found: the strict gate's local guard is not active
 ```
 
-It reports three things and, with `--exit-code`, fails (`3`) on the two that
-silently lie:
+No local guard is healthy for the CI scaffold. Existing independently installed
+guards remain diagnosable. It reports three things and, with `--exit-code`,
+fails (`3`) on the two that silently lie:
 
-- **pre-push guard** — a scaffolded `.githooks/pre-push` that was never enabled
+- **pre-push guard** — an independently installed `.githooks/pre-push` that was never enabled
   (`core.hooksPath` unset) is the inert-guard trap: the strict gate's local half
-  runs nothing. A **problem**. (Run `screencomp init --enable-hook`, or
+  runs nothing. A **problem**. (For a deliberately installed manual hook, run
   `git config core.hooksPath .githooks`.)
 - **workflow pin vs CLI** — the scaffolded workflow pins the reusable workflow to
   the version that wrote it; an installed CLI that has since drifted can classify
@@ -1006,13 +998,12 @@ still settling at capture time.
 
 ## Local pre-push guard (the strict gate's local half)
 
-Under the [strict gate](#pick-your-gate), CI hard-fails on drift and the developer
-owns the baseline. This hook is what makes that ergonomic: it regenerates and lets
-you **commit** the new baseline before pushing, so CI stays green on intended
-changes and goes red only on ones you missed. `screencomp init` scaffolds it at
-`.githooks/pre-push`; [`examples/pre-push`](examples/pre-push) is the copy-paste
-template. (Without it — or under CI auto-accept — you can change UI, pass your
-whole local gate, and push without ever learning the visual baseline moved.)
+The CI scaffold verifies drift without installing a local hook. For users without
+CI, [`examples/pre-push`](examples/pre-push) remains an optional manual guard;
+install it explicitly using [the hook instructions](examples/hooks/README.md).
+`screencomp init` does not create or enable it.
+
+The following describes that independently installed guard.
 
 **The whole loop, when you change something visual:** edit, then `git push`. If
 nothing screenshot-relevant changed the hook is a no-op; if it did, the hook
@@ -1074,7 +1065,7 @@ guard is enabled and Docker is reachable. Then:
 - **Root-owned files after a capture.** The container bind-mounts your working
   tree, so running it as root leaves everything it writes there owned by root and
   undeletable without sudo. Run it as yourself. Three things must come with that
-  mapping — this is the form the scaffolded hook and
+  mapping — this is the form the manual hook and
   [`examples/pre-push`](examples/pre-push) generate, and hand-rolled `docker run`s
   should match it:
 
@@ -1110,7 +1101,7 @@ first-PR confusion:
 - **The committed digest manifest is the pass/fail gate.** `classify --exit-code`
   compares the capture against `shots/baseline/<arch>.json`. Under the
   [strict gate](#pick-your-gate) you regenerate and commit that manifest locally
-  (the pre-push guard), so by the time CI runs it already matches — the gate is
+  after capture and gallery review, so by the time CI runs it already matches — the gate is
   green.
 - **The gallery comment is informational before/after.** It diffs against the PR
   *base branch's* gallery/manifest to show what your PR changes. So a PR that
@@ -1277,6 +1268,13 @@ just bootstrap       # install dev tools (nextest, llvm-cov, deny, machete, left
 just check           # the quality gate over the projects your branch affects (alias: just full-check)
 just check all       # the same gate over every project
 ```
+
+Bootstrap installs the retained pre-commit checks (formatting, staged whitespace
+and conflict checks, and file size limits). CI owns clippy, tests and llmlint;
+pushes run no duplicate checks. Re-run `just hooks-install` in existing clones to
+retire an unchanged generated lefthook pre-push dispatcher. User-owned pre-push
+hooks and shared `core.hooksPath` settings are preserved. Manual `just check`,
+capture, baseline and gallery review commands remain available.
 
 Common recipes (`just --list` for all):
 

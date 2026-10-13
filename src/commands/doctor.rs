@@ -10,8 +10,8 @@
 //! `.png` files stranded at the root). With `--exit-code` it doubles as a CI gate.
 //!
 //! `--env` checks the *other* class of surprise — a setup that looks wired but
-//! isn't: a scaffolded pre-push guard that was never enabled (`core.hooksPath`
-//! unset), an installed CLI that has drifted from the version the workflow pins,
+//! isn't: an independently installed pre-push guard that was never enabled
+//! (`core.hooksPath` unset), an installed CLI that has drifted from the version the workflow pins,
 //! and a missing Docker that will fail capture. These otherwise bite only at push
 //! or CI time; `--env` surfaces them in one command.
 
@@ -438,7 +438,7 @@ fn write_env_human(
         GuardState::Custom { hooks_path } => {
             format!("custom (core.hooksPath = '{hooks_path}', no .githooks/pre-push)")
         }
-        GuardState::NotScaffolded => "not set up — run: screencomp init --enable-hook".to_owned(),
+        GuardState::NotScaffolded => "not installed (CI handles visual verification)".to_owned(),
     };
     writeln!(out, "pre-push guard: {guard_line}").map_err(write_err)?;
 

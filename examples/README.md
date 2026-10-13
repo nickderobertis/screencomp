@@ -80,8 +80,8 @@ to native CI — see `screencomp-demo` for a worked configuration.
 
 The workflow ships the **strict gate** by default: `classify --exit-code` FAILS
 the job when a capture drifts from the committed baseline, and you regenerate and
-commit the baseline locally (the [pre-push guard](#local-pre-push-guard-the-strict-gates-local-half))
-before pushing. CI goes red only on drift you missed. Because nothing is pushed
+commit the baseline locally after capture and gallery review, before pushing.
+CI goes red only on drift you missed. Because nothing is pushed
 back to the branch, this needs no elevated token and never trips the
 required-status-check problem below — it just works under branch protection.
 
@@ -111,8 +111,8 @@ Two ways to run CI auto-accept under branch protection:
   re-triggered run regenerates an identical manifest, finds no diff, and does
   not push, so it converges after one extra run.
 - **Use the strict gate instead** and commit the manifest yourself when visuals
-  change — the [local pre-push guard](#local-pre-push-guard-the-strict-gates-local-half)
-  regenerates it on your machine and blocks the push until you do. This keeps the
+  change — capture locally, review the gallery, and commit the intended baseline.
+  This keeps the
   workflow on the default token (the recommended path).
 
 A PR already stuck this way recovers as soon as its branch is pushed with real
@@ -135,8 +135,9 @@ gate. CI hard-fails on drift; this hook lets you regenerate and **commit** the n
 baseline before pushing, so CI stays green on intended changes and goes red only
 on ones you missed. Without it (or under CI auto-accept) you can change UI, pass
 your whole local gate, and push without ever learning the visual baseline moved.
-The hook closes that gap on your machine, before CI runs. `screencomp init`
-scaffolds it for you at `.githooks/pre-push`; it detects the host arch at runtime,
+The hook closes that gap on your machine, before CI runs. For users without CI,
+install it manually; `screencomp init` creates no hook. It detects the host arch
+at runtime,
 so the one committed hook is correct on every developer's machine.
 
 It fires **only when a pushed change matches the `[guard].paths` globs** in

@@ -2,9 +2,8 @@
 //!
 //! Like the filesystem boundary in [`super::fs`], this is the *only* place the
 //! crate shells out to Git or inspects `PATH`, so the rest of the code stays
-//! free of process state. It backs `init --enable-hook` (a Git write) and
-//! `doctor --env` (Git and tool-presence reads), both of which need to know
-//! whether the local repository is actually wired to run the pre-push guard.
+//! free of process state. It backs `doctor --env` (Git and tool-presence reads),
+//! including diagnosis of an independently installed pre-push guard.
 
 use std::process::Command;
 
@@ -13,9 +12,9 @@ use camino::Utf8Path;
 /// Environment variables through which Git overrides where the repository is.
 /// Git exports `GIT_DIR` (and, for some hooks, `GIT_INDEX_FILE` and friends) to
 /// every hook it runs, and a child `git` honours them over `-C <dir>` — so a
-/// `screencomp init --enable-hook` launched from inside a hook would configure
+/// `screencomp doctor --env` launched from inside a hook would inspect
 /// the hook's repository, not `dir`'s. Every spawn here drops them so `-C <dir>`
-/// alone decides which repository is read or written.
+/// alone decides which repository is read.
 ///
 /// Git owns this list (`git rev-parse --local-env-vars`); it is spelled out here
 /// so a spawn never depends on a second `git` call succeeding first, and
@@ -49,35 +48,6 @@ fn git_in(dir: &Utf8Path) -> Command {
         command.env_remove(var);
     }
     command
-}
-
-/// Outcome of trying to enable the committed hooks directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HookEnable {
-    /// `core.hooksPath` was set successfully.
-    Set,
-    /// `git` is not installed, so nothing was changed.
-    GitUnavailable,
-    /// `git` ran but refused (e.g. `dir` is not a Git repository); carries the
-    /// trimmed stderr so the caller can explain why.
-    Failed(String),
-}
-
-/// Point Git at `dir`'s committed hooks directory via
-/// `git -C <dir> config core.hooksPath <value>`.
-///
-/// Best-effort by design: a missing `git` or a non-repository directory is
-/// reported, not raised, so `init`'s scaffold still succeeds and the user gets a
-/// clear next step instead of a failed command.
-pub(crate) fn set_hooks_path(dir: &Utf8Path, value: &str) -> HookEnable {
-    let output = git_in(dir)
-        .args(["config", "core.hooksPath", value])
-        .output();
-    match output {
-        Ok(out) if out.status.success() => HookEnable::Set,
-        Ok(out) => HookEnable::Failed(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
-        Err(_) => HookEnable::GitUnavailable,
-    }
 }
 
 /// Read the effective `core.hooksPath` for the repository at `dir`, if any.
@@ -134,7 +104,13 @@ mod tests {
             return;
         }
         assert!(git_in(dir).args(["init", "-q"]).status().unwrap().success());
-        assert_eq!(set_hooks_path(dir, ".githooks"), HookEnable::Set);
+        assert!(
+            git_in(dir)
+                .args(["config", "core.hooksPath", ".githooks"])
+                .status()
+                .unwrap()
+                .success()
+        );
         assert_eq!(hooks_path(dir), Some(".githooks".to_owned()));
     }
 

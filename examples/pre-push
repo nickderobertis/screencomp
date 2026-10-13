@@ -8,8 +8,9 @@
 # screenshot-relevant files changed (see [guard].paths in screencomp.toml) and
 # makes any baseline change loud and reviewable before you push. Capture and git
 # stay in your hands — the capture step below is yours to adapt, exactly like
-# visual-docs.yml's "Capture screenshots" step. `screencomp init` scaffolds this
-# same hook at .githooks/pre-push; it detects the host arch at runtime, so the one
+# visual-docs.yml's "Capture screenshots" step. `screencomp init` writes the
+# CI scaffold without a local hook. Install this template manually for no-CI use;
+# it detects the host arch at runtime, so the one
 # committed hook is correct on every developer's machine.
 #
 # The whole loop when you change something visual: edit, then `git push`. This
