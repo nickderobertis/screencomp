@@ -2039,19 +2039,6 @@ fn assert_capture_runs_as_the_host_user(label: &str, script: &str, scratch_owner
 }
 
 #[test]
-fn scaffolded_hook_captures_as_the_host_user() {
-    let dir = TempDir::new().unwrap();
-    let root = path_str(dir.path());
-    invoke(&["screencomp", "init", "--dir", &root]).0.unwrap();
-    let hook = std::fs::read_to_string(dir.path().join(".githooks/pre-push")).unwrap();
-    assert_capture_runs_as_the_host_user(
-        "the hook `screencomp init` scaffolds",
-        &hook,
-        Scratch::RemovedByTheScript,
-    );
-}
-
-#[test]
 fn example_hook_captures_as_the_host_user() {
     // Not documentation: sync-demo.yml installs this file verbatim as the demo
     // repository's real .githooks/pre-push, so a regression here is a live defect.

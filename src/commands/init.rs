@@ -2,14 +2,14 @@
 //!
 //! Day-one wiring is almost entirely boilerplate: a `screencomp.toml`, a CI
 //! workflow that captures and then hands the gallery/comment/Pages half to
-//! screencomp, a local pre-push guard, and the `.gitignore` lines that commit the
+//! screencomp and the `.gitignore` lines that commit the
 //! tiny digest baselines while ignoring the generated PNGs and galleries. This
 //! command writes that scaffold deterministically. It never clobbers existing
 //! files unless `--force` is given and reports each path as created, skipped, or
 //! overwritten, so it is safe to re-run.
 //!
 //! The scaffold is the *strict* gate by design: CI fails on unexpected drift and
-//! the developer owns the baseline (regenerate it locally via the pre-push guard,
+//! the developer owns the baseline (capture and review it locally,
 //! commit it). The path of least resistance is therefore the safe one — flipping
 //! to CI auto-accept is a documented opt-in in the generated workflow, not the
 //! default.
@@ -27,16 +27,10 @@ use super::{Ctx, arch, write_err};
 use crate::cli::{InitArgs, OutputFormat};
 use crate::errors::AppError;
 use crate::io::fs::{self, Scaffold};
-use crate::io::host::{self, HookEnable};
 
 /// Sentinel line in the `.gitignore` block; its presence means the block is
 /// already there, keeping a re-run idempotent.
 const GITIGNORE_MARKER: &str = "# screencomp: commit the digest baselines";
-
-/// Committed hooks directory wired with `git config core.hooksPath`. A committed
-/// path (not `.git/hooks/`, which clones do not carry) makes the guard shareable
-/// without depending on a specific hook manager.
-const HOOK_PATH: &str = ".githooks/pre-push";
 
 pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32, AppError> {
     // Resolve `auto` to the host arch so the scaffold's `[capture].arches` matches
@@ -49,10 +43,9 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
     };
     let toml = render_config(&arch);
     let workflow = render_workflow();
-    let hook = render_hook();
     let gitignore = render_gitignore();
 
-    // The config and workflow are plain scaffolds; the hook is executable;
+    // The config and workflow are plain scaffolds;
     // .gitignore is appended so a pre-existing ignore file is preserved.
     let outcomes = [
         (
@@ -68,57 +61,26 @@ pub(crate) fn run(args: &InitArgs, ctx: &Ctx, out: &mut dyn Write) -> Result<i32
             )?,
         ),
         (
-            args.dir.join(HOOK_PATH),
-            fs::write_executable_scaffold(&args.dir.join(HOOK_PATH), &hook, args.force)?,
-        ),
-        (
             args.dir.join(".gitignore"),
             fs::append_block(&args.dir.join(".gitignore"), &gitignore, GITIGNORE_MARKER)?,
         ),
     ];
 
-    // Optionally wire the guard so the strict gate's local half actually runs,
-    // instead of leaving the developer an undocumented `git config` step (the gap
-    // where a scaffolded-but-inert hook silently protects nothing).
-    let hook_enable = args
-        .enable_hook
-        .then(|| host::set_hooks_path(&args.dir, ".githooks"));
-
     match args.format {
-        OutputFormat::Json => write_json(&outcomes, hook_enable.as_ref(), out)?,
+        OutputFormat::Json => write_json(&outcomes, out)?,
         OutputFormat::Human if !ctx.quiet => {
-            write_human(&arch, &outcomes, hook_enable.as_ref(), out)?;
+            write_human(&arch, &outcomes, args.enable_hook, out)?;
         }
         OutputFormat::Human => {}
     }
     Ok(0)
 }
 
-/// Render the "enable the guard" line for the human report, reflecting what
-/// `--enable-hook` did (or the command to run when it was not used or failed).
-fn enable_step(hook_enable: Option<&HookEnable>) -> String {
-    match hook_enable {
-        Some(HookEnable::Set) => {
-            "Enabled the local pre-push guard (core.hooksPath -> .githooks).".to_owned()
-        }
-        Some(HookEnable::GitUnavailable) => "Could not enable the guard: git is not on PATH. \
-             Once installed, run: git config core.hooksPath .githooks"
-            .to_owned(),
-        Some(HookEnable::Failed(detail)) => format!(
-            "Could not enable the guard (git: {detail}). \
-             Run it yourself from a git checkout: git config core.hooksPath .githooks"
-        ),
-        None => "Enable the local pre-push guard (the strict gate's local half):\n   \
-             git config core.hooksPath .githooks   (or re-run init with --enable-hook)"
-            .to_owned(),
-    }
-}
-
 /// Human-readable report: one line per file, then next steps.
 fn write_human(
     arch: &str,
     outcomes: &[(Utf8PathBuf, Scaffold)],
-    hook_enable: Option<&HookEnable>,
+    hook_flag_supplied: bool,
     out: &mut dyn Write,
 ) -> Result<(), AppError> {
     for (path, outcome) in outcomes {
@@ -129,49 +91,30 @@ fn write_human(
         };
         writeln!(out, "{verb} {path}").map_err(write_err)?;
     }
-    // When `--enable-hook` succeeded, the guard is already wired, so step 2 below
-    // confirms it; otherwise it prints the command (or why the attempt failed).
-    let step_2 = enable_step(hook_enable);
+    if hook_flag_supplied {
+        writeln!(out, "--enable-hook is retained for compatibility: CI handles visual verification, so a duplicate pre-push hook is unnecessary.")
+            .map_err(write_err)?;
+    }
     writeln!(
         out,
         "\nNext steps:\n\
-         1. Wire your real capture into .github/workflows/visual-docs.yml and\n   \
-         .githooks/pre-push so each writes shots/current/{arch}/captures.json plus\n   \
-         the PNGs it references (each shot's name, toggles, hash, and image path).\n   \
-         A capture that writes only PNGs can have screencomp author that index:\n   \
+         1. Wire your capture into .github/workflows/visual-docs.yml so it writes\n   \
+         shots/current/{arch}/captures.json and its PNGs. For PNG-only captures:\n   \
          screencomp index --input shots/current --toggles-from-path\n\
-         2. {step_2}\n\
-         3. Seed the baseline once on {arch} and commit it:\n   \
-         screencomp manifest --input shots/current \\\n     \
-         --output shots/baseline/{arch}.json\n\
+         2. Run the same Linux-container capture locally and review changes:\n   \
+         screencomp gallery --input shots/current --output shots/gallery\n\
+         3. Write the intended baseline and commit it:\n   \
+         screencomp manifest --input shots/current --output shots/baseline/{arch}.json\n\
          4. Enable GitHub Pages (Settings -> Pages -> Deploy from a branch: gh-pages /).\n\
-         \n\
-         To support another CPU arch, add it to [capture].arches in\n\
-         screencomp.toml (e.g. arches = [\"{arch}\", \"x86_64\"]); CI gains a lane\n\
-         per arch and you seed its baseline the same way.\n\
-         \n\
-         The gate is strict by default: CI fails on unexpected drift, and you\n\
-         regenerate the baseline locally (the pre-push guard) and commit it. To\n\
-         switch to CI auto-accept instead, set fail-on-drift:false and\n\
-         update-manifest:true in the workflow.\n\
-         \n\
-         Day-to-day, once set up: change something visual, then `git push`. The\n\
-         pre-push guard re-captures and, on drift, regenerates the baseline,\n\
-         builds a review gallery, and blocks — review it, `git add` the baseline,\n\
-         commit, and push again. That is the whole loop. You never verify your\n\
-         CPU arch (it is auto-detected; CI gates its own lane) or pre-flight\n\
-         Docker (the guard checks it and fails loudly). It is local-first: you\n\
-         own the baseline, so don't wait for CI to handle a visual change."
+         Add CPU arches to [capture].arches and seed each baseline the same way.\n\
+         CI fails on unexpected drift. Capture, review the gallery, and commit\n\
+         intended baseline changes before pushing."
     )
     .map_err(write_err)
 }
 
 /// Stable single-line JSON contract for automation.
-fn write_json(
-    outcomes: &[(Utf8PathBuf, Scaffold)],
-    hook_enable: Option<&HookEnable>,
-    out: &mut dyn Write,
-) -> Result<(), AppError> {
+fn write_json(outcomes: &[(Utf8PathBuf, Scaffold)], out: &mut dyn Write) -> Result<(), AppError> {
     #[derive(Serialize)]
     struct File<'a> {
         path: &'a str,
@@ -180,8 +123,7 @@ fn write_json(
     #[derive(Serialize)]
     struct Report<'a> {
         files: Vec<File<'a>>,
-        /// Present only when `--enable-hook` was passed: `enabled`,
-        /// `git-unavailable`, or `failed`.
+        /// Reserved compatibility field; absent because init enables no hook.
         #[serde(skip_serializing_if = "Option::is_none")]
         hook_enabled: Option<&'a str>,
     }
@@ -197,14 +139,9 @@ fn write_json(
             },
         })
         .collect();
-    let hook_enabled = hook_enable.map(|outcome| match outcome {
-        HookEnable::Set => "enabled",
-        HookEnable::GitUnavailable => "git-unavailable",
-        HookEnable::Failed(_) => "failed",
-    });
     let json = serde_json::to_string(&Report {
         files,
-        hook_enabled,
+        hook_enabled: None,
     })
     .map_err(|e| AppError::io("serializing JSON", std::io::Error::other(e)))?;
     writeln!(out, "{json}").map_err(write_err)
@@ -245,7 +182,7 @@ embed_limit = 10             # embed images inline when <= N shots differ (0 dis
 # values = [\"desktop\", \"mobile\"]
 
 [guard]
-# Local pre-push guard (.githooks/pre-push): re-capture only when these globs
+# Optional manual guard (examples/pre-push): re-capture only when these globs
 # change. Adjust to the files that actually affect your screenshots.
 paths = [\"src/**\", \"**/*.{{css,scss,html}}\"]
 gallery = \"shots/review\"
@@ -277,7 +214,7 @@ fn render_gitignore() -> String {
 /// It opts into the strict gate explicitly (`fail-on-drift: true`) so the model
 /// is visible in the consumer's own file rather than hidden in a default: CI
 /// fails on unexpected drift and the developer owns the baseline (regenerate it
-/// with the pre-push guard and commit). Because the manifest is not auto-pushed,
+/// manually and commit). Because the manifest is not auto-pushed,
 /// no `push-token` secret is needed.
 fn render_workflow() -> String {
     let version = env!("CARGO_PKG_VERSION");
@@ -315,8 +252,8 @@ jobs:
     uses: nickderobertis/screencomp/.github/workflows/visual-docs-reusable.yml@v{version}
     with:
       # Strict gate (the safe default): CI FAILS if the capture drifts from the
-      # committed baseline. Regenerate the baseline locally with the pre-push
-      # guard (.githooks/pre-push) and commit it. To switch to CI auto-accept
+      # committed baseline. Capture and review locally, then commit the intended
+      # baseline. To switch to CI auto-accept
       # instead, set `fail-on-drift: false` and `update-manifest: true` (and wire
       # `push-token` under `secrets:` so the bot's manifest push can trigger CI).
       fail-on-drift: true
@@ -351,189 +288,3 @@ jobs:
 "
     )
 }
-
-/// The scaffolded pre-push guard. It is the local half of the strict gate:
-/// re-capture only when `[guard].paths` change, and block the push on drift so
-/// the developer regenerates and commits the baseline before CI ever sees it.
-///
-/// It detects the host arch at runtime (rather than baking it) so the same
-/// committed hook is correct on every developer's machine: ARM and amd64 devs
-/// each capture and classify under their own arch. The `scope` relevance check
-/// distinguishes "a path matched" (exit 3) from "the check errored" (any other
-/// non-zero) — an error skips rather than forcing a slow capture, since CI is the
-/// backstop. The capture block is clearly marked for the consumer to adapt.
-// llmlint: ignore-block[changed_behavior_has_e2e] This function is the shell template alone: the capture container cannot run in this repository's offline, tempdir-isolated suite; it is covered by the demo journey AGENTS.md requires before release (demo/ through the pinned image, checking ownership under the bind mount and byte-identical PNGs) and by the contract checks over all five shipped copies in tests/integration.rs.
-fn render_hook() -> String {
-    "\
-#!/usr/bin/env bash
-# screencomp local pre-push guard (scaffolded by `screencomp init`).
-#
-# Local half of the STRICT gate: CI fails on unexpected drift, and this hook lets
-# you regenerate and commit the baseline BEFORE pushing so CI stays green. It
-# re-captures only when screenshot-relevant files change ([guard].paths in
-# screencomp.toml) and blocks the push on drift. Capture and git stay in your
-# hands; the marked capture block below is yours to adapt.
-#
-# The whole loop when you change something visual: edit, then `git push`. This
-# hook captures (only if [guard].paths changed) and, on drift, regenerates the
-# baseline + builds a review gallery and BLOCKS — then you review the gallery,
-# `git add` the baseline, commit, and push again. That is the entire workflow,
-# local-first by design: you own the baseline, so don't wait for CI to handle
-# drift. Don't pre-check your environment either — your CPU arch is auto-detected
-# just below (CI gates its own arch lane; local and CI never need to match) and
-# Docker is checked further down and fails loudly if missing. Just run the loop.
-#
-# Enable once per clone:  git config core.hooksPath .githooks
-# Bypass intentionally:   git push --no-verify
-set -euo pipefail
-
-# Detect this machine's arch so the same committed hook works for every developer.
-# It must be one of [capture].arches in screencomp.toml; if not, classify below
-# fails with an explanatory error telling you to add it.
-case \"$(uname -m)\" in
-  arm64 | aarch64) ARCH=\"arm64\";  DOCKER_PLATFORM=\"linux/arm64\" ;;
-  x86_64 | amd64)  ARCH=\"x86_64\"; DOCKER_PLATFORM=\"linux/amd64\" ;;
-  *) echo \"pre-push: unsupported arch $(uname -m); bypass with git push --no-verify\" >&2; exit 1 ;;
-esac
-
-# ---- adapt these to your repo -----------------------------------------------
-MANIFEST=\"shots/baseline/${ARCH}.json\"    # committed baseline for this arch
-GALLERY=\"shots/review\"                     # [guard].gallery (review output)
-CURRENT=\"shots/current\"                    # capture root, mirrors visual-docs.yml
-# -----------------------------------------------------------------------------
-
-# No-op under CI: the visual-docs workflow is the source of truth there.
-[ -n \"${CI:-}\" ] && exit 0
-
-# Without the CLI the guard CANNOT evaluate the push, so do NOT skip silently — a
-# strict gate you believe is protecting you but isn't is the worst outcome. Warn
-# loudly and skip; set SCREENCOMP_GUARD_REQUIRE=1 to fail here instead (safest
-# once everyone has the CLI). CI still gates this regardless.
-if ! command -v screencomp >/dev/null 2>&1; then
-  {
-    echo \"pre-push: screencomp is NOT on PATH — the visual guard cannot run.\"
-    echo \"          Install it: https://github.com/nickderobertis/screencomp#install\"
-    echo \"          then enable the hook: git config core.hooksPath .githooks\"
-    echo \"          Set SCREENCOMP_GUARD_REQUIRE=1 to fail here instead.\"
-  } >&2
-  [ -n \"${SCREENCOMP_GUARD_REQUIRE:-}\" ] && exit 1
-  exit 0
-fi
-
-# --- 1. Compute the push range(s) from git's stdin ---------------------------
-ranges=()
-if [ -n \"${SCREENCOMP_GUARD_RANGE:-}\" ]; then
-  ranges+=(\"$SCREENCOMP_GUARD_RANGE\")   # test/override: diff this range directly
-else
-  zero='^0+$'
-  while read -r _local_ref local_sha _remote_ref remote_sha; do
-    [ -z \"${local_sha:-}\" ] && continue
-    if [[ \"$local_sha\" =~ $zero ]]; then
-      continue                            # branch deletion: nothing to capture
-    elif [[ \"$remote_sha\" =~ $zero ]]; then
-      base=\"$(git merge-base origin/HEAD \"$local_sha\" 2>/dev/null || true)\"
-      [ -n \"$base\" ] && ranges+=(\"${base}..${local_sha}\") || ranges+=(\"$local_sha\")
-    else
-      ranges+=(\"${remote_sha}..${local_sha}\")
-    fi
-  done
-fi
-[ \"${#ranges[@]}\" -eq 0 ] && exit 0
-
-changed=\"$(for r in \"${ranges[@]}\"; do git diff --name-only \"$r\"; done | sort -u)\"
-
-# --- 2. Cheap path: is anything screenshot-relevant? -------------------------
-# `scope` exits 3 when a changed path matches [guard].paths, 0 when none do, and
-# any OTHER non-zero on error (an old CLI without `scope`, a bad config, ...).
-# Treat ONLY exit 3 as relevant; on an error, warn and skip rather than force a
-# slow capture — CI is the backstop, so a false \"relevant\" here is the wrong bet.
-set +e
-printf '%s\\n' \"$changed\" | screencomp scope --changed-from - --exit-code --quiet
-scope_status=$?
-set -e
-case \"$scope_status\" in
-  0) exit 0 ;;                            # nothing relevant: pass silently
-  3) : ;;                                 # a relevant path matched: capture below
-  *)
-    echo \"pre-push: 'screencomp scope' failed (exit $scope_status); skipping the\" >&2
-    echo \"          visual guard. Is screencomp current? CI still gates this.\" >&2
-    exit 0
-    ;;
-esac
-
-# --- 3. Relevant change: capture requires Docker -----------------------------
-if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-  echo \"pre-push: screenshot-relevant files changed but Docker is unavailable to\" >&2
-  echo \"          re-capture. Refusing to push (a pass would be false assurance).\" >&2
-  echo \"          Start Docker and retry, or bypass with: git push --no-verify\" >&2
-  exit 1
-fi
-
-# Pass the host's extra CA bundle into the container so a TLS-intercepting egress
-# proxy (corporate networks, Codespaces, hosted dev envs) does not break `npm ci`
-# with SELF_SIGNED_CERT_IN_CHAIN — which npm hides behind the cryptic `Exit
-# handler never called!` until you re-run with --loglevel verbose. No-op when none.
-ca_args=()
-host_ca=\"${NODE_EXTRA_CA_CERTS:-${SSL_CERT_FILE:-}}\"
-if [ -n \"$host_ca\" ] && [ -f \"$host_ca\" ]; then
-  ca_args+=(-v \"$host_ca:/host-ca.crt:ro\" \\
-    -e NODE_EXTRA_CA_CERTS=/host-ca.crt -e SSL_CERT_FILE=/host-ca.crt)
-fi
-
-# ---- adapt this to YOUR stack (same image/flags as visual-docs.yml) ----------
-# The container runs as YOU: it bind-mounts this tree, and as root it would leave
-# every file it writes there unremovable without sudo. Three things come with that
-# mapping:
-#   * node_modules is masked by a host directory you created (an anonymous
-#     `-v /work/node_modules` volume is root-owned, so `npm ci` would hit EACCES),
-#     which still keeps the install inside the container. Its mountpoint has to
-#     exist here too, or Docker creates that one root-owned inside your tree.
-#   * HOME points at a host directory you own: your uid has no passwd entry.
-#   * the scratch holding both is removed however this hook exits.
-host_user=\"$(id -u):$(id -g)\"
-capture_scratch=\"$(mktemp -d)\"
-trap 'rm -rf \"$capture_scratch\"' EXIT
-mkdir -p \"$capture_scratch/node_modules\" \"$capture_scratch/home\" node_modules
-docker run --rm --platform=\"$DOCKER_PLATFORM\" --ipc=host --shm-size=2g \\
-  --user \"$host_user\" \\
-  -v \"$PWD:/work\" -v \"$capture_scratch:/scratch\" \\
-  -v \"$capture_scratch/node_modules:/work/node_modules\" \\
-  -e HOME=/scratch/home -w /work \\
-  ${ca_args[@]+\"${ca_args[@]}\"} \\
-  mcr.microsoft.com/playwright:v1.60.0-noble \\
-  bash -lc \"npm ci && SHOTS_OUT=$CURRENT/$ARCH npx playwright test\"
-# ------------------------------------------------------------------------------
-
-# --- 4. Classify the capture against the committed baseline manifest ---------
-# No --arch needed: screencomp defaults to the host arch from [capture].arches.
-set +e
-screencomp classify --baseline-manifest \"$MANIFEST\" --current \"$CURRENT\" --exit-code
-status=$?
-set -e
-
-if [ \"$status\" -eq 0 ]; then
-  echo \"pre-push: screenshots unchanged against $MANIFEST — ok to push\"
-  exit 0
-elif [ \"$status\" -ne 3 ]; then
-  echo \"pre-push: screencomp classify failed (exit $status)\" >&2
-  exit \"$status\"
-fi
-
-# --- On drift (classify exit 3): regenerate, build a gallery, BLOCK. ---------
-screencomp manifest --input \"$CURRENT\" --output \"$MANIFEST\"
-screencomp gallery --input \"$CURRENT\" \\
-  --output \"$GALLERY\" --title \"Pre-push screenshot review\" >/dev/null
-
-{
-  echo
-  echo \"  SCREENSHOTS CHANGED — push blocked for review\"
-  echo \"  Review the rendered gallery: $GALLERY/index.html\"
-  echo \"  If intended: git add $MANIFEST && git commit and push again.\"
-  echo \"  If not: investigate the diff. Bypass with: git push --no-verify\"
-  echo
-} >&2
-exit 1
-"
-    .to_owned()
-}
-// llmlint: ignore-end[changed_behavior_has_e2e]

@@ -1,6 +1,5 @@
 # Local git hooks. Install with `just hooks-install`; run on demand with `just hooks`.
-# Fast checks gate commits; heavier checks gate pushes. No check may pass with
-# warnings — clippy runs with `-D warnings`.
+# Fast checks gate commits; CI owns the heavier verification.
 
 pre-commit:
   parallel: true
@@ -23,23 +22,3 @@ pre-commit:
             fi
           done
           exit $ec'
-
-pre-push:
-  parallel: false
-  commands:
-    clippy:
-      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-    test:
-      # The crate's in-process suites; the binary e2e suite is its own workspace
-      # member (e2e/) and runs in the gate.
-      run: cargo nextest run --locked -p screencomp
-    llmlint-validate:
-      # The deterministic llmlint gate (no model, no credential): a broken config,
-      # a stale `llmlint: ignore`, or an unbumped fragment fails here before CI.
-      # Skips, saying so, where llmlint is not installed (`just setup-llmlint`).
-      run: |
-        if ! command -v llmlint >/dev/null 2>&1; then
-          echo "llmlint not installed; skipping 'llmlint validate' (run 'just setup-llmlint' to enable it)"
-          exit 0
-        fi
-        llmlint validate

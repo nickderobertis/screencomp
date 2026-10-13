@@ -132,7 +132,7 @@ msrv:
 
 # Install git hooks into the working copy.
 hooks-install: _ensure-lefthook
-    lefthook install
+    bash scripts/hooks-install.sh
 
 # Run the pre-commit hook set on demand.
 hooks: _ensure-lefthook
