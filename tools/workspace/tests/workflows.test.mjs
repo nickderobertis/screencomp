@@ -62,13 +62,19 @@ test("every fixed context is reported on every pull request, unconditionally", (
     const at = found.get(context);
     assert.ok(at, `no job reports ${context} on every pull request`);
     assert.equal(at.file, "ci.yml", context);
+    if (context === "check (macos-latest)") {
+      assert.equal(at.key, "macos-context");
+      assert.equal(at.job.if, "${{ always() }}");
+      assert.deepEqual(at.job.needs, ["policy", "check-macos"]);
+      continue;
+    }
     assert.equal(at.job.if, undefined, `${context} has an if: that could leave it unreported`);
     for (const need of [at.job.needs ?? []].flat()) {
       assert.equal(at.workflow.jobs[need].if, undefined, `${context} needs ${need}, which can be skipped`);
     }
   }
   const check = workflows["ci.yml"].jobs.check;
-  assert.deepEqual(check.strategy.matrix.os, ["ubuntu-latest", "macos-latest", "windows-latest"]);
+  assert.deepEqual(check.strategy.matrix.os, ["ubuntu-latest", "windows-latest"]);
   assert.equal(check.strategy["fail-fast"], false);
 });
 
@@ -238,4 +244,11 @@ test("the credential check fails fast without OPENAI_API_KEY or when codex rejec
   } finally {
     rmSync(bin, { recursive: true, force: true });
   }
+});
+
+test("the conditional Mac proof retains exactly the old check assertions", () => {
+  const jobs = workflows["ci.yml"].jobs;
+  assert.deepEqual(jobs["check-macos"].steps, jobs.check.steps);
+  assert.equal(jobs["check-macos"]["runs-on"], "macos-latest");
+  assert.ok(jobs.policy.steps.some(s => s.run?.includes("node .github/macos-policy.mjs classify --event")));
 });

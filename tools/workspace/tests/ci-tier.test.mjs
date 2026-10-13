@@ -90,3 +90,10 @@ test("the script prints the GITHUB_OUTPUT lines the check job reads", () => {
   const ordinary = runScript("pull_request", { pull_request: { head: { ref: "fix/x" }, base: { sha: head } } });
   assert.deepEqual(ordinary, { tier: "affected", base: head });
 });
+
+test("release tier sweep remains independent of Mac omission and uses the configured prefix", () => {
+  for (const ref of ["release-plz-source-edit", "release-plz-version-only"]) {
+    const event = { pull_request: { head: { ref }, base: { sha: BASE } } };
+    assert.equal(selectTier({ eventName: "pull_request", event, releasePrefix: releaseBranchPrefix(readFileSync(join(root, ".github/workflows/release-plz.yml"), "utf8")), mergeBase }).tier, "all");
+  }
+});

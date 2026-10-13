@@ -1,0 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { report } from '@onebudgetspec/sdk';
+import { root, sourceDigest } from './workflow-graph.mjs';
+const args = process.argv.slice(2);
+if (args.length !== 4 || args[0] !== '--metric' || !['jobs-per-run', 'runs-per-change'].includes(args[1]) || args[2] !== '--telemetry') throw new Error('usage: macos-budget.mjs --metric jobs-per-run|runs-per-change --telemetry <JSON path>');
+const telemetry = JSON.parse(readFileSync(resolve(args[3]), 'utf8'));
+if (telemetry.schemaVersion !== 1 || telemetry.sourceDigest !== sourceDigest()) throw new Error('missing or stale Mac policy telemetry; run github-workflows:test');
+if (!Array.isArray(telemetry.scenarios) || !telemetry.scenarios.length || !Array.isArray(telemetry.lifecycles) || !telemetry.lifecycles.length) throw new Error('incomplete Mac policy telemetry');
+const value = args[1] === 'jobs-per-run' ? telemetry.jobsPerRun : telemetry.runsPerChange;
+const detail = JSON.stringify({ sourceDigest: telemetry.sourceDigest, releaseTargets: telemetry.releaseTargets, scenarios: telemetry.scenarios.map(s => ({ scenario: s.id, workflows: s.runs.map(r => ({ workflow: r.workflow, jobs: r.rows.filter(row => row.macos) })) })), lifecycles: telemetry.lifecycles });
+if (!report(value, detail)) console.log(JSON.stringify({ metric: args[1], value, detail: JSON.parse(detail) }));

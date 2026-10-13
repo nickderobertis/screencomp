@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "classes": [
+    {"id":"pr-opened","eventName":"pull_request","action":"opened"},
+    {"id":"pr-synchronize","eventName":"pull_request","action":"synchronize"},
+    {"id":"pr-reopened","eventName":"pull_request","action":"reopened"},
+    {"id":"base-push","eventName":"push","ref":"refs/heads/main"},
+    {"id":"release-pr-merge","eventName":"push","ref":"refs/heads/main"},
+    {"id":"release-tag-push","eventName":"push","ref":"refs/tags/v0.4.10"},
+    {"id":"release-published","eventName":"release","action":"published"},
+    {"id":"downstream-smoke","eventName":"workflow_run","action":"completed"},
+    {"id":"repository-dispatch","eventName":"repository_dispatch"},
+    {"id":"schedule","eventName":"schedule"},
+    {"id":"manual-default","eventName":"workflow_dispatch"},
+    {"id":"manual-opt-in","eventName":"workflow_dispatch","diagnostic":true}
+  ]
+}

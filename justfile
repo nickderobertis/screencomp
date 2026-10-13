@@ -246,10 +246,10 @@ check tier="affected":
     case "$tier" in
         affected)
             base="$(just _base)"
-            ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ./tools/workspace/nx affected --base="$base" -t format-check lint typecheck test build doc coverage supply-chain release-check budgets
             ;;
         all)
-            ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check
+            ./tools/workspace/nx run-many -t format-check lint typecheck test build doc coverage supply-chain release-check budgets
             ;;
         *)
             printf "unknown tier '%s': use 'affected' (the default) or 'all'\n" "$tier" >&2
@@ -380,6 +380,7 @@ _supply-chain:
 
 # The shipped artifact: the optimized release build and the crate package.
 _release-check:
+    node --test scripts/tests/release-artifact.test.mjs
     cargo build --release --locked
     cargo publish --locked --dry-run --allow-dirty -p screencomp
 
@@ -574,3 +575,28 @@ lint-llm-diff base="origin/main" *args:
 lint-llm-validate *args:
     @command -v llmlint >/dev/null 2>&1 || { echo "llmlint not installed: run 'just setup-llmlint'" >&2; exit 1; }
     llmlint validate "$@"
+
+_github-workflows-install:
+    @node .github/install.mjs
+
+_github-workflows-test: _github-workflows-install
+    node --test .github/tests/*.test.mjs
+
+_github-workflows-typecheck:
+    node .github/check.mjs
+
+[linux]
+_github-workflows-lint: _ensure-actionlint
+    actionlint .github/workflows/ci.yml .github/workflows/release.yml
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+[macos]
+_github-workflows-lint:
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+[windows]
+_github-workflows-lint:
+    node tools/workspace/check-project-boundaries.mjs github-workflows
+
+_github-workflows-budgets: _github-workflows-install
+    node .github/run-budgets.mjs

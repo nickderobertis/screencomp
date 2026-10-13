@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "targets": [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu"
+  ],
+  "binary": "screencomp",
+  "archiveStem": "screencomp-$tag-$target",
+  "unixExtension": "tar.gz",
+  "windowsExtension": "zip",
+  "checksumExtension": "sha256",
+  "contents": ["screencomp", "README.md", "LICENSE", "CHANGELOG.md"],
+  "windowsBinary": "screencomp.exe",
+  "packagingForms": ["archive"],
+  "darwinExecution": {"x86_64-apple-darwin":"Rosetta", "aarch64-apple-darwin":"native"}
+}

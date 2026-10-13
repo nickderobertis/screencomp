@@ -43,7 +43,7 @@ test("a change confined to the composite actions or their scripts selects only t
     "scripts/visual-docs-pages-build.sh",
     "scripts/visual-docs-gh-pages.sh",
   ]) {
-    assert.deepEqual(affectedBy([file]), ["visual-docs-actions"], file);
+    assert.deepEqual(affectedBy([file]), (file === ".github/workflows/visual-docs-reusable.yml" ? ["github-workflows", "visual-docs-actions"] : ["visual-docs-actions"]), file);
   }
 });
 
@@ -55,9 +55,13 @@ test("each suite and surface selects its own project and its dependents only", (
   assert.deepEqual(affectedBy(["demo/screencomp.toml"]), ["coverage", "demo", "screencomp-e2e"]);
   assert.deepEqual(affectedBy(["demo/capture.sh"]), ["demo", "visual-docs-actions"]);
   assert.deepEqual(affectedBy(["demo/pages/index.html"]), ["demo"]);
-  assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["workspace"]);
+  assert.deepEqual(affectedBy(["tools/workspace/ci-tier.mjs"]), ["github-workflows", "workspace"]);
 });
 
 test("a documentation-only change outside every project selects nothing", () => {
   assert.deepEqual(affectedBy(["CONTRIBUTING.md"]), []);
+});
+
+test("workflow tooling selects its telemetry and budgets without a crate dependency", () => {
+  for (const path of [".github/macos-policy.mjs", ".github/budgets.yaml", ".github/workflows/release.yml"]) assert.deepEqual(affectedBy([path]), ["github-workflows"]);
 });

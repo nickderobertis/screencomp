@@ -1,0 +1,15 @@
+{
+  "name": "github-workflows",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "tags": ["type:workspace", "lang:javascript"],
+  "namedInputs": {
+    "default": ["{projectRoot}/**/*", "{workspaceRoot}/.github/**/*", "{workspaceRoot}/scripts/install.sh", "{workspaceRoot}/scripts/release-artifact.mjs", "{workspaceRoot}/tools/workspace/ci-tier.mjs"]
+  },
+  "targets": {
+    "test": {"command": "just _github-workflows-test", "cache": false, "inputs": ["default"]},
+    "typecheck": {"command": "just _github-workflows-typecheck", "inputs": ["default"]},
+    "lint": {"command": "just _github-workflows-lint", "inputs": ["default", "boundaries"]},
+    "budgets": {"command": "just _github-workflows-budgets", "dependsOn": ["test"], "cache": false, "inputs": ["default"]}
+  }
+}
