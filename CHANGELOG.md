@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/nickderobertis/screencomp/compare/v0.4.9...v0.5.0) - 2026-10-13
+
+### Fixed
+
+- *(init)* [**breaking**] rely on CI without installing duplicate pre-push hooks ([#116](https://github.com/nickderobertis/screencomp/pull/116))
+
 ## [0.4.9](https://github.com/nickderobertis/screencomp/compare/v0.4.8...v0.4.9) - 2026-10-12
 
 ### Performance
