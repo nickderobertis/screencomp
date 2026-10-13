@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { root } from "./support.mjs";
+import { posixOnly, root } from "./support.mjs";
 
 const current = readFileSync(join(root, "lefthook.yml"), "utf8");
 // Prior setup's duplicate commands, installed by the real hook manager.
@@ -43,7 +43,9 @@ function fixture(body) {
 }
 
 for (const migrated of [false, true]) {
-  test(`ordinary pushes retain commit checks without duplicate push checks (${migrated ? "existing clone" : "fresh setup"})`, () => fixture(({ repo, remote, trace, run }) => {
+  test(`ordinary pushes retain commit checks without duplicate push checks (${migrated ? "existing clone" : "fresh setup"})`, {
+    skip: posixOnly && "Lefthook cannot quote the retained POSIX pre-commit command on Windows; Linux and macOS run the real commit and push journeys",
+  }, () => fixture(({ repo, remote, trace, run }) => {
     if (migrated) {
       writeFileSync(join(repo, "lefthook.yml"), obsolete);
       run("lefthook", ["install"]);
