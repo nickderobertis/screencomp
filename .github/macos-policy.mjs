@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from 'smol-toml';
 import { releaseBranchPrefix } from '../tools/workspace/ci-tier.mjs';
 
+const automaticEvents = new Set(['push', 'release', 'workflow_run', 'repository_dispatch', 'schedule', 'workflow_dispatch']);
+const parseManifest = text => parseToml(text, { integersAsBigInt: true });
 const version = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -12,16 +14,18 @@ const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['
 // Dependency versions, checksums, sources and dependency edges remain semantic
 // content, regardless of whitespace, comments or key ordering.
 function canonical(value) {
-  if (value instanceof Date) return { tomlDate: value.toISOString() };
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
-  return value;
+  if (value instanceof Date) return ['date', value.toISOString()];
+  if (Array.isArray(value)) return ['array', value.map(canonical)];
+  if (value && typeof value === 'object') return ['object', Object.keys(value).sort().map(key => [key, canonical(value[key])])];
+  if (typeof value === 'number') return ['number', Object.is(value, -0) ? '-0' : String(value)];
+  if (typeof value === 'bigint') return ['integer', String(value)];
+  return [typeof value, value];
 }
 function normalizedToml(text, lock, localNames) {
-  const parsed = parseToml(text);
+  const parsed = parseManifest(text);
   const eraseVersion = pkg => {
     if (!pkg || !('version' in pkg)) return;
-    if (!version.test(pkg.version)) throw new Error('invalid package version');
+    if (typeof pkg.version !== 'string' || !version.test(pkg.version)) throw new Error('invalid package version');
     pkg.version = '<release-version>';
   };
   if (lock) {
@@ -40,14 +44,14 @@ function versionOnly(path, before, after, localNames) {
   }
   if (path === 'package.json') {
     const a = JSON.parse(before), b = JSON.parse(after);
-    if (!version.test(a.version ?? '') || !version.test(b.version ?? '')) return false;
+    if (typeof a.version !== 'string' || typeof b.version !== 'string' || !version.test(a.version) || !version.test(b.version)) return false;
     delete a.version; delete b.version;
     return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
   }
   return false;
 }
 function workspacePackages(base) {
-  const root = parseToml(git('show', `${base}:Cargo.toml`));
+  const root = parseManifest(git('show', `${base}:Cargo.toml`));
   const names = new Set();
   const add = manifest => {
     const name = manifest.package?.name;
@@ -60,14 +64,15 @@ function workspacePackages(base) {
   for (const member of members) {
     if (member === '.') continue;
     if (typeof member !== 'string' || !/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(member)) throw new Error('unsupported workspace member');
-    add(parseToml(git('show', `${base}:${member}/Cargo.toml`)));
+    add(parseManifest(git('show', `${base}:${member}/Cargo.toml`)));
   }
   if (!names.size) throw new Error('no workspace package identities');
   return names;
 }
 export function classify({ eventName, event, base, head, prefix }) {
   const result = (isReleaseOnly, reason) => ({ isReleaseOnly, macosRequired: eventName === 'pull_request' && !isReleaseOnly, reason });
-  if (eventName !== 'pull_request') return result(false, 'automatic non-PR event');
+  if (automaticEvents.has(eventName)) return result(false, 'automatic non-PR event');
+  if (eventName !== 'pull_request') return { isReleaseOnly: false, macosRequired: true, reason: 'unknown event name; Mac coverage required' };
   try {
     const pr = event.pull_request;
     const repoName = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -98,7 +103,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   }
   let event = null;
   try { event = JSON.parse(readFileSync(args[1], 'utf8')); } catch { /* fail closed below */ }
-  const eventName = process.env.GITHUB_EVENT_NAME ?? (event?.pull_request ? 'pull_request' : 'unknown');
+  const inferred = event && typeof event === 'object' && !Array.isArray(event) && 'pull_request' in event ? 'pull_request'
+    : typeof event?.release?.tag_name === 'string' ? 'release'
+    : typeof event?.ref === 'string' && /^refs\/(heads|tags)\//.test(event.ref) && typeof event.before === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(event.before) ? 'push'
+    : 'pull_request';
+  const eventName = process.env.GITHUB_EVENT_NAME ?? inferred;
   let prefix = null;
   try { prefix = releaseBranchPrefix(readFileSync(new URL('workflows/release-plz.yml', import.meta.url), 'utf8')); } catch { /* missing policy authority requires Mac coverage */ }
   console.log(JSON.stringify(classify({ eventName, event, base: args[3], head: args[5], prefix })));

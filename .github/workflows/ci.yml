@@ -81,7 +81,7 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
       # The Node toolchain Nx runs on, and bun at package.json's packageManager pin
-      # for the one bun.lock.
+      # for the root workspace lock.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -136,7 +136,7 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
       # The Node toolchain Nx runs on, and bun at package.json's packageManager pin
-      # for the one bun.lock.
+      # for the root workspace lock.
       - uses: actions/setup-node@v4
         with:
           node-version: 22

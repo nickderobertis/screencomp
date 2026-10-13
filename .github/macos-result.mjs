@@ -2,7 +2,6 @@ const eventName = process.env.GITHUB_EVENT_NAME;
 const manual = process.env.MANUAL_MACOS ?? 'false';
 if (!['pull_request', 'push', 'workflow_dispatch'].includes(eventName)) throw new Error(`unknown CI event ${eventName}; restore the GitHub event name before reporting an omission`);
 if (!['true', 'false'].includes(manual) || (manual === 'true' && eventName !== 'workflow_dispatch')) throw new Error('invalid manual diagnostic value; use true only for explicit workflow_dispatch');
-// GitHub job outcomes are the only doubled boundary in the subprocess tests.
 const needs = JSON.parse(process.env.NEEDS_JSON ?? 'null');
 if (!needs || needs.policy?.result !== 'success') throw new Error('Mac policy prerequisite failed, cancelled or missing');
 const required = needs.policy.outputs?.macosRequired;

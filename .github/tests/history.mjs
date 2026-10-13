@@ -24,9 +24,12 @@ export function history() {
     if (kind === 'dependency-content') writeFileSync(join(dir, 'Cargo.toml'), manifest.replace('serde = "1"', 'serde = "2"'));
     git('add', '.'); git('commit', '-qm', kind); heads[kind] = git('rev-parse', 'HEAD');
   }
-  const classify = (event, head, { eventName = 'pull_request', baseRef = base, raw } = {}) => {
+  const classify = (event, head, { eventName = 'pull_request', baseRef = base, raw, omitEventName = false } = {}) => {
     const path = join(dir, '.git', 'event.json'); writeFileSync(path, raw ?? JSON.stringify(event));
-    return JSON.parse(execFileSync(process.execPath, [join(root, '.github/macos-policy.mjs'), 'classify', '--event', path, '--base', baseRef, '--head', head], { cwd: dir, encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: eventName } }));
+    const env = { ...process.env };
+    if (omitEventName) delete env.GITHUB_EVENT_NAME;
+    else env.GITHUB_EVENT_NAME = eventName;
+    return JSON.parse(execFileSync(process.execPath, [join(root, '.github/macos-policy.mjs'), 'classify', '--event', path, '--base', baseRef, '--head', head], { cwd: dir, encoding: 'utf8', env }));
   };
   return { dir, git, base, heads, classify, clean: () => rmSync(dir, { recursive: true, force: true }) };
 }

@@ -22,10 +22,10 @@ test('telemetry reader rejects invalid metrics and nested rows at the recorded-d
   const baseline = { schemaVersion: 1, sourceDigest: sourceDigest(), releaseTargets: ['x86_64-apple-darwin'], jobsPerRun: 0, runsPerChange: 0, scenarios: [{ id: 'fixture', runs: [{ workflow: 'ci.yml', rows: [] }] }], lifecycles: [{ id: 'fixture', events: [], spendingRuns: [] }] };
   mkdirSync(join(root, '.github/.telemetry'), { recursive: true });
   try {
-    for (const patch of [{ jobsPerRun: -1 }, { runsPerChange: 1.5 }, { jobsPerRun: '0' }, { releaseTargets: [null] }, { scenarios: [{ id: 'bad', runs: [null] }] }, { scenarios: [{ id: 'bad', runs: [{ workflow: 'ci.yml', rows: [{}] }] }] }, { lifecycles: [{ id: 'bad', events: [], spendingRuns: [{}] }] }]) {
+    for (const patch of [{ jobsPerRun: -1 }, { runsPerChange: 1.5 }, { jobsPerRun: '0' }, { jobsPerRun: 1 }, { releaseTargets: [null] }, { scenarios: [{ id: 'bad', runs: [null] }] }, { scenarios: [{ id: 'bad', runs: [{ workflow: 'ci.yml', rows: [{}] }] }] }, { lifecycles: [{ id: 'bad', events: [], spendingRuns: [{}] }] }]) {
       writeFileSync(path, JSON.stringify({ ...baseline, ...patch }));
       const result = spawnSync(process.execPath, [join(root, '.github/macos-budget.mjs'), '--metric', 'jobs-per-run', '--telemetry', path], { encoding: 'utf8' });
-      assert.notEqual(result.status, 0, JSON.stringify(patch)); assert.match(result.stderr, /invalid .*telemetry/);
+      assert.notEqual(result.status, 0, JSON.stringify(patch)); assert.match(result.stderr, /invalid .*telemetry|inconsistent telemetry totals/);
     }
   } finally { rmSync(path, { force: true }); }
 });

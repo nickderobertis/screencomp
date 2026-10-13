@@ -69,6 +69,7 @@ jobs:
         with:
           node-version: 22
       - run: rustup show
+      - uses: extractions/setup-just@v2
       - name: Build and verify staged installer
         env:
           TARGET: ${{ matrix.target }}
@@ -98,6 +99,7 @@ jobs:
           read -r -a targets <<< "$DARWIN_TARGETS"
           rustup target add "${targets[@]}"
           softwareupdate --install-rosetta --agree-to-license
+      - uses: extractions/setup-just@v2
       - name: Build each target once and run both staged installers
         env:
           TAG: ${{ github.event.release.tag_name }}

@@ -143,8 +143,16 @@ build:
     cargo build --locked
 
 # Optimized release build.
-build-release:
-    cargo build --release --locked
+[positional-arguments]
+build-release target="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(--release --locked)
+    if [ -n "$1" ]; then
+        [[ "$1" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "invalid Rust target '$1'; use a target from .github/workflows/release.yml" >&2; exit 1; }
+        args+=(--bin screencomp --target "$1")
+    fi
+    RUSTFLAGS="${RUSTFLAGS:-} -D warnings" cargo build "${args[@]}"
 
 # Verify publish metadata and the crate package without uploading anything.
 dist-plan:

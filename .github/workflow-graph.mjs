@@ -1,12 +1,14 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { lstatSync, readFileSync, readlinkSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import { Lexer, Parser, Evaluator, data } from '@actions/expressions';
 export const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const supportedPattern = p => typeof p === 'string' && !/[?+\[\]{}!\\]/.test(p) && !/\*{3,}/.test(p);
 export function validateWorkflow(file, workflow) {
-  if (!workflow || typeof workflow !== 'object' || !workflow.jobs || Array.isArray(workflow.jobs)) throw new Error(`invalid workflow object ${file}`);
+  if (!workflow || typeof workflow !== 'object' || !workflow.jobs || typeof workflow.jobs !== 'object' || Array.isArray(workflow.jobs) || !Object.keys(workflow.jobs).length) throw new Error(`invalid workflow object ${file}`);
   const on = typeof workflow.on === 'string' ? { [workflow.on]: null } : Array.isArray(workflow.on) ? Object.fromEntries(workflow.on.map(e => [e, null])) : workflow.on;
   if (!on || typeof on !== 'object') throw new Error(`missing event declarations ${file}`);
   const supported = {
@@ -25,7 +27,7 @@ export function validateWorkflow(file, workflow) {
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) throw new Error(`invalid event filter ${file}:${event}`);
     for (const [key, value] of Object.entries(filter)) {
       if (!supported[event].includes(key)) throw new Error(`unsupported trigger filter ${file}:${event}:${key}`);
-      if (!['inputs', 'outputs', 'secrets'].includes(key) && (!Array.isArray(value) || !value.every(v => typeof v === 'string' && !v.startsWith('!') && !/[{}]/.test(v)))) throw new Error(`unsupported trigger filter values ${file}:${event}:${key}`);
+      if (!['inputs', 'outputs', 'secrets'].includes(key) && (!Array.isArray(value) || !value.every(v => supportedPattern(v)))) throw new Error(`unsupported trigger filter values ${file}:${event}:${key}`);
     }
   }
   for (const [id, job] of Object.entries(workflow.jobs)) {
@@ -40,16 +42,11 @@ export function workflows() {
 }
 export function sourceDigest() {
   const hash = createHash('sha256');
-  const visit = dir => {
-    for (const ent of readdirSync(join(root, dir), { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) {
-      if (['node_modules', '.telemetry'].includes(ent.name)) continue;
-      const path = `${dir}/${ent.name}`;
-      if (ent.isDirectory()) visit(path);
-      else if (ent.isFile()) hash.update(path).update(readFileSync(join(root, path)));
-    }
-  };
-  visit('.github');
-  for (const path of ['scripts/release-artifact.mjs', 'scripts/install.sh', 'tools/workspace/ci-tier.mjs']) hash.update(path).update(readFileSync(join(root, path)));
+  const files = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean).sort();
+  for (const path of files) {
+    const absolute = join(root, path);
+    hash.update(path).update('\0').update(lstatSync(absolute).isSymbolicLink() ? readlinkSync(absolute) : readFileSync(absolute)).update('\0');
+  }
   return hash.digest('hex');
 }
 const datum = value => {
@@ -104,8 +101,15 @@ export function matrices(matrix, context) {
   return [...rows, ...added];
 }
 function glob(path, pattern) {
-  const regex = pattern.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${regex}$`).test(path);
+  if (!supportedPattern(pattern)) throw new Error(`unsupported trigger glob ${pattern}`);
+  let regex = '';
+  for (let i = 0; i < pattern.length;) {
+    if (pattern.startsWith('**/', i)) { regex += '(?:.*/)?'; i += 3; }
+    else if (pattern.startsWith('**', i)) { regex += '.*'; i += 2; }
+    else if (pattern[i] === '*') { regex += '[^/]*'; i++; }
+    else { regex += pattern[i].replace(/[.+^$()|[\]\\]/g, '\\$&'); i++; }
+  }
+  return typeof path === 'string' && new RegExp(`^${regex}$`).test(path);
 }
 export function triggered(workflow, scenario) {
   let on = workflow.on;
@@ -117,15 +121,15 @@ export function triggered(workflow, scenario) {
   if (types && !types.includes(scenario.event.action)) return false;
   const branch = scenario.eventName === 'pull_request' ? scenario.event.pull_request?.base?.ref : scenario.eventName === 'workflow_run' ? scenario.event.workflow_run?.head_branch : scenario.event.ref?.replace('refs/heads/', '');
   const tag = scenario.event.ref?.startsWith('refs/tags/') ? scenario.event.ref.slice(10) : null;
-  if ((filter.tags || filter['tags-ignore']) && !tag) return false;
-  if (tag && (filter.branches || filter['branches-ignore']) && !filter.tags) return false;
-  if (filter.tags && !filter.tags.some(p => glob(tag, p))) return false;
+  if ((filter.tags || filter['tags-ignore']) && !tag && !(filter.branches || filter['branches-ignore'])) return false;
+  if (tag && (filter.branches || filter['branches-ignore']) && !(filter.tags || filter['tags-ignore'])) return false;
+  if (tag && filter.tags && !filter.tags.some(p => glob(tag, p))) return false;
   if (filter['tags-ignore']?.some(p => glob(tag, p))) return false;
-  if (filter.branches && !filter.branches.some(p => glob(branch ?? '', p))) return false;
-  if (filter['branches-ignore']?.some(p => glob(branch ?? '', p))) return false;
-  if (filter.paths && !scenario.paths.some(p => filter.paths.some(g => glob(p, g)))) return false;
-  if (filter['paths-ignore'] && scenario.paths.every(p => filter['paths-ignore'].some(g => glob(p, g)))) return false;
-  if (filter.workflows && !filter.workflows.includes(scenario.event.workflow_run?.name)) return false;
+  if (!tag && filter.branches && !filter.branches.some(p => glob(branch ?? '', p))) return false;
+  if (!tag && filter['branches-ignore']?.some(p => glob(branch ?? '', p))) return false;
+  if (!tag && filter.paths && !scenario.paths.some(p => filter.paths.some(g => glob(p, g)))) return false;
+  if (!tag && filter['paths-ignore'] && scenario.paths.every(p => filter['paths-ignore'].some(g => glob(p, g)))) return false;
+  if (filter.workflows && !filter.workflows.some(p => glob(scenario.event.workflow_run?.name, p))) return false;
   return true;
 }
 export function releaseTargets(graph = workflows()) {
@@ -137,7 +141,7 @@ export function resolveRun(file, scenario, graph = workflows(), inputs = {}, sta
   const workflow = graph[file];
   if (!workflow) throw new Error(`unresolved workflow call: ${file}`);
   inputs = { ...Object.fromEntries(Object.entries(workflow.on?.workflow_call?.inputs ?? {}).map(([key, v]) => [key, v.default ?? ''])), ...scenario.inputs, ...inputs };
-  const results = {};
+  const results = Object.create(null);
   const rows = [];
   const pending = new Map(Object.entries(workflow.jobs));
   while (pending.size) {

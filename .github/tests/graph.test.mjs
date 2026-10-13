@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { executionMode } from '../../scripts/release-artifact.mjs';
 import { history, prEvent } from './history.mjs';
-import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, validateWorkflow, workflows } from '../workflow-graph.mjs';
+import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, triggered, validateWorkflow, workflows } from '../workflow-graph.mjs';
 const required = ['action', 'action-download', 'check (macos-latest)', 'check (ubuntu-latest)', 'check (windows-latest)', 'llmlint', 'pr-title', 'workflows'];
 const classes = JSON.parse(readFileSync(join(root, '.github/event-classes.json'), 'utf8')).classes;
 test('actual workflow graph resolves every event/diff/ownership route and records lifecycle telemetry', () => {
@@ -34,8 +34,6 @@ test('actual workflow graph resolves every event/diff/ownership route and record
       }
       scenarios.push({ ...scenario, runs });
     }
-    // Exercise the unchanged public reusable call for every released CPU family
-    // and optional publish combination, using its actual capture/report matrices.
     const arches = [...new Set(releaseTargets(graph).map(t => t.startsWith('aarch64') ? 'arm64' : 'x86_64'))];
     for (const arch of arches) for (const publish of [false, true]) {
       const scenario = scenarios.find(s => s.class === 'pr-synchronize' && !s.fork && s.publish === publish);
@@ -53,7 +51,20 @@ test('actual workflow graph resolves every event/diff/ownership route and record
     const jobsPerRun = Math.max(...scenarios.flatMap(s => s.runs.map(r => r.rows.filter(row => row.macos).length)));
     const runsPerChange = Math.max(...lifecycles.map(l => l.spendingRuns.length));
     mkdirSync(join(root, '.github/.telemetry'), { recursive: true });
-    writeFileSync(join(root, '.github/.telemetry/macos-policy.json'), JSON.stringify({ schemaVersion: 1, sourceDigest: sourceDigest(), releaseTargets: releaseTargets(graph), jobsPerRun, runsPerChange, scenarios, lifecycles }, null, 2) + '\n');
+    const telemetryPath = join(root, '.github/.telemetry/macos-policy.json');
+    writeFileSync(telemetryPath, JSON.stringify({ schemaVersion: 1, sourceDigest: sourceDigest(), releaseTargets: releaseTargets(graph), jobsPerRun, runsPerChange, scenarios, lifecycles }, null, 2) + '\n');
+    const reportedPath = join(root, '.github/.telemetry/sdk-result.json');
+    try {
+      for (const [metric, expected] of [['jobs-per-run', jobsPerRun], ['runs-per-change', runsPerChange]]) {
+        execFileSync(process.execPath, [join(root, '.github/macos-budget.mjs'), '--metric', metric, '--telemetry', telemetryPath], { env: { ...process.env, ONEBUDGETSPEC_RESULT: reportedPath }, encoding: 'utf8' });
+        const reported = JSON.parse(readFileSync(reportedPath, 'utf8'));
+        assert.equal(reported.value, expected);
+        const detail = JSON.parse(reported.detail);
+        assert.deepEqual(detail.releaseTargets, releaseTargets(graph));
+        assert.equal(detail.sourceDigest, sourceDigest());
+        assert.equal(detail.scenarios.length, scenarios.length);
+      }
+    } finally { rmSync(reportedPath, { force: true }); }
   } finally { h.clean(); }
 });
 test('unsupported expressions, runners, reusable calls and missing needs fail explicitly', () => {
@@ -87,9 +98,9 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
     assert.ok(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).includes(target));
     assert.equal(executionMode({ platform: 'darwin', arch: 'arm64', target }), mode);
   }
-  assert.match(helper, /arch', \['-x86_64', 'bash'/);
+  assert.match(helper, /arch', \['-x86_64', '\/bin\/bash'/);
   assert.match(helper, /arch', \['-x86_64', installedBinary/);
-  assert.match(helper, /hash\(binary\) !== hash\(installedBinary\)/);
+  assert.match(helper, /binarySha256 !== installedSha256/);
   for (const doc of contract.contents.slice(1)) assert.ok(helper.includes(doc));
 });
 
@@ -111,6 +122,7 @@ test('workflow parsing rejects unsupported scheduling filters rather than counti
   const workflow = workflows()['ci.yml'];
   for (const on of [{ pull_request: { unknown: ['value'] } }, { push: { tags: 'v*' } }, { made_up_event: null }]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, on }), /unsupported/);
   assert.throws(() => validateWorkflow('invalid.yml', null), /invalid workflow/);
+  for (const jobs of [true, 1, 'jobs', {}]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, jobs }), /invalid workflow/);
 });
 
 test('reusable matrix resolution matches the actual shell producer for every architecture and project defaults', () => {
@@ -137,4 +149,44 @@ test('matrix and capture-output boundaries reject malformed shapes and preserve 
   assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }]);
   const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: {} };
   for (const inputs of [{ arches: '[42]' }, { arches: '["arm64"]', projects: '{}' }, { arches: '["arm64"]', projects: '[{"id":"a","current":"../outside"}]' }]) assert.throws(() => resolveRun('visual-docs-reusable.yml', scenario, graph, inputs), /unresolved capture arches|invalid capture project/);
+});
+
+test('supported trigger patterns conform to GitHub documentation and unsupported syntax errors explicitly', () => {
+  const fixture = JSON.parse(readFileSync(join(root, '.github/trigger-globs.json'), 'utf8'));
+  assert.equal(fixture.schemaVersion, 1);
+  assert.match(fixture.source, /^https:\/\/docs.github.com\//);
+  for (const row of fixture.cases) for (const [paths, expected] of [[row.matches, true], [row.misses, false]]) for (const path of paths) {
+    assert.equal(triggered({ on: { push: { paths: [row.pattern] } } }, { eventName: 'push', event: { ref: 'refs/heads/main' }, paths: [path] }), expected, `${row.pattern}: ${path}`);
+  }
+  for (const pattern of fixture.unsupported) {
+    assert.throws(() => validateWorkflow('unsupported.yml', { on: { push: { paths: [pattern] } }, jobs: { check: { 'runs-on': 'ubuntu-latest' } } }), /unsupported/);
+    assert.throws(() => triggered({ on: { push: { paths: [pattern] } } }, { eventName: 'push', event: {}, paths: ['src/a.js'] }), /unsupported/);
+  }
+});
+
+test('actual workflow routing honors include/ignore filters for branches, tags, paths and downstream names', () => {
+  const ci = workflows()['ci.yml'];
+  const cases = [
+    [{ push: { branches: ['main'] } }, { ref: 'refs/heads/main' }, ['src/lib.rs'], true],
+    [{ push: { 'branches-ignore': ['main'] } }, { ref: 'refs/heads/main' }, ['src/lib.rs'], false],
+    [{ push: { 'branches-ignore': ['release/**'] } }, { ref: 'refs/heads/main' }, ['src/lib.rs'], true],
+    [{ push: { tags: ['v*'] } }, { ref: 'refs/tags/v0.4.10' }, [], true],
+    [{ push: { 'tags-ignore': ['v*'] } }, { ref: 'refs/tags/v0.4.10' }, [], false],
+    [{ push: { 'tags-ignore': ['v*'] } }, { ref: 'refs/heads/main' }, [], false],
+    [{ push: { tags: ['v*'], branches: ['main'] } }, { ref: 'refs/tags/v0.4.10' }, [], true],
+    [{ push: { tags: ['v*'], branches: ['main'] } }, { ref: 'refs/heads/main' }, [], true],
+    [{ push: { 'tags-ignore': ['private*'], branches: ['main'] } }, { ref: 'refs/tags/v0.4.10' }, [], true],
+    [{ push: { tags: ['v*'], paths: ['src/**'] } }, { ref: 'refs/tags/v0.4.10' }, ['README.md'], true],
+    [{ push: { branches: ['main'], paths: ['src/**'] } }, { ref: 'refs/heads/main' }, ['README.md'], false],
+    [{ push: { branches: ['main'], 'paths-ignore': ['docs/**'] } }, { ref: 'refs/heads/main' }, ['docs/readme.md'], false],
+    [{ push: { 'paths-ignore': ['docs/**'] } }, { ref: 'refs/heads/main' }, ['docs/readme.md', 'src/lib.rs'], true],
+    [{ push: { branches: ['main'] } }, { ref: 'refs/tags/v0.4.10' }, [], false],
+    [{ workflow_run: { workflows: ['Build*'], 'branches-ignore': ['scratch/**'], types: ['completed'] } }, { action: 'completed', workflow_run: { name: 'Builder', head_branch: 'main' } }, [], true],
+    [{ workflow_run: { workflows: ['Build*'], 'branches-ignore': ['scratch/**'], types: ['completed'] } }, { action: 'completed', workflow_run: { name: 'Builder', head_branch: 'scratch/test' } }, [], false],
+  ];
+  for (const [on, event, paths, expected] of cases) {
+    const scenario = { eventName: Object.keys(on)[0], event, paths, head: 'exact-head', classification: { isReleaseOnly: false, macosRequired: false }, inputs: {} };
+    const graph = { 'ci.yml': validateWorkflow('ci.yml', { ...ci, on }) };
+    assert.equal(resolveEvent(scenario, graph).length > 0, expected, JSON.stringify({ on, event, paths }));
+  }
 });
