@@ -37,6 +37,6 @@
   including the reusable workflow; this deliberate input overlap selects its
   offline graph proof alongside the owning actions project. Its budgets depend
   on the uncached telemetry test, never on crate builds or browser captures.
-- `release-packaging:release-check` owns the self-building release packaging
+- `release-packaging:test` owns the self-building release packaging
   journey; its separate project selects crate, installer and release inputs
   without making offline workflow-policy changes rebuild the binary.

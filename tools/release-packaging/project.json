@@ -17,7 +17,7 @@
         "boundaries"
       ]
     },
-    "release-check": {
+    "test": {
       "command": "just _release-packaging-check",
       "inputs": [
         "default",
@@ -33,7 +33,8 @@
         "{workspaceRoot}/README.md",
         "{workspaceRoot}/LICENSE",
         "{workspaceRoot}/CHANGELOG.md"
-      ]
+      ],
+      "cache": false
     }
   }
 }

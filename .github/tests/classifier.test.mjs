@@ -112,6 +112,31 @@ test('semantic manifest variants and non-modification diffs are driven through g
   } finally { h.clean(); }
 });
 
+test('same-named registry dependency versions cannot authorize a Mac omission', () => {
+  const h = history();
+  try {
+    h.git('checkout', '-q', '-B', 'registry-baseline', h.base);
+    const path = join(h.dir, 'Cargo.lock');
+    const lock = readFileSync(path, 'utf8') + '[[package]]\nname = "screencomp"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "registry-checksum"\n';
+    writeFileSync(path, lock);
+    h.git('add', '.'); h.git('commit', '-qm', 'same-named registry dependency');
+    const base = h.git('rev-parse', 'HEAD');
+    const event = prEvent({ branch: 'release-plz-registry' });
+    for (const [branch, content, allowed] of [
+      ['local-version', lock.replace('version = "0.4.9"', 'version = "0.4.10"'), true],
+      ['registry-version', lock.replace('name = "screencomp"\nversion = "1.0.0"', 'name = "screencomp"\nversion = "2.0.0"'), false],
+      ['mixed-versions', lock.replace('version = "0.4.9"', 'version = "0.4.10"').replace('name = "screencomp"\nversion = "1.0.0"', 'name = "screencomp"\nversion = "2.0.0"'), false],
+    ]) {
+      h.git('checkout', '-q', '-B', branch, base);
+      writeFileSync(path, content);
+      h.git('add', '.'); h.git('commit', '-qm', branch);
+      const got = h.classify(event, h.git('rev-parse', 'HEAD'), { baseRef: base });
+      assert.equal(got.isReleaseOnly, allowed, branch);
+      assert.equal(got.macosRequired, !allowed, branch);
+    }
+  } finally { h.clean(); }
+});
+
 test('production policy step selects event refs and exports classifier outputs through GitHub output', () => {
   const h = history();
   try {

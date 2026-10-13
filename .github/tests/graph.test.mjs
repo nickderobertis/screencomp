@@ -87,6 +87,17 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
     assert.ok(jobs[id].steps.some(s => s.uses === 'actions/upload-artifact@v4' && s.with['if-no-files-found'] === 'error'));
   }
   assert.equal(jobs['build-darwin']['runs-on'], 'macos-15');
+  const darwinBuild = jobs['build-darwin'].steps.filter(s => s.run?.includes('node scripts/release-artifact.mjs'));
+  assert.equal(darwinBuild.length, 1);
+  assert.deepEqual(darwinBuild[0].run.trim().split('\n').map(line => line.trim()), [
+    'read -r -a targets <<< "$DARWIN_TARGETS"',
+    'for target in "${targets[@]}"; do',
+    'node scripts/release-artifact.mjs "$target" "$TAG"',
+    'done',
+  ], 'Darwin build must invoke the production builder exactly once for every declared target');
+  assert.equal(darwinBuild[0].env.TAG, '${{ github.event.release.tag_name }}');
+  assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).sort(), Object.keys(contract.darwinExecution).sort());
+
   assert.match(jobs['build-darwin'].steps.find(s => s.name?.startsWith('Provision')).run, /--install-rosetta/);
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
