@@ -388,7 +388,6 @@ _supply-chain:
 
 # The shipped artifact: the optimized release build and the crate package.
 _release-check:
-    node --test scripts/tests/release-artifact.test.mjs
     cargo build --release --locked
     cargo publish --locked --dry-run --allow-dirty -p screencomp
 
@@ -608,3 +607,6 @@ _github-workflows-lint: _github-workflows-syntax
 
 _github-workflows-budgets: _github-workflows-install
     node .github/run-budgets.mjs
+
+_github-workflows-release-check:
+    node --test scripts/tests/release-artifact.test.mjs

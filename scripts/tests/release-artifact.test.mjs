@@ -183,3 +183,20 @@ test('compiled-artifact boundary rejects truncated and incorrectly declared arch
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('release entrypoint reports unreadable artifacts with corrective guidance', () => {
+  const got = spawnSync(process.execPath, [helper, 'verify-binary', 'x86_64-unknown-linux-gnu', join(root, 'absent-release-binary')], { cwd: root, encoding: 'utf8' });
+  assert.notEqual(got.status, 0);
+  assert.match(got.stderr, /^release-artifact: cannot read compiled binary/);
+  assert.match(got.stderr, /rerun the same release-artifact command before publishing/);
+  assert.doesNotMatch(got.stderr, /at main/);
+  const dir = mkdtempSync(join(tmpdir(), 'screencomp-blocked-output-'));
+  try {
+    const path = join(dir, 'file'); writeFileSync(path, 'occupied');
+    const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' }));
+    const version = metadata.packages.find(p => p.name === 'screencomp').version;
+    const blocked = spawnSync(process.execPath, [helper, 'x86_64-unknown-linux-gnu', `v${version}`, join(path, 'release')], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /release-artifact:.*ENOTDIR/);
+    assert.match(blocked.stderr, /correct permissions\/content and rerun/); assert.doesNotMatch(blocked.stderr, /at main/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

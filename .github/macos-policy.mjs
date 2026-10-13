@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from 'smol-toml';
 import { releaseBranchPrefix } from '../tools/workspace/ci-tier.mjs';
 
-const automaticEvents = new Set(['push', 'release', 'workflow_run', 'repository_dispatch', 'schedule', 'workflow_dispatch']);
+const knownNonPrEvents = new Set(['push', 'release', 'workflow_run', 'repository_dispatch', 'schedule', 'workflow_dispatch']);
 const parseManifest = text => parseToml(text, { integersAsBigInt: true });
 const version = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -71,7 +71,7 @@ function workspacePackages(base) {
 }
 export function classify({ eventName, event, base, head, prefix }) {
   const result = (isReleaseOnly, reason) => ({ isReleaseOnly, macosRequired: eventName === 'pull_request' && !isReleaseOnly, reason });
-  if (automaticEvents.has(eventName)) return result(false, 'automatic non-PR event');
+  if (knownNonPrEvents.has(eventName)) return result(false, 'known non-PR event');
   if (eventName !== 'pull_request') return { isReleaseOnly: false, macosRequired: true, reason: 'unknown event name; Mac coverage required' };
   try {
     const pr = event.pull_request;

@@ -31,11 +31,7 @@
       "inputs": [
         "default",
         "crate",
-        "{workspaceRoot}/README.md",
-        "{workspaceRoot}/scripts/release-artifact.mjs",
-        "{workspaceRoot}/scripts/tests/release-artifact.test.mjs",
-        "{workspaceRoot}/scripts/install.sh",
-        "{workspaceRoot}/.github/release-contract.json"
+        "{workspaceRoot}/README.md"
       ]
     },
     "msrv": {

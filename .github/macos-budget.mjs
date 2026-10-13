@@ -5,6 +5,7 @@ import { sourceDigest } from './workflow-graph.mjs';
 const args = process.argv.slice(2);
 if (args.length !== 4 || args[0] !== '--metric' || !['jobs-per-run', 'runs-per-change'].includes(args[1]) || args[2] !== '--telemetry') throw new Error('usage: macos-budget.mjs --metric jobs-per-run|runs-per-change --telemetry <JSON path>');
 const telemetry = JSON.parse(readFileSync(resolve(args[3]), 'utf8'));
+if (!telemetry || typeof telemetry !== 'object' || Array.isArray(telemetry)) throw new Error('invalid Mac policy telemetry root; run github-workflows:test');
 if (telemetry.schemaVersion !== 1 || telemetry.sourceDigest !== sourceDigest()) throw new Error('missing or stale Mac policy telemetry; run github-workflows:test');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const strings = value => Array.isArray(value) && value.every(v => typeof v === 'string');

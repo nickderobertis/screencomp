@@ -121,6 +121,8 @@ test("fan-out follows actual workflow_run names and keeps the exact artifact hea
 test('workflow parsing rejects unsupported scheduling filters rather than counting zero', () => {
   const workflow = workflows()['ci.yml'];
   for (const on of [{ pull_request: { unknown: ['value'] } }, { push: { tags: 'v*' } }, { made_up_event: null }]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, on }), /unsupported/);
+  for (const declarations of [null, [], { bad: null }, { bad: { type: 'boolean', default: 'false' } }]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, on: { workflow_dispatch: { inputs: declarations } } }), /invalid/);
+  for (const [key, declaration] of [['outputs', { value: null }], ['secrets', { required: 'yes' }]]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, on: { workflow_call: { [key]: { bad: declaration } } } }), /invalid/);
   assert.throws(() => validateWorkflow('invalid.yml', null), /invalid workflow/);
   for (const jobs of [true, 1, 'jobs', {}]) assert.throws(() => validateWorkflow('invalid.yml', { ...workflow, jobs }), /invalid workflow/);
 });

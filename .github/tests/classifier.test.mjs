@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, copyFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { root, workflows, evaluate } from '../workflow-graph.mjs';
 import { history, prEvent } from './history.mjs';
 test('real git classifier admits only same-repository semantic release changes', () => {
   const h = history();
@@ -107,5 +109,31 @@ test('semantic manifest variants and non-modification diffs are driven through g
       h.git('add', '.'); h.git('commit', '-qm', 'version change');
       assert.equal(h.classify(event, h.git('rev-parse', 'HEAD'), { baseRef: badBase }).macosRequired, true);
     }
+  } finally { h.clean(); }
+});
+
+test('production policy step selects event refs and exports classifier outputs through GitHub output', () => {
+  const h = history();
+  try {
+    for (const dir of ['.github/workflows', 'tools/workspace']) mkdirSync(join(h.dir, dir), { recursive: true });
+    for (const file of ['.github/macos-policy.mjs', '.github/macos-output.mjs', '.github/package.json', '.github/workflows/release-plz.yml', 'tools/workspace/ci-tier.mjs']) copyFileSync(join(root, file), join(h.dir, file));
+    symlinkSync(join(root, '.github/node_modules'), join(h.dir, '.github/node_modules'), 'junction');
+    const job = workflows()['ci.yml'].jobs.policy; const step = job.steps.find(s => s.id === 'policy');
+    for (const kind of ['source', 'version-only', 'dependency-content']) for (const fork of [false, true]) {
+      const event = prEvent({ branch: 'release-plz-x', fork, base: h.base, head: h.heads[kind] });
+      const context = { github: { event, sha: h.base } };
+      const env = Object.fromEntries(Object.entries(step.env).map(([k, expr]) => [k, String(evaluate(expr, context))]));
+      assert.equal(env.BASE, h.base); assert.equal(env.HEAD, h.heads[kind]);
+      const eventPath = join(h.dir, '.git/event.json'); const outputPath = join(h.dir, '.git/output');
+      writeFileSync(eventPath, JSON.stringify(event)); writeFileSync(outputPath, '');
+      const got = spawnSync('bash', ['-c', step.run], { cwd: h.dir, encoding: 'utf8', env: { ...process.env, ...env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, RUNNER_TEMP: join(h.dir, '.git') } });
+      assert.equal(got.status, 0, got.stderr); assert.equal(got.stdout, '');
+      const outputs = Object.fromEntries(readFileSync(outputPath, 'utf8').trim().split('\n').map(line => line.split('=')));
+      const release = kind === 'version-only' && !fork;
+      const exported = Object.fromEntries(Object.entries(job.outputs).map(([k, expr]) => [k, evaluate(expr, { steps: { policy: { outputs } } })]));
+      assert.deepEqual(exported, { macosRequired: String(!release), isReleaseOnly: String(release) });
+    }
+    const context = { github: { event: { before: h.base }, sha: h.heads.source } };
+    assert.equal(evaluate(step.env.BASE, context), h.base); assert.equal(evaluate(step.env.HEAD, context), h.heads.source);
   } finally { h.clean(); }
 });

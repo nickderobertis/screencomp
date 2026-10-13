@@ -14,6 +14,7 @@ const CRATE_AND_DEPENDENTS = [
   "coverage",
   "crate-checks",
   "docker-image",
+  "github-workflows",
   "screencomp",
   "screencomp-bench",
   "screencomp-cli",
@@ -43,7 +44,7 @@ test("action changes select their owner, with the reusable workflow also selecti
     "scripts/visual-docs-pages-build.sh",
     "scripts/visual-docs-gh-pages.sh",
   ]) {
-    assert.deepEqual(affectedBy([file]), (file === ".github/workflows/visual-docs-reusable.yml" ? ["github-workflows", "visual-docs-actions"] : ["visual-docs-actions"]), file);
+    assert.deepEqual(affectedBy([file]), (["action.yml", ".github/workflows/visual-docs-reusable.yml"].includes(file) ? ["github-workflows", "visual-docs-actions"] : ["visual-docs-actions"]), file);
   }
 });
 
@@ -64,4 +65,8 @@ test("a documentation-only change outside every project selects nothing", () => 
 
 test("workflow tooling selects its telemetry and budgets without a crate dependency", () => {
   for (const path of [".github/macos-policy.mjs", ".github/budgets.yaml", ".github/workflows/release.yml"]) assert.deepEqual(affectedBy([path]), ["github-workflows"]);
+});
+
+test("release packaging contract participants select the owning production journey", () => {
+  for (const file of ["action.yml", ".github/workflows/release.yml", "scripts/tests/release-artifact.test.mjs"]) assert.ok(affectedBy([file]).includes("github-workflows"), file);
 });

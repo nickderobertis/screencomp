@@ -81,14 +81,16 @@ function verifyInstall({ binary, target, tag, out, version }) {
 function main() {
   let args = process.argv.slice(2);
   const mode = ['verify-binary', 'verify-install'].includes(args[0]) ? args.shift() : 'build';
-  const [target, tag, outArg = 'dist/release', suppliedBinary] = args;
-  validateTarget(target);
   if (mode === 'verify-binary') {
+    const [target, binary] = args;
+    validateTarget(target);
     if (args.length !== 2) throw new Error('usage: release-artifact.mjs verify-binary <target> <compiled binary>');
-    verifyBinary(tag, target);
-    console.log(`verified binary ${tag}`);
+    verifyBinary(binary, target);
+    console.log(`verified binary ${binary}`);
     return;
   }
+  const [target, tag, outArg = 'dist/release', suppliedBinary] = args;
+  validateTarget(target);
   const { targetDirectory, version } = metadataFor(tag);
   const out = resolve(outArg);
   if (mode === 'verify-install') {
@@ -118,4 +120,9 @@ function main() {
     console.log(`packaged ${basename(archive)}`);
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { main(); } catch (error) {
+    console.error(`release-artifact: ${error.message}; inspect the named path or metadata, correct permissions/content and rerun the same release-artifact command before publishing`);
+    process.exitCode = 1;
+  }
+}

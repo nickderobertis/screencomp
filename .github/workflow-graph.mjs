@@ -27,6 +27,21 @@ export function validateWorkflow(file, workflow) {
     if (!filter || typeof filter !== 'object' || Array.isArray(filter)) throw new Error(`invalid event filter ${file}:${event}`);
     for (const [key, value] of Object.entries(filter)) {
       if (!supported[event].includes(key)) throw new Error(`unsupported trigger filter ${file}:${event}:${key}`);
+      if (['inputs', 'outputs', 'secrets'].includes(key)) {
+        const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+        if (!object(value) || !Object.values(value).every(object)) throw new Error(`invalid declarations ${file}:${event}:${key}`);
+        for (const [name, definition] of Object.entries(value)) {
+          if (definition.description !== undefined && typeof definition.description !== 'string') throw new Error(`invalid declaration description ${file}:${name}`);
+          if (definition.required !== undefined && typeof definition.required !== 'boolean') throw new Error(`invalid declaration required ${file}:${name}`);
+          if (key === 'inputs') {
+            const types = event === 'workflow_call' ? ['boolean', 'number', 'string'] : ['boolean', 'number', 'string', 'choice', 'environment'];
+            if (!types.includes(definition.type)) throw new Error(`invalid input type ${file}:${name}`);
+            const expected = ['choice', 'environment'].includes(definition.type) ? 'string' : definition.type;
+            if (definition.default !== undefined && typeof definition.default !== expected) throw new Error(`invalid input default ${file}:${name}`);
+          }
+          if (key === 'outputs' && typeof definition.value !== 'string') throw new Error(`invalid output value ${file}:${name}`);
+        }
+      }
       if (!['inputs', 'outputs', 'secrets'].includes(key) && (!Array.isArray(value) || !value.every(v => supportedPattern(v)))) throw new Error(`unsupported trigger filter values ${file}:${event}:${key}`);
     }
   }
