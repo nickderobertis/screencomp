@@ -234,8 +234,6 @@ bench-tools:
         cargo install --locked "${missing[@]}"
     fi
 
-# --- Pool maintenance (onevcs.toml) -------------------------------------------
-
 # Prune superseded cargo builds older than 2 days from the target dir, keeping each unit's newest.
 pool-maintenance:
     @cargo-prune-superseded --keep-within 2d target

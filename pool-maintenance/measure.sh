@@ -56,31 +56,31 @@ gate_build() {
 
 now() { date +%s.%N; }
 
-echo "measure.sh: (a) untimed backlog pass" >&2
+
 started="$(now)"
-env -u ONEBUDGETSPEC_RESULT just pool-maintenance >&2
+env -u ONEBUDGETSPEC_RESULT just pool-maintenance >"$evidence/backlog.log" 2>&1 || { cat "$evidence/backlog.log" >&2; exit 1; }
 backlog_seconds="$(awk -v a="$started" -v b="$(now)" 'BEGIN { printf "%.3f", b - a }')"
 
-echo "measure.sh: (b) gate test build under an alternative profile setting" >&2
+
 entries >"$evidence/before-alternative.txt"
-CARGO_PROFILE_DEV_DEBUG=line-tables-only gate_build >&2
+CARGO_PROFILE_DEV_DEBUG=line-tables-only gate_build >"$evidence/alternative-build.log" 2>&1 || { cat "$evidence/alternative-build.log" >&2; exit 1; }
 entries >"$evidence/after-alternative.txt"
 LC_ALL=C comm -13 "$evidence/before-alternative.txt" "$evidence/after-alternative.txt" >"$evidence/alternative.txt"
 if [ ! -s "$evidence/alternative.txt" ]; then
-    echo "measure.sh: the alternative build created no new build entries, so there is nothing superseded to time" >&2
+    echo "measure.sh: the alternative build created no new build entries, so there is nothing superseded to time; inspect $evidence/alternative-build.log and confirm the alternative profile differs from .cargo/config.toml" >&2
     exit 1
 fi
 while IFS= read -r entry; do
     find "$entry" -exec touch -h -d '2000-01-01T00:00:00Z' {} +
 done <"$evidence/alternative.txt"
 
-echo "measure.sh: (c) ordinary gate test build" >&2
-gate_build >&2
+
+gate_build >"$evidence/ordinary-build.log" 2>&1 || { cat "$evidence/ordinary-build.log" >&2; exit 1; }
 entries >"$evidence/before-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/alternative.txt" >"$evidence/ordinary.txt"
 
-echo "measure.sh: (d) timed pass" >&2
-just pool-maintenance >&2
+
+just pool-maintenance >"$evidence/timed-pass.log" 2>&1 || { cat "$evidence/timed-pass.log" >&2; exit 1; }
 entries >"$evidence/after-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/after-pass.txt" >"$evidence/removed.txt"
 by_hash "$evidence/ordinary.txt" >"$evidence/ordinary-hashes-before.txt"
@@ -89,18 +89,18 @@ by_hash "$evidence/ordinary-kept.txt" >"$evidence/ordinary-hashes-after.txt"
 
 removed_ordinary="$(LC_ALL=C comm -12 "$evidence/removed.txt" "$evidence/ordinary.txt" | wc -l)"
 if [ "$removed_ordinary" -ne 0 ]; then
-    echo "measure.sh: the timed pass removed $removed_ordinary entries the ordinary build owns (see $evidence/removed.txt)" >&2
+    echo "measure.sh: the timed pass removed $removed_ordinary entries the ordinary build owns ; compare $evidence/removed.txt with $evidence/ordinary.txt before retrying" >&2
     exit 1
 fi
 if [ ! -s "$evidence/removed.txt" ]; then
-    echo "measure.sh: the timed pass removed none of the alternative build's entries" >&2
+    echo "measure.sh: the timed pass removed none of the alternative build's entries; inspect $evidence/timed-pass.log and the backdated entries in $evidence/alternative.txt" >&2
     exit 1
 fi
 echo "measure.sh: removed $(wc -l <"$evidence/removed.txt") of the alternative build's $(wc -l <"$evidence/alternative.txt") entries; all $(wc -l <"$evidence/ordinary.txt") ordinary entries ($(wc -l <"$evidence/ordinary-hashes-before.txt") unit hashes) remain; lists in $evidence" >&2
 
 if [ -n "$result" ]; then
     if [ ! -s "$result" ]; then
-        echo "measure.sh: cargo-prune-superseded wrote no onebudgetspec result to $result" >&2
+        echo "measure.sh: cargo-prune-superseded wrote no onebudgetspec result to $result; run just bootstrap to restore the pinned reporting tool, then retry" >&2
         exit 1
     fi
     # The `${…}` below is a JavaScript template literal for node, not the shell's.

@@ -103,7 +103,7 @@ function taskIds(args, targets = gateTargets()) {
   }
 }
 
-test("no gate selection runs the pool-maintenance measurement, only its script lint", () => {
+test("no gate selection runs the pool-maintenance measurement, only its cheap script checks", () => {
   const selections = [
     ["run-many"],
     ...[
@@ -116,7 +116,7 @@ test("no gate selection runs the pool-maintenance measurement, only its script l
   ];
   for (const args of selections) {
     const pool = taskIds(args).filter((id) => id.startsWith("pool-maintenance:"));
-    assert.ok(pool.every((id) => id === "pool-maintenance:lint"), `${args.join(" ")}: ${pool.join(", ")}`);
+    assert.ok(pool.every((id) => ["pool-maintenance:lint", "pool-maintenance:test"].includes(id)), `${args.join(" ")}: ${pool.join(", ")}`);
   }
   // The measurement is a real target, reached only by naming it (`just budgets-host`).
   assert.deepEqual(taskIds(["run-many"], ["budgets-host"]), ["pool-maintenance:budgets-host"]);
