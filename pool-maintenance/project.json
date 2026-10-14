@@ -1,0 +1,29 @@
+{
+  "name": "pool-maintenance",
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "//": "The budget of the onevcs pool maintenance onevcs.toml declares. Its measurement builds the workspace twice, so it has only the host-labelled `budgets-host` target, which no `check` tier runs: the release pull request's Linux check leg runs it after the gate (`just budgets-host`). `lint` only checks the measurement script.",
+  "projectType": "application",
+  "tags": [
+    "type:workspace",
+    "lang:shell"
+  ],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node tools/workspace/check-project-boundaries.mjs pool-maintenance",
+          "just _pool-maintenance-lint"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "boundaries"
+      ]
+    },
+    "budgets-host": {
+      "command": "just _pool-maintenance-budgets"
+    }
+  }
+}

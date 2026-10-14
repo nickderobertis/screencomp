@@ -29,12 +29,13 @@ test("release-plz's release pull request runs the full sweep", () => {
   const got = selectTier({ eventName: "pull_request", event, releasePrefix: "release-plz-", mergeBase });
   assert.equal(got.tier, "all");
   assert.equal(got.base, "");
+  assert.equal(got.hostBudgets, "all");
 });
 
 test("an ordinary pull request runs the affected tier against the merge base", () => {
   const event = { pull_request: { head: { ref: "feat/thing" }, base: { sha: BASE } } };
   const got = selectTier({ eventName: "pull_request", event, releasePrefix: "release-plz-", mergeBase });
-  assert.deepEqual([got.tier, got.base], ["affected", MERGE_BASE]);
+  assert.deepEqual([got.tier, got.base, got.hostBudgets], ["affected", MERGE_BASE, "none"]);
 });
 
 test("a push to main runs the affected tier against the replaced tip's merge base", () => {
@@ -55,6 +56,7 @@ test("an underivable base fails closed into the sweep", () => {
     const got = selectTier({ eventName, event, releasePrefix: "release-plz-", mergeBase });
     assert.equal(got.tier, "all", `${eventName} ${JSON.stringify(event)}`);
     assert.equal(got.base, "");
+    assert.equal(got.hostBudgets, "none", "a fallback sweep is not the release pull request");
   }
 });
 
@@ -86,9 +88,9 @@ test("the script prints the GITHUB_OUTPUT lines the check job reads", () => {
   const release = runScript("pull_request", {
     pull_request: { head: { ref: "release-plz-2026-10-07T12-00-00Z" }, base: { sha: head } },
   });
-  assert.deepEqual(release, { tier: "all", base: "" });
+  assert.deepEqual(release, { tier: "all", base: "", "host-budgets": "all" });
   const ordinary = runScript("pull_request", { pull_request: { head: { ref: "fix/x" }, base: { sha: head } } });
-  assert.deepEqual(ordinary, { tier: "affected", base: head });
+  assert.deepEqual(ordinary, { tier: "affected", base: head, "host-budgets": "none" });
 });
 
 test("release tier sweep remains independent of Mac omission and uses the configured prefix", () => {

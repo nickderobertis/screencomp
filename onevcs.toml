@@ -1,0 +1,12 @@
+# This repository's own onevcs pool maintenance. onevcs reads this file from
+# the publication checkout's base branch (never a session's branch) and runs
+# `command` in each idle warm-pool slot's worktree, never in a slot a session
+# holds. The `pool-maintenance` recipe in the justfile prunes superseded cargo
+# builds from this repository's target dir: per profile it removes each unit's
+# older builds in deps/, .fingerprint/, build/ and incremental/, keeping the
+# unit's newest build and every build modified within the last 2 days.
+schema_version = 1
+
+[pool.maintain]
+command = ["just", "pool-maintenance"]
+timeout = "30m"
