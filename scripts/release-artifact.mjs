@@ -1,5 +1,6 @@
-// The workflow owns the target list. Each compiled binary is packed and verified
-// locally before Linux publication; verification also accepts staged products.
+// The workflow owns the target list. Each compiled binary is packed, installed
+// and run on its native runner before Linux publication; `pack` stages a binary
+// compiled elsewhere through the same packing without executing it.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -71,9 +72,30 @@ function verifyInstall({ binary, target, tag, out, version }) {
     return { binarySha256, installedSha256 };
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }
+// The one packing implementation for every release: the flat archive, its
+// sha256sum-format checksum, and the per-artifact contract. `installedSha256`
+// is present only when the archive was installed and run on its native host.
+function packArtifact({ binary, target, tag, version, out, verify }) {
+  const exe = binName(target), stem = `screencomp-${tag}-${target}`;
+  const stage = mkdtempSync(join(tmpdir(), 'screencomp-release-'));
+  try {
+    mkdirSync(out, { recursive: true });
+    // llmlint: ignore-block[work_goes_through_command_surface] Released assets follow the published v-tag, flat-archive, stem.sha256 contract, which differs from the local dist-build layout; unifying the two interfaces is out of scope here.
+    copyFileSync(binary, join(stage, exe));
+    for (const doc of ['README.md', 'LICENSE', 'CHANGELOG.md']) copyFileSync(doc, join(stage, doc));
+    const archive = join(out, `${stem}.${target.includes('windows') ? 'zip' : 'tar.gz'}`);
+    if (target.includes('windows')) run('powershell.exe', ['-NoProfile', '-Command', 'Compress-Archive -Path "$env:SCREENCOMP_STAGE/*" -DestinationPath $env:SCREENCOMP_ARCHIVE -Force'], { env: { ...process.env, SCREENCOMP_STAGE: stage, SCREENCOMP_ARCHIVE: archive } });
+    else run('tar', ['-czf', archive, '-C', stage, exe, 'README.md', 'LICENSE', 'CHANGELOG.md']);
+    writeFileSync(join(out, `${stem}.sha256`), `${hash(archive)}  ${basename(archive)}\n`);
+    // llmlint: ignore-end[work_goes_through_command_surface]
+    const hashes = verify ? verifyInstall({ binary, target, tag, out, version }) : { binarySha256: hash(binary) };
+    writeFileSync(join(out, `${stem}.contract.json`), JSON.stringify({ schemaVersion: 2, target, tag, version, archive: basename(archive), checksum: `${stem}.sha256`, ...hashes, contents: [exe, 'README.md', 'LICENSE', 'CHANGELOG.md'] }) + '\n');
+    console.log(`packaged ${basename(archive)}`);
+  } finally { rmSync(stage, { recursive: true, force: true }); }
+}
 function main() {
   let args = process.argv.slice(2);
-  const mode = ['verify-binary', 'verify-install'].includes(args[0]) ? args.shift() : 'build';
+  const mode = ['verify-binary', 'verify-install', 'pack'].includes(args[0]) ? args.shift() : 'build';
   if (mode === 'verify-binary') {
     const [target, binary] = args;
     validateTarget(target);
@@ -92,26 +114,22 @@ function main() {
     console.log(`verified installer ${target} ${tag}`);
     return;
   }
+  if (mode === 'pack') {
+    // Packs a binary compiled elsewhere without executing it, so a host can
+    // stage another platform's artifact. Releases use the build mode, which
+    // also installs and runs the archive on its native runner.
+    if (args.length !== 4 || typeof suppliedBinary !== 'string') throw new Error('usage: release-artifact.mjs pack <target> <tag> <output directory> <compiled binary>');
+    const binary = resolve(suppliedBinary);
+    verifyBinary(binary, target);
+    packArtifact({ binary, target, tag, version, out, verify: false });
+    return;
+  }
   if (args.length < 2 || args.length > 3) throw new Error('usage: release-artifact.mjs <target> <tag> [output directory]');
   mkdirSync(out, { recursive: true });
   run('just', ['build-release', target]);
-  const exe = binName(target), binary = join(targetDirectory, target, 'release', exe);
+  const binary = join(targetDirectory, target, 'release', binName(target));
   verifyBinary(binary, target);
-  const stage = mkdtempSync(join(tmpdir(), 'screencomp-release-'));
-  try {
-    // llmlint: ignore-block[work_goes_through_command_surface] Released assets follow the published v-tag, flat-archive, stem.sha256 contract, which differs from the local dist-build layout; unifying the two interfaces is out of scope here.
-    copyFileSync(binary, join(stage, exe));
-    for (const doc of ['README.md', 'LICENSE', 'CHANGELOG.md']) copyFileSync(doc, join(stage, doc));
-    const stem = `screencomp-${tag}-${target}`;
-    const archive = join(out, `${stem}.${target.includes('windows') ? 'zip' : 'tar.gz'}`);
-    if (target.includes('windows')) run('powershell.exe', ['-NoProfile', '-Command', 'Compress-Archive -Path "$env:SCREENCOMP_STAGE/*" -DestinationPath $env:SCREENCOMP_ARCHIVE -Force'], { env: { ...process.env, SCREENCOMP_STAGE: stage, SCREENCOMP_ARCHIVE: archive } });
-    else run('tar', ['-czf', archive, '-C', stage, exe, 'README.md', 'LICENSE', 'CHANGELOG.md']);
-    writeFileSync(join(out, `${stem}.sha256`), `${hash(archive)}  ${basename(archive)}\n`);
-    // llmlint: ignore-end[work_goes_through_command_surface]
-    const hashes = verifyInstall({ binary, target, tag, out, version });
-    writeFileSync(join(out, `${stem}.contract.json`), JSON.stringify({ schemaVersion: 1, target, tag, version, archive: basename(archive), checksum: `${stem}.sha256`, ...hashes, contents: [exe, 'README.md', 'LICENSE', 'CHANGELOG.md'] }) + '\n');
-    console.log(`packaged ${basename(archive)}`);
-  } finally { rmSync(stage, { recursive: true, force: true }); }
+  packArtifact({ binary, target, tag, version, out, verify: true });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { main(); } catch (error) {

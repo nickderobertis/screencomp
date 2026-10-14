@@ -11,20 +11,45 @@ const root = resolve(import.meta.dirname, '../..');
 const helper = join(root, 'scripts/release-artifact.mjs');
 const pkgName = metadata => metadata.packages.find(p => p.name === 'screencomp').name;
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
-// A Linux or Windows host cannot compile or run a Darwin binary, so the Apple
-// Silicon artifact is staged at the contract level: an arm64 Mach-O header
-// packed under the released stem, with its sha256sum-format checksum.
-function stageAppleSiliconArchive(dir, tag) {
-  const stem = `screencomp-${tag}-aarch64-apple-darwin`;
-  const payload = mkdtempSync(join(tmpdir(), 'screencomp-macho-'));
-  try {
-    const macho = Buffer.alloc(32); macho.writeUInt32LE(0xfeedfacf, 0); macho.writeUInt32LE(0x100000c, 4);
-    writeFileSync(join(payload, 'screencomp'), macho);
-    for (const doc of ['README.md', 'LICENSE', 'CHANGELOG.md']) cpSync(join(root, doc), join(payload, doc));
-    execFileSync('tar', ['-czf', join(dir, `${stem}.tar.gz`), '-C', payload, 'screencomp', 'README.md', 'LICENSE', 'CHANGELOG.md']);
-  } finally { rmSync(payload, { recursive: true, force: true }); }
-  writeFileSync(join(dir, `${stem}.sha256`), `${sha256(join(dir, `${stem}.tar.gz`))}  ${stem}.tar.gz\n`);
-  return stem;
+const metadataVersion = () => JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' })).packages.find(p => p.name === 'screencomp').version;
+// A Mach-O header for the given CPU: enough for the architecture check, never
+// executed. Linux and Windows hosts cannot compile or run a Darwin binary.
+function machoFixture(path, cpu) {
+  const macho = Buffer.alloc(32); macho.writeUInt32LE(0xfeedfacf, 0); macho.writeUInt32LE(cpu, 4);
+  writeFileSync(path, macho);
+  return path;
+}
+const ARM64 = 0x100000c, X86_64 = 0x1000007;
+// The production pack command release.yml's packaging uses, run on a binary
+// compiled elsewhere.
+const pack = (target, tag, out, binary) => spawnSync(process.execPath, [helper, 'pack', target, tag, out, binary], { cwd: root, encoding: 'utf8' });
+// Every release.yml producer job with the targets it packs and its upload step.
+function releaseProducers() {
+  const { jobs } = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+  return { jobs, producers: [
+    ...jobs.build.strategy.matrix.include.map(row => ({ targets: [row.target], step: jobs.build.steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: row })),
+    { targets: jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), step: jobs['build-darwin'].steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: {} },
+  ] };
+}
+// Runs release.yml's artifact download selection and its publication command
+// over the staged per-job artifacts; only the forge transport (`gh`, and the
+// artifact service as a directory) is doubled.
+function publishStaged({ jobs, artifactStore, work, tag, env, fail = false }) {
+  const download = jobs.upload.steps.find(s => s.uses === 'actions/download-artifact@v4');
+  assert.equal(download.with['merge-multiple'], true);
+  assert.match(download.with.pattern, /^[A-Za-z0-9_-]+\*$/);
+  const publishingRoot = join(work, 'linux-publication'); const downloaded = join(publishingRoot, download.with.path);
+  mkdirSync(downloaded, { recursive: true });
+  const prefix = download.with.pattern.slice(0, -1);
+  for (const artifact of readdirSync(artifactStore).filter(name => name.startsWith(prefix))) for (const file of readdirSync(join(artifactStore, artifact))) cpSync(join(artifactStore, artifact, file), join(downloaded, file));
+  const transport = join(work, 'forge-publish-transport'); mkdirSync(transport, { recursive: true });
+  const request = join(work, 'forge-upload.json');
+  writeFileSync(join(transport, 'gh'), '#!/usr/bin/env node\nconst fs = require("node:fs"); const args = process.argv.slice(2); if (process.env.FORGE_FAIL === "true") { console.error("forge upload unavailable"); process.exit(1); } for (const file of args.slice(3)) if (!fs.existsSync(file)) process.exit(1); fs.writeFileSync(process.env.FORGE_REQUEST, JSON.stringify({args, repo:process.env.GH_REPO}));\n');
+  chmodSync(join(transport, 'gh'), 0o755);
+  const publish = jobs.upload.steps.find(s => s.name === 'Publish verified archives and checksums');
+  const result = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...env, PATH: `${transport}${process.platform === 'win32' ? ';' : ':'}${env.PATH}`, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request, FORGE_FAIL: String(fail) } });
+  const uploadRequest = result.status === 0 ? JSON.parse(readFileSync(request, 'utf8')) : null;
+  return { result, downloaded, uploadRequest, published: uploadRequest?.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1)) };
 }
 test('release production commands build, pack, checksum, install and run the real host artifact', { timeout: 240000 }, () => {
   const out = mkdtempSync(join(tmpdir(), 'screencomp-packaging-test-'));
@@ -79,13 +104,8 @@ test('release production commands build, pack, checksum, install and run the rea
     assert.match(installedAction.stdout, new RegExp(`screencomp ${version.replaceAll('.', '\\.')}`));
     const actionBinary = join(readFileSync(pathFile, 'utf8').trim(), target.includes('windows') ? golden.windowsBinary : golden.binary);
     assert.equal(createHash('sha256').update(readFileSync(actionBinary)).digest('hex'), contract.binarySha256);
-    const workflow = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
-    const jobs = workflow.jobs;
+    const { jobs, producers } = releaseProducers();
     const artifactStore = join(out, 'forge-artifact-store'); mkdirSync(artifactStore);
-    const producers = [
-      ...jobs.build.strategy.matrix.include.map(row => ({ targets: [row.target], step: jobs.build.steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: row })),
-      { targets: jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), step: jobs['build-darwin'].steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: {} },
-    ];
     const wanted = [];
     for (const producer of producers) {
       const name = producer.step.with.name.replace('${{ matrix.target }}', producer.matrix.target ?? '');
@@ -96,58 +116,23 @@ test('release production commands build, pack, checksum, install and run the rea
         const stem = golden.archiveStem.replace('$tag', tag).replace('$target', publishedTarget);
         const archiveName = `${stem}.${publishedTarget.includes('windows') ? golden.windowsExtension : golden.unixExtension}`;
         const sumName = `${stem}.${golden.checksumExtension}`;
+        // Other lanes' artifacts are proved by their own native runs; here
+        // they are opaque forge payloads.
         for (const file of [archiveName, sumName, `${stem}.contract.json`]) {
           if (publishedTarget === target) cpSync(join(out, file), join(artifactDir, file));
-          else if (!publishedTarget.includes('darwin')) writeFileSync(join(artifactDir, file), `forge transport payload for ${publishedTarget}`);
-        }
-        if (publishedTarget !== target && publishedTarget.includes('darwin')) {
-          assert.equal(stageAppleSiliconArchive(artifactDir, tag), stem);
-          writeFileSync(join(artifactDir, `${stem}.contract.json`), '{}\n');
+          else writeFileSync(join(artifactDir, file), `forge transport payload for ${publishedTarget}`);
         }
         wanted.push(archiveName, sumName);
       }
     }
-    const download = jobs.upload.steps.find(s => s.uses === 'actions/download-artifact@v4');
-    assert.equal(download.with['merge-multiple'], true);
-    assert.match(download.with.pattern, /^[A-Za-z0-9_-]+\*$/);
-    const publishingRoot = join(out, 'linux-publication'); const downloaded = join(publishingRoot, download.with.path);
-    mkdirSync(downloaded, { recursive: true });
-    const prefix = download.with.pattern.slice(0, -1);
-    // The forge artifact service is the doubled boundary; the upload command
-    // runs exactly as production with the download action's actual selection.
-    for (const artifact of readdirSync(artifactStore).filter(name => name.startsWith(prefix))) for (const file of readdirSync(join(artifactStore, artifact))) cpSync(join(artifactStore, artifact, file), join(downloaded, file));
-    const request = join(out, 'forge-upload.json');
-    writeFileSync(join(transport, 'gh'), '#!/usr/bin/env node\nconst fs = require("node:fs"); const args = process.argv.slice(2); if (process.env.FORGE_FAIL === "true") { console.error("forge upload unavailable"); process.exit(1); } for (const file of args.slice(3)) if (!fs.existsSync(file)) process.exit(1); fs.writeFileSync(process.env.FORGE_REQUEST, JSON.stringify({args, repo:process.env.GH_REPO}));\n');
-    chmodSync(join(transport, 'gh'), 0o755);
-    const publish = jobs.upload.steps.find(s => s.name === 'Publish verified archives and checksums');
-    const uploaded = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...actionEnv, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request } });
+    const { result: uploaded, uploadRequest, published } = publishStaged({ jobs, artifactStore, work: out, tag, env: actionEnv });
     assert.equal(uploaded.status, 0, uploaded.stderr);
-    const uploadRequest = JSON.parse(readFileSync(request, 'utf8'));
     assert.deepEqual(uploadRequest.args.slice(0, 3), ['release', 'upload', tag]);
     assert.equal(uploadRequest.repo, 'nickderobertis/screencomp');
-    assert.deepEqual(uploadRequest.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1)).sort(), wanted.sort());
-    assert.ok(uploadRequest.args.slice(3).every(path => !path.endsWith('.contract.json')));
-    // The macOS set the forge would publish is exactly the Apple Silicon one,
-    // named for this tag, checksummed, and carrying an arm64 Mach-O binary.
-    const published = uploadRequest.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1));
-    const macStem = `screencomp-${tag}-aarch64-apple-darwin`;
-    assert.deepEqual(published.filter(name => /apple|darwin|macos/i.test(name)).sort(), [`${macStem}.sha256`, `${macStem}.tar.gz`]);
-    const macArchive = join(downloaded, `${macStem}.tar.gz`);
-    assert.equal(readFileSync(join(downloaded, `${macStem}.sha256`), 'utf8'), `${sha256(macArchive)}  ${macStem}.tar.gz\n`);
-    const macUnpacked = join(out, 'mac-unpacked'); mkdirSync(macUnpacked);
-    execFileSync('tar', ['-xzf', macArchive, '-C', macUnpacked]);
-    assert.deepEqual(readdirSync(macUnpacked).sort(), [...golden.contents].sort());
-    const macVerified = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
-    assert.equal(macVerified.status, 0, macVerified.stderr);
-    const intelRefused = spawnSync(process.execPath, [helper, 'verify-binary', 'x86_64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
-    assert.notEqual(intelRefused.status, 0); assert.match(intelRefused.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
-    // Requesting the Intel build is refused before anything is compiled or staged.
-    const intelOut = join(out, 'intel-release');
-    const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelOut], { cwd: root, encoding: 'utf8' });
-    assert.notEqual(intelBuild.status, 0); assert.match(intelBuild.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
-    assert.ok(!existsSync(intelOut));
-    const failedUpload = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...actionEnv, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request, FORGE_FAIL: 'true' } });
-    assert.notEqual(failedUpload.status, 0); assert.match(failedUpload.stderr, /forge upload unavailable/);
+    assert.deepEqual(published.sort(), wanted.sort());
+    assert.ok(published.every(file => !file.endsWith('.contract.json')));
+    const failed = publishStaged({ jobs, artifactStore, work: join(out, 'failed-publication'), tag, env: actionEnv, fail: true });
+    assert.notEqual(failed.result.status, 0); assert.match(failed.result.stderr, /forge upload unavailable/);
 
 
 
@@ -193,6 +178,63 @@ test('release production commands build, pack, checksum, install and run the rea
     assert.equal(recovered.stdout, `verified installer ${target} ${tag}\n`);
 
   } finally { rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
+test('the Apple Silicon artifact is packed by the production command and is the only macOS asset published', () => {
+  const work = mkdtempSync(join(tmpdir(), 'screencomp-macos-release-'));
+  try {
+    const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
+    const version = metadataVersion(), tag = `v${version}`;
+    const arm64 = machoFixture(join(work, 'arm64-screencomp'), ARM64);
+    const intel = machoFixture(join(work, 'x86_64-screencomp'), X86_64);
+    const refusals = [
+      [['x86_64-apple-darwin', tag, intel], /Intel macOS \(x86_64-apple-darwin\) is no longer released/],
+      [['aarch64-apple-darwin', tag, intel], /Mach-O architecture mismatch/],
+      [['aarch64-apple-darwin', 'v999.0.0', arm64], /tag does not match Cargo version/],
+    ];
+    for (const [[target, badTag, binary], reason] of refusals) {
+      const refusedOut = join(work, 'refused');
+      const got = pack(target, badTag, refusedOut, binary);
+      assert.notEqual(got.status, 0); assert.match(got.stderr, reason);
+      assert.ok(!existsSync(refusedOut), `${reason} must be refused before creating output`);
+    }
+    const intelBuildOut = join(work, 'intel-build');
+    const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelBuildOut], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(intelBuild.status, 0); assert.match(intelBuild.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
+    assert.ok(!existsSync(intelBuildOut));
+
+    const { jobs, producers } = releaseProducers();
+    const artifactStore = join(work, 'forge-artifact-store'); mkdirSync(artifactStore);
+    for (const producer of producers) {
+      const artifactDir = join(artifactStore, producer.step.with.name.replace('${{ matrix.target }}', producer.matrix.target ?? ''));
+      for (const target of producer.targets) {
+        if (target.includes('darwin')) {
+          const packed = pack(target, tag, artifactDir, arm64);
+          assert.equal(packed.status, 0, packed.stderr);
+          assert.equal(packed.stdout, `packaged screencomp-${tag}-${target}.tar.gz\n`);
+          continue;
+        }
+        // Other lanes' artifacts are proved by their own native runs.
+        mkdirSync(artifactDir, { recursive: true });
+        const stem = golden.archiveStem.replace('$tag', tag).replace('$target', target);
+        for (const ext of [target.includes('windows') ? golden.windowsExtension : golden.unixExtension, golden.checksumExtension]) writeFileSync(join(artifactDir, `${stem}.${ext}`), `forge transport payload for ${target}`);
+      }
+    }
+    const { result, downloaded, published } = publishStaged({ jobs, artifactStore, work, tag, env: process.env });
+    assert.equal(result.status, 0, result.stderr);
+    const stem = golden.archiveStem.replace('$tag', tag).replace('$target', 'aarch64-apple-darwin');
+    const archive = `${stem}.${golden.unixExtension}`, checksum = `${stem}.${golden.checksumExtension}`;
+    assert.deepEqual(published.filter(name => /apple|darwin|macos/i.test(name)).sort(), [archive, checksum].sort());
+    const archivePath = join(downloaded, archive);
+    assert.equal(readFileSync(join(downloaded, checksum), 'utf8'), `${sha256(archivePath)}  ${archive}\n`);
+    const unpacked = join(work, 'unpacked'); mkdirSync(unpacked);
+    execFileSync('tar', ['-xzf', archivePath, '-C', unpacked]);
+    assert.deepEqual(readdirSync(unpacked).sort(), [...golden.contents].sort());
+    assert.deepEqual(readFileSync(join(unpacked, golden.binary)), readFileSync(arm64));
+    const contract = JSON.parse(readFileSync(join(downloaded, `${stem}.contract.json`), 'utf8'));
+    // Not installed or run on this host, so the contract records no installed hash.
+    assert.deepEqual(contract, { schemaVersion: golden.schemaVersion, target: 'aarch64-apple-darwin', tag, version, archive, checksum, binarySha256: sha256(arm64), contents: golden.contents });
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
 test('compiled-artifact boundary rejects truncated and incorrectly declared architectures before execution', () => {
@@ -259,10 +301,12 @@ test('README platform lists match the release contract', () => {
 test('installers refuse Intel macOS and install the Apple Silicon artifact on arm64 Macs', { skip: process.platform === 'win32' && 'the uname/sysctl stand-ins need a POSIX PATH' }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'screencomp-macos-install-'));
   try {
-    const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' }));
-    const tag = `v${metadata.packages.find(p => p.name === 'screencomp').version}`;
-    const assets = join(dir, 'assets'); mkdirSync(assets);
-    const stem = stageAppleSiliconArchive(assets, tag);
+    const tag = `v${metadataVersion()}`;
+    const assets = join(dir, 'assets');
+    const fixture = machoFixture(join(dir, 'arm64-screencomp'), ARM64);
+    const packed = pack('aarch64-apple-darwin', tag, assets, fixture);
+    assert.equal(packed.status, 0, packed.stderr);
+    const stem = `screencomp-${tag}-aarch64-apple-darwin`;
     const action = parse(readFileSync(join(root, 'action.yml'), 'utf8')).runs.steps.find(s => s.name === 'Install screencomp');
     const host = (name, { machine, translated }) => {
       const bin = join(dir, name, 'bin'); mkdirSync(bin, { recursive: true });
@@ -286,8 +330,7 @@ test('installers refuse Intel macOS and install the Apple Silicon artifact on ar
     assert.deepEqual(intel.requests, [], 'Intel macOS must be refused before any asset download');
     assert.ok(!existsSync(join(intel.installed, 'screencomp')));
 
-    execFileSync('tar', ['-xzf', join(assets, `${stem}.tar.gz`), '-C', dir, 'screencomp']);
-    const macho = readFileSync(join(dir, 'screencomp'));
+    const macho = readFileSync(fixture);
     for (const [name, probe] of [['apple-silicon', { machine: 'arm64', translated: 0 }], ['rosetta-shell', { machine: 'x86_64', translated: 1 }]]) {
       const mac = host(name, probe);
       assert.equal(mac.script.status, 0, mac.script.stderr);

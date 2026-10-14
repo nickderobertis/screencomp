@@ -103,6 +103,9 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
   // execution or extra rustup target for a cross-compiled Darwin build.
   for (const step of jobs['build-darwin'].steps) assert.doesNotMatch(JSON.stringify(step), /rosetta|arch -x86_64|x86_64-apple-darwin|rustup target add/i);
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
+  // Every released artifact goes through the build mode, which installs and
+  // runs it on its native runner; `pack` (no execution) stays test-only.
+  for (const step of Object.values(jobs).flatMap(job => job.steps ?? [])) assert.doesNotMatch(step.run ?? '', /release-artifact\.mjs\s+(pack|verify-)/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
   const helper = readFileSync(join(root, 'scripts/release-artifact.mjs'), 'utf8');
   // Mach-O execution requires a Mac host. The native subprocess journey proves
