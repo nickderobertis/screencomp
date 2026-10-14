@@ -4,7 +4,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { executionMode } from '../../scripts/release-artifact.mjs';
 import { history, prEvent } from './history.mjs';
 import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, triggered, validateWorkflow, workflows } from '../workflow-graph.mjs';
 const required = ['action', 'action-download', 'check (macos-latest)', 'check (ubuntu-latest)', 'check (windows-latest)', 'llmlint', 'pr-title', 'workflows'];
@@ -96,21 +95,20 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
     'done',
   ], 'Darwin build must invoke the production builder exactly once for every declared target');
   assert.equal(darwinBuild[0].env.TAG, '${{ github.event.release.tag_name }}');
-  assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).sort(), Object.keys(contract.darwinExecution).sort());
-
-  assert.match(jobs['build-darwin'].steps.find(s => s.name?.startsWith('Provision')).run, /--install-rosetta/);
+  assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), ['aarch64-apple-darwin'], 'macOS releases are Apple Silicon only');
+  assert.deepEqual(Object.keys(contract.darwinExecution), ['aarch64-apple-darwin']);
+  assert.ok(Object.values(contract.darwinExecution).every(mode => mode === 'native'));
+  assert.ok(!releaseTargets(graph).includes('x86_64-apple-darwin'), 'Intel macOS is no longer released');
+  // The one Mac job builds natively: no Rosetta provisioning, x86_64
+  // execution or extra rustup target for a cross-compiled Darwin build.
+  for (const step of jobs['build-darwin'].steps) assert.doesNotMatch(JSON.stringify(step), /rosetta|arch -x86_64|x86_64-apple-darwin|rustup target add/i);
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
   const helper = readFileSync(join(root, 'scripts/release-artifact.mjs'), 'utf8');
-  // Mach-O execution and Rosetta require a Mac host. The native subprocess
-  // journey proves the shared builder/installer; this structural check covers
-  // Darwin architecture declarations and the release job's native commands.
-  for (const [target, mode] of Object.entries(contract.darwinExecution)) {
-    assert.ok(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).includes(target));
-    assert.equal(executionMode({ platform: 'darwin', arch: 'arm64', target }), mode);
-  }
-  assert.match(helper, /arch', \['-x86_64', '\/bin\/bash'/);
-  assert.match(helper, /arch', \['-x86_64', installedBinary/);
+  // Mach-O execution requires a Mac host. The native subprocess journey proves
+  // the shared builder/installer; this structural check covers the Darwin
+  // architecture declaration and the release job's native commands.
+  assert.doesNotMatch(helper, /\/usr\/bin\/arch|Rosetta/);
   assert.match(helper, /binarySha256 !== installedSha256/);
   for (const doc of contract.contents.slice(1)) assert.ok(helper.includes(doc));
 });

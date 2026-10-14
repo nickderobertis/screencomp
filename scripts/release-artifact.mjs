@@ -20,10 +20,8 @@ const run = (cmd, args, options = {}) => {
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const binName = target => target.includes('windows') ? 'screencomp.exe' : 'screencomp';
 function validateTarget(target) {
+  if (target === 'x86_64-apple-darwin') throw new Error(`Intel macOS (x86_64-apple-darwin) is no longer released; build aarch64-apple-darwin for Apple Silicon`);
   if (!/^(x86_64|aarch64)-(unknown-linux-gnu|apple-darwin|pc-windows-msvc)$/.test(target ?? '') || target === 'aarch64-pc-windows-msvc') throw new Error(`unsupported release target '${target}'; choose a declared target from .github/workflows/release.yml`);
-}
-export function executionMode({ platform, arch, target }) {
-  return platform === 'darwin' && arch === 'arm64' && target.startsWith('x86_64-apple-darwin') ? 'Rosetta' : 'native';
 }
 function verifyBinary(binary, target) {
   let bytes;
@@ -63,18 +61,13 @@ function verifyInstall({ binary, target, tag, out, version }) {
     chmodSync(join(transport, 'curl'), 0o755);
     const installed = join(stage, 'installed');
     const env = { ...process.env, SCREENCOMP_STAGED_ASSETS: out, PATH: `${transport}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` };
-    const rosetta = executionMode({ platform: process.platform, arch: process.arch, target }) === 'Rosetta';
-    const installArgs = ['scripts/install.sh', '--version', tag, '--to', installed];
-    if (rosetta) run('/usr/bin/arch', ['-x86_64', '/bin/bash', ...installArgs], { env });
-    else run('bash', installArgs, { env });
+    run('bash', ['scripts/install.sh', '--version', tag, '--to', installed], { env });
     const installedBinary = join(installed, binName(target));
     const binarySha256 = hash(binary), installedSha256 = hash(installedBinary);
     if (binarySha256 !== installedSha256) throw new Error(`installed binary ${installedBinary} (${installedSha256}) differs from compiled ${binary} (${binarySha256}); inspect archive contents and installer extraction before publishing`);
-    const versionArgs = rosetta ? ['-x86_64', installedBinary, '--version'] : ['--version'];
-    const actualVersion = run(rosetta ? '/usr/bin/arch' : installedBinary, versionArgs).trim();
+    const actualVersion = run(installedBinary, ['--version']).trim();
     if (actualVersion !== `screencomp ${version}`) throw new Error(`installed version mismatch: '${actualVersion}', expected 'screencomp ${version}'; rebuild from the matching tag and inspect the staged archive`);
-    const execute = args => rosetta ? run('/usr/bin/arch', ['-x86_64', installedBinary, ...args]) : run(installedBinary, args);
-    execute(['--quiet', 'classify', '--baseline', 'tests/fixtures/baseline', '--current', 'tests/fixtures/current']);
+    run(installedBinary, ['--quiet', 'classify', '--baseline', 'tests/fixtures/baseline', '--current', 'tests/fixtures/current']);
     return { binarySha256, installedSha256 };
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }

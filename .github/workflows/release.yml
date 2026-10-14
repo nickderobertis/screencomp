@@ -81,11 +81,13 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
 
+  # Apple Silicon only: built, packed and install-verified natively on the one
+  # arm64 Mac runner. Intel macOS is no longer released.
   build-darwin:
     needs: test
     runs-on: macos-15
     env:
-      DARWIN_TARGETS: x86_64-apple-darwin aarch64-apple-darwin
+      DARWIN_TARGETS: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,13 +96,8 @@ jobs:
         with:
           node-version: 22
       - run: rustup show
-      - name: Provision both Darwin targets and Rosetta
-        run: |
-          read -r -a targets <<< "$DARWIN_TARGETS"
-          rustup target add "${targets[@]}"
-          softwareupdate --install-rosetta --agree-to-license
       - uses: extractions/setup-just@v2
-      - name: Build each target once and run both staged installers
+      - name: Build each target once and run its staged installer
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |

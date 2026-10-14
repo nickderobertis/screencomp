@@ -86,6 +86,14 @@ runs:
             arm64 | aarch64) arch_part="aarch64" ;;
             *) echo "unsupported architecture: ${arch}" >&2; return 1 ;;
           esac
+          if [ "${os_part}" = "apple-darwin" ] && [ "${arch_part}" = "x86_64" ] \
+            && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+            arch_part="aarch64" # Rosetta-translated shell on Apple Silicon
+          fi
+          if [ "${os_part}" = "apple-darwin" ] && [ "${arch_part}" != "aarch64" ]; then
+            echo "Intel macOS is no longer supported; prebuilt macOS binaries are Apple Silicon (arm64) only. Use 'method: source' or an arm64 macOS runner" >&2
+            return 1
+          fi
           local target="${arch_part}-${os_part}"
 
           local tag="${SCREENCOMP_VERSION}"

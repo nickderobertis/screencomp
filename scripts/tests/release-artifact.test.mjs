@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -10,6 +10,22 @@ import { test } from 'node:test';
 const root = resolve(import.meta.dirname, '../..');
 const helper = join(root, 'scripts/release-artifact.mjs');
 const pkgName = metadata => metadata.packages.find(p => p.name === 'screencomp').name;
+const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+// A Linux or Windows host cannot compile or run a Darwin binary, so the Apple
+// Silicon artifact is staged at the contract level: an arm64 Mach-O header
+// packed under the released stem, with its sha256sum-format checksum.
+function stageAppleSiliconArchive(dir, tag) {
+  const stem = `screencomp-${tag}-aarch64-apple-darwin`;
+  const payload = mkdtempSync(join(tmpdir(), 'screencomp-macho-'));
+  try {
+    const macho = Buffer.alloc(32); macho.writeUInt32LE(0xfeedfacf, 0); macho.writeUInt32LE(0x100000c, 4);
+    writeFileSync(join(payload, 'screencomp'), macho);
+    for (const doc of ['README.md', 'LICENSE', 'CHANGELOG.md']) cpSync(join(root, doc), join(payload, doc));
+    execFileSync('tar', ['-czf', join(dir, `${stem}.tar.gz`), '-C', payload, 'screencomp', 'README.md', 'LICENSE', 'CHANGELOG.md']);
+  } finally { rmSync(payload, { recursive: true, force: true }); }
+  writeFileSync(join(dir, `${stem}.sha256`), `${sha256(join(dir, `${stem}.tar.gz`))}  ${stem}.tar.gz\n`);
+  return stem;
+}
 test('release production commands build, pack, checksum, install and run the real host artifact', { timeout: 240000 }, () => {
   const out = mkdtempSync(join(tmpdir(), 'screencomp-packaging-test-'));
   try {
@@ -82,7 +98,11 @@ test('release production commands build, pack, checksum, install and run the rea
         const sumName = `${stem}.${golden.checksumExtension}`;
         for (const file of [archiveName, sumName, `${stem}.contract.json`]) {
           if (publishedTarget === target) cpSync(join(out, file), join(artifactDir, file));
-          else writeFileSync(join(artifactDir, file), `forge transport payload for ${publishedTarget}`);
+          else if (!publishedTarget.includes('darwin')) writeFileSync(join(artifactDir, file), `forge transport payload for ${publishedTarget}`);
+        }
+        if (publishedTarget !== target && publishedTarget.includes('darwin')) {
+          assert.equal(stageAppleSiliconArchive(artifactDir, tag), stem);
+          writeFileSync(join(artifactDir, `${stem}.contract.json`), '{}\n');
         }
         wanted.push(archiveName, sumName);
       }
@@ -107,6 +127,25 @@ test('release production commands build, pack, checksum, install and run the rea
     assert.equal(uploadRequest.repo, 'nickderobertis/screencomp');
     assert.deepEqual(uploadRequest.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1)).sort(), wanted.sort());
     assert.ok(uploadRequest.args.slice(3).every(path => !path.endsWith('.contract.json')));
+    // The macOS set the forge would publish is exactly the Apple Silicon one,
+    // named for this tag, checksummed, and carrying an arm64 Mach-O binary.
+    const published = uploadRequest.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1));
+    const macStem = `screencomp-${tag}-aarch64-apple-darwin`;
+    assert.deepEqual(published.filter(name => /apple|darwin|macos/i.test(name)).sort(), [`${macStem}.sha256`, `${macStem}.tar.gz`]);
+    const macArchive = join(downloaded, `${macStem}.tar.gz`);
+    assert.equal(readFileSync(join(downloaded, `${macStem}.sha256`), 'utf8'), `${sha256(macArchive)}  ${macStem}.tar.gz\n`);
+    const macUnpacked = join(out, 'mac-unpacked'); mkdirSync(macUnpacked);
+    execFileSync('tar', ['-xzf', macArchive, '-C', macUnpacked]);
+    assert.deepEqual(readdirSync(macUnpacked).sort(), [...golden.contents].sort());
+    const macBinary = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
+    assert.equal(macBinary.status, 0, macBinary.stderr);
+    const intelBinary = spawnSync(process.execPath, [helper, 'verify-binary', 'x86_64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(intelBinary.status, 0); assert.match(intelBinary.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
+    // Requesting the Intel build is refused before anything is compiled or staged.
+    const intelOut = join(out, 'intel-release');
+    const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelOut], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(intelBuild.status, 0); assert.match(intelBuild.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
+    assert.ok(!existsSync(intelOut));
     const failedUpload = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...actionEnv, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request, FORGE_FAIL: 'true' } });
     assert.notEqual(failedUpload.status, 0); assert.match(failedUpload.stderr, /forge upload unavailable/);
 
@@ -198,5 +237,57 @@ test('release entrypoint reports unreadable artifacts with corrective guidance',
     const blocked = spawnSync(process.execPath, [helper, 'x86_64-unknown-linux-gnu', `v${version}`, join(path, 'release')], { cwd: root, encoding: 'utf8' });
     assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /release-artifact:.*ENOTDIR/);
     assert.match(blocked.stderr, /correct permissions\/content and rerun/); assert.doesNotMatch(blocked.stderr, /at main/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The installer and the install action detect the host with `uname` (and, on
+// macOS, `sysctl` for Rosetta translation); those probes and the forge
+// transport are the only doubles, so every journey runs the real scripts.
+test('installers refuse Intel macOS and install the Apple Silicon artifact on arm64 Macs', { skip: process.platform === 'win32' && 'the uname/sysctl stand-ins need a POSIX PATH' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'screencomp-macos-install-'));
+  try {
+    const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' }));
+    const tag = `v${metadata.packages.find(p => p.name === 'screencomp').version}`;
+    const assets = join(dir, 'assets'); mkdirSync(assets);
+    const stem = stageAppleSiliconArchive(assets, tag);
+    const action = parse(readFileSync(join(root, 'action.yml'), 'utf8')).runs.steps.find(s => s.name === 'Install screencomp');
+    const host = (name, { machine, translated }) => {
+      const bin = join(dir, name, 'bin'); mkdirSync(bin, { recursive: true });
+      const requests = join(dir, name, 'requests');
+      writeFileSync(join(bin, 'uname'), `#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo ${machine} ;; *) exit 2 ;; esac\n`);
+      writeFileSync(join(bin, 'sysctl'), `#!/bin/sh\n[ "$*" = "-n sysctl.proc_translated" ] && echo ${translated}\n`);
+      writeFileSync(join(bin, 'curl'), `#!/bin/sh\nset -eu\n[ "$1" = -fsSL ] && [ "$2" = -o ]\necho "$4" >> "${requests}"\ncp "${assets}/\${4##*/}" "$3"\n`);
+      for (const tool of ['uname', 'sysctl', 'curl']) chmodSync(join(bin, tool), 0o755);
+      const env = { ...process.env, PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` };
+      const installed = join(dir, name, 'installed'); const actionTemp = join(dir, name, 'runner'); mkdirSync(actionTemp);
+      const script = spawnSync('bash', ['scripts/install.sh', '--version', tag, '--to', installed], { cwd: root, env, encoding: 'utf8' });
+      const viaAction = spawnSync('bash', ['-c', action.run], { cwd: root, encoding: 'utf8', env: { ...env, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, GITHUB_PATH: join(actionTemp, 'path'), GH_TOKEN: 'forge-double' } });
+      return { script, viaAction, installed, actionTemp, requests: existsSync(requests) ? readFileSync(requests, 'utf8').trim().split('\n') : [] };
+    };
+
+    const intel = host('intel', { machine: 'x86_64', translated: 0 });
+    for (const got of [intel.script, intel.viaAction]) {
+      assert.notEqual(got.status, 0);
+      assert.match(got.stderr, /Intel macOS is no longer supported/);
+    }
+    assert.deepEqual(intel.requests, [], 'Intel macOS must be refused before any asset download');
+    assert.ok(!existsSync(join(intel.installed, 'screencomp')));
+
+    execFileSync('tar', ['-xzf', join(assets, `${stem}.tar.gz`), '-C', dir, 'screencomp']);
+    const macho = readFileSync(join(dir, 'screencomp'));
+    for (const [name, probe] of [['apple-silicon', { machine: 'arm64', translated: 0 }], ['rosetta-shell', { machine: 'x86_64', translated: 1 }]]) {
+      const mac = host(name, probe);
+      assert.equal(mac.script.status, 0, mac.script.stderr);
+      assert.deepEqual(readFileSync(join(mac.installed, 'screencomp')), macho);
+      // The action extracts, then runs `--version`, which a Linux host cannot
+      // do for a Mach-O binary; it must have fetched only the arm64 assets.
+      assert.ok(existsSync(join(mac.actionTemp, 'screencomp-bin', 'screencomp')), mac.viaAction.stderr);
+      assert.deepEqual(readFileSync(join(mac.actionTemp, 'screencomp-bin', 'screencomp')), macho);
+      const base = `https://github.com/nickderobertis/screencomp/releases/download/${tag}`;
+      const wanted = [`${base}/${stem}.tar.gz`, `${base}/${stem}.sha256`];
+      assert.deepEqual(mac.requests, [...wanted, ...wanted], `${name}: script then action fetch the Apple Silicon assets only`);
+      const verified = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(mac.installed, 'screencomp')], { cwd: root, encoding: 'utf8' });
+      assert.equal(verified.status, 0, verified.stderr);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
