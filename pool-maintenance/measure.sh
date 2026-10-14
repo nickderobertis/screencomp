@@ -56,14 +56,22 @@ gate_build() {
 
 now() { date +%s.%N; }
 
+# Replay a failed step's captured log, then name the step and what to do next.
+fail_step() {
+    cat "$evidence/$1.log" >&2
+    echo "measure.sh: the $2 failed (log above, kept in $evidence/$1.log)" >&2
+    echo "ACTION: $3, then rerun ./measure.sh" >&2
+    exit 1
+}
+
 
 started="$(now)"
-env -u ONEBUDGETSPEC_RESULT just pool-maintenance >"$evidence/backlog.log" 2>&1 || { cat "$evidence/backlog.log" >&2; exit 1; }
+env -u ONEBUDGETSPEC_RESULT just pool-maintenance >"$evidence/backlog.log" 2>&1 || fail_step backlog "untimed backlog pass" "fix the error 'just pool-maintenance' reports above"
 backlog_seconds="$(awk -v a="$started" -v b="$(now)" 'BEGIN { printf "%.3f", b - a }')"
 
 
 entries >"$evidence/before-alternative.txt"
-CARGO_PROFILE_DEV_DEBUG=line-tables-only gate_build >"$evidence/alternative-build.log" 2>&1 || { cat "$evidence/alternative-build.log" >&2; exit 1; }
+CARGO_PROFILE_DEV_DEBUG=line-tables-only gate_build >"$evidence/alternative-build.log" 2>&1 || fail_step alternative-build "alternative-profile test build" "fix the build error above (reproduce with CARGO_PROFILE_DEV_DEBUG=line-tables-only just _rust-test screencomp)"
 entries >"$evidence/after-alternative.txt"
 LC_ALL=C comm -13 "$evidence/before-alternative.txt" "$evidence/after-alternative.txt" >"$evidence/alternative.txt"
 if [ ! -s "$evidence/alternative.txt" ]; then
@@ -75,12 +83,12 @@ while IFS= read -r entry; do
 done <"$evidence/alternative.txt"
 
 
-gate_build >"$evidence/ordinary-build.log" 2>&1 || { cat "$evidence/ordinary-build.log" >&2; exit 1; }
+gate_build >"$evidence/ordinary-build.log" 2>&1 || fail_step ordinary-build "ordinary gate test build" "fix the build error above (reproduce with just _rust-test screencomp)"
 entries >"$evidence/before-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/alternative.txt" >"$evidence/ordinary.txt"
 
 
-just pool-maintenance >"$evidence/timed-pass.log" 2>&1 || { cat "$evidence/timed-pass.log" >&2; exit 1; }
+just pool-maintenance >"$evidence/timed-pass.log" 2>&1 || fail_step timed-pass "timed maintenance pass" "fix the error 'just pool-maintenance' reports above"
 entries >"$evidence/after-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/after-pass.txt" >"$evidence/removed.txt"
 by_hash "$evidence/ordinary.txt" >"$evidence/ordinary-hashes-before.txt"

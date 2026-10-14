@@ -243,11 +243,17 @@ pool-maintenance:
 budgets-host tier="all":
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ "$1" = none ]; then
-        echo "budgets-host: skipped (only release-plz's release pull request runs the host budgets)"
-        exit 0
-    fi
-    just _nx "$1" -t budgets-host
+    case "$1" in
+        none)
+            echo "budgets-host: skipped (only release-plz's release pull request runs the host budgets)"
+            exit 0
+            ;;
+        all | affected) just _nx "$1" -t budgets-host ;;
+        *)
+            printf "budgets-host: unknown tier '%s': use 'all' (the default), 'affected', or 'none'\n" "$1" >&2
+            exit 2
+            ;;
+    esac
 
 # Build the consumer container image locally (requires Docker).
 image:
