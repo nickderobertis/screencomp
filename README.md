@@ -75,11 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scri
   | sh -s -- --version v0.1.0 --to /usr/local/bin
 ```
 
-It covers Linux (x86_64, arm64), Apple Silicon macOS (arm64) and Windows x86_64
-under a POSIX shell (Git Bash / MSYS / WSL), and aborts rather than install a
-binary it cannot checksum-verify. Intel macOS is no longer supported: the script
-refuses it, so build from source there (see below). Resolving `latest` calls the unauthenticated GitHub API, which
-rate-limits per IP and returns **403 on shared or proxied egress** (CI,
+It covers Linux (x86_64, arm64), Apple Silicon macOS (arm64), and Windows (x86_64)
+— Windows under a POSIX shell (Git Bash / MSYS / WSL) — and aborts rather than
+install a binary it cannot checksum-verify. Intel macOS is no longer supported:
+the script refuses it, so build from source there (see below). Resolving
+`latest` calls the unauthenticated GitHub API, which rate-limits per IP and returns **403 on shared or proxied egress** (CI,
 Codespaces, corporate networks); set `GITHUB_TOKEN` to lift the limit, or skip the
 lookup entirely by pinning `--version vX.Y.Z`.
 

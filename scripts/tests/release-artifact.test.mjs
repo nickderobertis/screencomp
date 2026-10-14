@@ -137,10 +137,10 @@ test('release production commands build, pack, checksum, install and run the rea
     const macUnpacked = join(out, 'mac-unpacked'); mkdirSync(macUnpacked);
     execFileSync('tar', ['-xzf', macArchive, '-C', macUnpacked]);
     assert.deepEqual(readdirSync(macUnpacked).sort(), [...golden.contents].sort());
-    const macBinary = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
-    assert.equal(macBinary.status, 0, macBinary.stderr);
-    const intelBinary = spawnSync(process.execPath, [helper, 'verify-binary', 'x86_64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
-    assert.notEqual(intelBinary.status, 0); assert.match(intelBinary.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
+    const macVerified = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
+    assert.equal(macVerified.status, 0, macVerified.stderr);
+    const intelRefused = spawnSync(process.execPath, [helper, 'verify-binary', 'x86_64-apple-darwin', join(macUnpacked, golden.binary)], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(intelRefused.status, 0); assert.match(intelRefused.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
     // Requesting the Intel build is refused before anything is compiled or staged.
     const intelOut = join(out, 'intel-release');
     const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelOut], { cwd: root, encoding: 'utf8' });
@@ -238,6 +238,19 @@ test('release entrypoint reports unreadable artifacts with corrective guidance',
     assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /release-artifact:.*ENOTDIR/);
     assert.match(blocked.stderr, /correct permissions\/content and rerun/); assert.doesNotMatch(blocked.stderr, /at main/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('README platform lists match the release contract', () => {
+  const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
+  const readme = readFileSync(join(root, 'README.md'), 'utf8').replace(/\s+/g, ' ');
+  const arches = suffix => ['x86_64', 'aarch64'].filter(arch => golden.targets.includes(`${arch}-${suffix}`)).map(arch => arch === 'aarch64' ? 'arm64' : arch);
+  const mac = arches('apple-darwin');
+  const macLabel = mac.includes('x86_64') ? 'macOS' : 'Apple Silicon macOS';
+  const platforms = `Linux (${arches('unknown-linux-gnu').join(', ')}), ${macLabel} (${mac.join(', ')}), and Windows (${arches('pc-windows-msvc').join(', ')})`;
+  // Both the install-script and release-binaries sections state the list.
+  assert.equal(readme.split(platforms).length - 1, 2, `README must list exactly: ${platforms}`);
+  const intelNotices = [/Intel macOS is no longer supported/, /refuses Intel macOS runners/];
+  for (const notice of intelNotices) assert.equal(notice.test(readme), !mac.includes('x86_64'), `${notice} must match whether Intel macOS is released`);
 });
 
 // The installer and the install action detect the host with `uname` (and, on
