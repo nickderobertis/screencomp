@@ -119,6 +119,25 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
   assert.match(helper, /binarySha256 !== installedSha256/);
   for (const doc of contract.contents.slice(1)) assert.ok(helper.includes(doc));
 });
+test('release.yml publishes nothing for any platform until the Mac release job has succeeded', () => {
+  const jobs = workflows()['release.yml'].jobs;
+  // A publishing job is one that writes outside the run: a release-asset
+  // upload, a registry publish, a pushed ref, or a write-scoped token.
+  const publishes = job => (job.steps ?? []).some(s => /\bgh release (upload|create|edit)\b|\bcargo publish\b|\bgit push\b|\bdocker push\b/.test(s.run ?? '') || s.with?.push === true)
+    || Object.values(job.permissions ?? {}).includes('write');
+  const publishing = Object.keys(jobs).filter(id => publishes(jobs[id]));
+  assert.deepEqual(publishing.sort(), ['advance-major-tag', 'publish-crate', 'upload'], 'a new publishing job must be listed here and gated on build-darwin');
+  assert.ok(!publishes(jobs['build-darwin']), 'the Mac release job itself publishes nothing');
+  const needs = id => [jobs[id].needs ?? []].flat();
+  // Every job on the path from build-darwin must keep GitHub's default
+  // success() gate: always()/failure()/cancelled() would run past a failed Mac job.
+  const ancestors = (id, seen = new Set()) => { for (const parent of needs(id)) if (!seen.has(parent)) { seen.add(parent); ancestors(parent, seen); } return seen; };
+  for (const id of publishing) {
+    const chain = ancestors(id);
+    assert.ok(chain.has('build-darwin'), `${id} must transitively need build-darwin`);
+    for (const gated of [id, ...chain]) assert.doesNotMatch(String(jobs[gated].if ?? ''), /always\(\)|failure\(\)|cancelled\(\)/, `${gated} must not run after a failed or skipped dependency`);
+  }
+});
 
 test("fan-out follows actual workflow_run names and keeps the exact artifact head", () => {
   const scenario = { eventName: "push", event: { ref: "refs/heads/main" }, head: "exact-head", classification: { macosRequired: false }, paths: [] };
