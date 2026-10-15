@@ -4,7 +4,6 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { executionMode } from '../../scripts/release-artifact.mjs';
 import { history, prEvent } from './history.mjs';
 import { evaluate, matrices, releaseTargets, resolveEvent, resolveFanout, resolveRun, root, sourceDigest, triggered, validateWorkflow, workflows } from '../workflow-graph.mjs';
 const required = ['action', 'action-download', 'check (macos-latest)', 'check (ubuntu-latest)', 'check (windows-latest)', 'llmlint', 'pr-title', 'workflows'];
@@ -83,36 +82,61 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
     assert.equal(jobs[id].needs, 'test');
     assert.equal(jobs[id].steps[0].with.ref, '${{ github.event.release.tag_name }}');
     assert.ok(jobs[id].steps.some(s => s.run?.includes('node scripts/release-artifact.mjs')));
+    assert.ok(jobs[id].steps.findIndex(s => s.run?.includes('node scripts/release-artifact.mjs')) < jobs[id].steps.findIndex(s => s.uses === 'actions/upload-artifact@v4'));
     assert.equal(jobs[id].permissions, undefined);
     assert.ok(jobs[id].steps.some(s => s.uses === 'actions/upload-artifact@v4' && s.with['if-no-files-found'] === 'error'));
   }
   assert.equal(jobs['build-darwin']['runs-on'], 'macos-15');
-  const darwinBuild = jobs['build-darwin'].steps.filter(s => s.run?.includes('node scripts/release-artifact.mjs'));
-  assert.equal(darwinBuild.length, 1);
-  assert.deepEqual(darwinBuild[0].run.trim().split('\n').map(line => line.trim()), [
-    'read -r -a targets <<< "$DARWIN_TARGETS"',
-    'for target in "${targets[@]}"; do',
-    'node scripts/release-artifact.mjs "$target" "$TAG"',
-    'done',
-  ], 'Darwin build must invoke the production builder exactly once for every declared target');
-  assert.equal(darwinBuild[0].env.TAG, '${{ github.event.release.tag_name }}');
-  assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).sort(), Object.keys(contract.darwinExecution).sort());
-
-  assert.match(jobs['build-darwin'].steps.find(s => s.name?.startsWith('Provision')).run, /--install-rosetta/);
+  // Native build, then the production pack command the Linux release test
+  // drives, then install-and-run of the packed archive, all before upload.
+  const darwinSteps = jobs['build-darwin'].steps.filter(s => s.run && s.run !== 'rustup show');
+  const perTarget = command => ['read -r -a targets <<< "$DARWIN_TARGETS"', 'for target in "${targets[@]}"; do', command, 'done'];
+  assert.deepEqual(darwinSteps.map(s => [s.name, s.run.trim().split('\n').map(line => line.trim())]), [
+    ['Build each target natively', perTarget('just build-release "$target"')],
+    ['Pack each compiled binary', perTarget('node scripts/release-artifact.mjs pack "$target" "$TAG"')],
+    ['Install and run each packed artifact', perTarget('node scripts/release-artifact.mjs verify-install "$target" "$TAG"')],
+  ], 'Darwin release must build, pack and install-verify every declared target, in that order');
+  for (const step of darwinSteps.slice(1)) assert.equal(step.env.TAG, '${{ github.event.release.tag_name }}');
+  assert.equal(jobs['build-darwin'].steps.at(-1).uses, 'actions/upload-artifact@v4');
+  assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), ['aarch64-apple-darwin'], 'macOS releases are Apple Silicon only');
+  assert.deepEqual(Object.keys(contract.darwinExecution), ['aarch64-apple-darwin']);
+  assert.ok(Object.values(contract.darwinExecution).every(mode => mode === 'native'));
+  assert.ok(!releaseTargets(graph).includes('x86_64-apple-darwin'), 'Intel macOS is no longer released');
+  // The one Mac job builds natively: no Rosetta provisioning, x86_64
+  // execution or extra rustup target for a cross-compiled Darwin build.
+  for (const step of jobs['build-darwin'].steps) assert.doesNotMatch(JSON.stringify(step), /rosetta|arch -x86_64|x86_64-apple-darwin|rustup target add/i);
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
+  // Every other lane uses the build mode, which packs, installs and runs in one
+  // command on its native runner.
+  for (const step of Object.entries(jobs).filter(([id]) => id !== 'build-darwin').flatMap(([, job]) => job.steps ?? [])) assert.doesNotMatch(step.run ?? '', /release-artifact\.mjs\s+(pack|verify-)/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
   const helper = readFileSync(join(root, 'scripts/release-artifact.mjs'), 'utf8');
-  // Mach-O execution and Rosetta require a Mac host. The native subprocess
-  // journey proves the shared builder/installer; this structural check covers
-  // Darwin architecture declarations and the release job's native commands.
-  for (const [target, mode] of Object.entries(contract.darwinExecution)) {
-    assert.ok(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/).includes(target));
-    assert.equal(executionMode({ platform: 'darwin', arch: 'arm64', target }), mode);
-  }
-  assert.match(helper, /arch', \['-x86_64', '\/bin\/bash'/);
-  assert.match(helper, /arch', \['-x86_64', installedBinary/);
+  // Mach-O execution requires a Mac host. The native subprocess journey proves
+  // the shared builder/installer and the Linux test drives the Darwin pack
+  // step; this structural check covers the architecture declaration and the
+  // release job's native commands.
+  assert.doesNotMatch(helper, /\/usr\/bin\/arch|Rosetta/);
   assert.match(helper, /binarySha256 !== installedSha256/);
   for (const doc of contract.contents.slice(1)) assert.ok(helper.includes(doc));
+});
+test('release.yml publishes nothing for any platform until the Mac release job has succeeded', () => {
+  const jobs = workflows()['release.yml'].jobs;
+  // A publishing job is one that writes outside the run: a release-asset
+  // upload, a registry publish, a pushed ref, or a write-scoped token.
+  const publishes = job => (job.steps ?? []).some(s => /\bgh release (upload|create|edit)\b|\bcargo publish\b|\bgit push\b|\bdocker push\b/.test(s.run ?? '') || s.with?.push === true)
+    || Object.values(job.permissions ?? {}).includes('write');
+  const publishing = Object.keys(jobs).filter(id => publishes(jobs[id]));
+  assert.deepEqual(publishing.sort(), ['advance-major-tag', 'publish-crate', 'upload'], 'a new publishing job must be listed here and gated on build-darwin');
+  assert.ok(!publishes(jobs['build-darwin']), 'the Mac release job itself publishes nothing');
+  const needs = id => [jobs[id].needs ?? []].flat();
+  // Every job on the path from build-darwin must keep GitHub's default
+  // success() gate: always()/failure()/cancelled() would run past a failed Mac job.
+  const ancestors = (id, seen = new Set()) => { for (const parent of needs(id)) if (!seen.has(parent)) { seen.add(parent); ancestors(parent, seen); } return seen; };
+  for (const id of publishing) {
+    const chain = ancestors(id);
+    assert.ok(chain.has('build-darwin'), `${id} must transitively need build-darwin`);
+    for (const gated of [id, ...chain]) assert.doesNotMatch(String(jobs[gated].if ?? ''), /always\(\)|failure\(\)|cancelled\(\)/, `${gated} must not run after a failed or skipped dependency`);
+  }
 });
 
 test("fan-out follows actual workflow_run names and keeps the exact artifact head", () => {
@@ -159,7 +183,7 @@ test('reusable matrix resolution matches the actual shell producer for every arc
 
 test('matrix and capture-output boundaries reject malformed shapes and preserve additional include instances', () => {
   for (const matrix of [null, false, 0, '', [], 'null', { os: 'macos-latest' }, { exclude: {} }, { exclude: [null] }, { include: [null] }]) assert.throws(() => matrices(matrix, {}), /matrix/);
-  assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }]);
+  assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'arm64' }, { os: 'macos-latest', target: 'arm64-debug' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'arm64' }, { os: 'macos-latest', target: 'arm64-debug' }]);
   const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: {} };
   for (const inputs of [{ arches: '[42]' }, { arches: '["arm64"]', projects: '{}' }, { arches: '["arm64"]', projects: '[{"id":"a","current":"../outside"}]' }]) assert.throws(() => resolveRun('visual-docs-reusable.yml', scenario, graph, inputs), /unresolved capture arches|invalid capture project/);
 });

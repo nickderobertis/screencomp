@@ -23,7 +23,7 @@ test('budget readers reject missing telemetry and stale source digests without r
 
 test('telemetry reader rejects invalid metrics and nested rows at the recorded-data boundary', () => {
   const path = join(root, '.github/.telemetry/invalid.json');
-  const baseline = { schemaVersion: 1, sourceDigest: sourceDigest(), releaseTargets: ['x86_64-apple-darwin'], jobsPerRun: 0, runsPerChange: 0, scenarios: [{ id: 'fixture', runs: [{ workflow: 'ci.yml', rows: [] }] }], lifecycles: [{ id: 'fixture', events: [], spendingRuns: [] }] };
+  const baseline = { schemaVersion: 1, sourceDigest: sourceDigest(), releaseTargets: ['aarch64-apple-darwin'], jobsPerRun: 0, runsPerChange: 0, scenarios: [{ id: 'fixture', runs: [{ workflow: 'ci.yml', rows: [] }] }], lifecycles: [{ id: 'fixture', events: [], spendingRuns: [] }] };
   mkdirSync(join(root, '.github/.telemetry'), { recursive: true });
   try {
     for (const patch of [{ jobsPerRun: -1 }, { runsPerChange: 1.5 }, { jobsPerRun: '0' }, { jobsPerRun: 1 }, { releaseTargets: [null] }, { scenarios: [{ id: 'bad', runs: [null] }] }, { scenarios: [{ id: 'bad', runs: [{ workflow: 'ci.yml', rows: [{}] }] }] }, { lifecycles: [{ id: 'bad', events: [], spendingRuns: [{}] }] }, { scenarios: [{ id: 'bad', runs: [{ workflow: 'ci.yml', rows: [{ workflow: 'ci.yml', job: 'check-macos', displayName: 'check-macos', runner: 'macos-latest', event: 'pull_request', head: 'exact-head', enabled: true, macos: false, matrix: {}, targets: [], needs: [], tag: null }] }] }] }]) {
@@ -45,13 +45,13 @@ test('standalone budget output reports recorded measurements and rejects telemet
     const digest = execFileSync(process.execPath, ['--input-type=module', '-e', "import { sourceDigest } from './.github/workflow-graph.mjs'; console.log(sourceDigest());"], { cwd: dir, encoding: 'utf8' }).trim();
     mkdirSync(join(dir, '.github/.telemetry'));
     const path = join(dir, '.github/.telemetry/policy.json');
-    writeFileSync(path, JSON.stringify({ schemaVersion: 1, sourceDigest: digest, releaseTargets: ['x86_64-apple-darwin'], jobsPerRun: 0, runsPerChange: 0, scenarios: [{ id: 'fixture', runs: [{ workflow: 'ci.yml', rows: [] }] }], lifecycles: [{ id: 'fixture', events: [], spendingRuns: [] }] }));
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, sourceDigest: digest, releaseTargets: ['aarch64-apple-darwin'], jobsPerRun: 0, runsPerChange: 0, scenarios: [{ id: 'fixture', runs: [{ workflow: 'ci.yml', rows: [] }] }], lifecycles: [{ id: 'fixture', events: [], spendingRuns: [] }] }));
     const env = { ...process.env }; delete env.ONEBUDGETSPEC_RESULT;
     const run = metric => spawnSync(process.execPath, [join(dir, '.github/macos-budget.mjs'), '--metric', metric, '--telemetry', path], { cwd: dir, env, encoding: 'utf8' });
     for (const metric of ['jobs-per-run', 'runs-per-change']) {
       const got = run(metric); assert.equal(got.status, 0, got.stderr);
       const output = JSON.parse(got.stdout); assert.equal(output.metric, metric); assert.equal(output.value, 0);
-      assert.equal(output.detail.sourceDigest, digest); assert.deepEqual(output.detail.releaseTargets, ['x86_64-apple-darwin']);
+      assert.equal(output.detail.sourceDigest, digest); assert.deepEqual(output.detail.releaseTargets, ['aarch64-apple-darwin']);
       assert.equal(output.detail.scenarios[0].workflows[0].workflow, 'ci.yml');
     }
     writeFileSync(join(dir, '.github/package.json'), '{"private":true,"changed":true}');

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -10,6 +10,56 @@ import { test } from 'node:test';
 const root = resolve(import.meta.dirname, '../..');
 const helper = join(root, 'scripts/release-artifact.mjs');
 const pkgName = metadata => metadata.packages.find(p => p.name === 'screencomp').name;
+const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const metadataVersion = () => JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' })).packages.find(p => p.name === 'screencomp').version;
+// A Mach-O header for the given CPU: enough for the architecture check, never
+// executed. Linux and Windows hosts cannot compile or run a Darwin binary.
+function machoFixture(path, cpu) {
+  const macho = Buffer.alloc(32); macho.writeUInt32LE(0xfeedfacf, 0); macho.writeUInt32LE(cpu, 4);
+  writeFileSync(path, macho);
+  return path;
+}
+const ARM64 = 0x100000c, X86_64 = 0x1000007;
+const pack = (target, tag, out, binary) => spawnSync(process.execPath, [helper, 'pack', target, tag, out, binary], { cwd: root, encoding: 'utf8' });
+function releaseProducers() {
+  const { jobs } = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+  return { jobs, producers: [
+    ...jobs.build.strategy.matrix.include.map(row => ({ targets: [row.target], step: jobs.build.steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: row })),
+    { targets: jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), step: jobs['build-darwin'].steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: {} },
+  ] };
+}
+// Runs one build-darwin step's script as the runner would, from a checkout copy
+// whose cargo target directory holds `binary` (or nothing) for each target.
+function runDarwinStep(name, { checkout, targetDir, env = {} }) {
+  const { jobs } = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+  const step = jobs['build-darwin'].steps.find(s => s.name === name);
+  assert.ok(step, `release.yml build-darwin has no '${name}' step`);
+  return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step.run], { cwd: checkout, encoding: 'utf8', env: { ...process.env, DARWIN_TARGETS: jobs['build-darwin'].env.DARWIN_TARGETS, CARGO_TARGET_DIR: targetDir, ...env } });
+}
+function checkoutCopy(dir) {
+  for (const path of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src', 'e2e', 'benches', 'README.md', 'LICENSE', 'CHANGELOG.md', 'scripts/release-artifact.mjs']) cpSync(join(root, path), join(dir, path), { recursive: true });
+  return dir;
+}
+// Runs release.yml's artifact download selection and its publication command
+// over the staged per-job artifacts; only the forge transport (`gh`, and the
+// artifact service as a directory) is doubled.
+function publishStaged({ jobs, artifactStore, work, tag, env, fail = false }) {
+  const download = jobs.upload.steps.find(s => s.uses === 'actions/download-artifact@v4');
+  assert.equal(download.with['merge-multiple'], true);
+  assert.match(download.with.pattern, /^[A-Za-z0-9_-]+\*$/);
+  const publishingRoot = join(work, 'linux-publication'); const downloaded = join(publishingRoot, download.with.path);
+  mkdirSync(downloaded, { recursive: true });
+  const prefix = download.with.pattern.slice(0, -1);
+  for (const artifact of readdirSync(artifactStore).filter(name => name.startsWith(prefix))) for (const file of readdirSync(join(artifactStore, artifact))) cpSync(join(artifactStore, artifact, file), join(downloaded, file));
+  const transport = join(work, 'forge-publish-transport'); mkdirSync(transport, { recursive: true });
+  const request = join(work, 'forge-upload.json');
+  writeFileSync(join(transport, 'gh'), '#!/usr/bin/env node\nconst fs = require("node:fs"); const args = process.argv.slice(2); if (process.env.FORGE_FAIL === "true") { console.error("forge upload unavailable"); process.exit(1); } for (const file of args.slice(3)) if (!fs.existsSync(file)) process.exit(1); fs.writeFileSync(process.env.FORGE_REQUEST, JSON.stringify({args, repo:process.env.GH_REPO}));\n');
+  chmodSync(join(transport, 'gh'), 0o755);
+  const publish = jobs.upload.steps.find(s => s.name === 'Publish verified archives and checksums');
+  const result = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...env, PATH: `${transport}${process.platform === 'win32' ? ';' : ':'}${env.PATH}`, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request, FORGE_FAIL: String(fail) } });
+  const uploadRequest = result.status === 0 ? JSON.parse(readFileSync(request, 'utf8')) : null;
+  return { result, downloaded, uploadRequest, published: uploadRequest?.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1)) };
+}
 test('release production commands build, pack, checksum, install and run the real host artifact', { timeout: 240000 }, () => {
   const out = mkdtempSync(join(tmpdir(), 'screencomp-packaging-test-'));
   try {
@@ -63,13 +113,8 @@ test('release production commands build, pack, checksum, install and run the rea
     assert.match(installedAction.stdout, new RegExp(`screencomp ${version.replaceAll('.', '\\.')}`));
     const actionBinary = join(readFileSync(pathFile, 'utf8').trim(), target.includes('windows') ? golden.windowsBinary : golden.binary);
     assert.equal(createHash('sha256').update(readFileSync(actionBinary)).digest('hex'), contract.binarySha256);
-    const workflow = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
-    const jobs = workflow.jobs;
+    const { jobs, producers } = releaseProducers();
     const artifactStore = join(out, 'forge-artifact-store'); mkdirSync(artifactStore);
-    const producers = [
-      ...jobs.build.strategy.matrix.include.map(row => ({ targets: [row.target], step: jobs.build.steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: row })),
-      { targets: jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), step: jobs['build-darwin'].steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: {} },
-    ];
     const wanted = [];
     for (const producer of producers) {
       const name = producer.step.with.name.replace('${{ matrix.target }}', producer.matrix.target ?? '');
@@ -80,6 +125,8 @@ test('release production commands build, pack, checksum, install and run the rea
         const stem = golden.archiveStem.replace('$tag', tag).replace('$target', publishedTarget);
         const archiveName = `${stem}.${publishedTarget.includes('windows') ? golden.windowsExtension : golden.unixExtension}`;
         const sumName = `${stem}.${golden.checksumExtension}`;
+        // Other lanes' artifacts are proved by their own native runs; here
+        // they are opaque forge payloads.
         for (const file of [archiveName, sumName, `${stem}.contract.json`]) {
           if (publishedTarget === target) cpSync(join(out, file), join(artifactDir, file));
           else writeFileSync(join(artifactDir, file), `forge transport payload for ${publishedTarget}`);
@@ -87,28 +134,14 @@ test('release production commands build, pack, checksum, install and run the rea
         wanted.push(archiveName, sumName);
       }
     }
-    const download = jobs.upload.steps.find(s => s.uses === 'actions/download-artifact@v4');
-    assert.equal(download.with['merge-multiple'], true);
-    assert.match(download.with.pattern, /^[A-Za-z0-9_-]+\*$/);
-    const publishingRoot = join(out, 'linux-publication'); const downloaded = join(publishingRoot, download.with.path);
-    mkdirSync(downloaded, { recursive: true });
-    const prefix = download.with.pattern.slice(0, -1);
-    // The forge artifact service is the doubled boundary; the upload command
-    // runs exactly as production with the download action's actual selection.
-    for (const artifact of readdirSync(artifactStore).filter(name => name.startsWith(prefix))) for (const file of readdirSync(join(artifactStore, artifact))) cpSync(join(artifactStore, artifact, file), join(downloaded, file));
-    const request = join(out, 'forge-upload.json');
-    writeFileSync(join(transport, 'gh'), '#!/usr/bin/env node\nconst fs = require("node:fs"); const args = process.argv.slice(2); if (process.env.FORGE_FAIL === "true") { console.error("forge upload unavailable"); process.exit(1); } for (const file of args.slice(3)) if (!fs.existsSync(file)) process.exit(1); fs.writeFileSync(process.env.FORGE_REQUEST, JSON.stringify({args, repo:process.env.GH_REPO}));\n');
-    chmodSync(join(transport, 'gh'), 0o755);
-    const publish = jobs.upload.steps.find(s => s.name === 'Publish verified archives and checksums');
-    const uploaded = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...actionEnv, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request } });
+    const { result: uploaded, uploadRequest, published } = publishStaged({ jobs, artifactStore, work: out, tag, env: actionEnv });
     assert.equal(uploaded.status, 0, uploaded.stderr);
-    const uploadRequest = JSON.parse(readFileSync(request, 'utf8'));
     assert.deepEqual(uploadRequest.args.slice(0, 3), ['release', 'upload', tag]);
     assert.equal(uploadRequest.repo, 'nickderobertis/screencomp');
-    assert.deepEqual(uploadRequest.args.slice(3).map(path => path.replaceAll('\\', '/').split('/').at(-1)).sort(), wanted.sort());
-    assert.ok(uploadRequest.args.slice(3).every(path => !path.endsWith('.contract.json')));
-    const failedUpload = spawnSync('bash', ['-c', publish.run], { cwd: publishingRoot, encoding: 'utf8', env: { ...actionEnv, TAG: tag, GH_TOKEN: 'forge-double', GH_REPO: 'nickderobertis/screencomp', FORGE_REQUEST: request, FORGE_FAIL: 'true' } });
-    assert.notEqual(failedUpload.status, 0); assert.match(failedUpload.stderr, /forge upload unavailable/);
+    assert.deepEqual(published.sort(), wanted.sort());
+    assert.ok(published.every(file => !file.endsWith('.contract.json')));
+    const failed = publishStaged({ jobs, artifactStore, work: join(out, 'failed-publication'), tag, env: actionEnv, fail: true });
+    assert.notEqual(failed.result.status, 0); assert.match(failed.result.stderr, /forge upload unavailable/);
 
 
 
@@ -145,15 +178,106 @@ test('release production commands build, pack, checksum, install and run the rea
     const alternateMetadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: clone, encoding: 'utf8' }));
     const alternateBinary = join(alternateMetadata.target_directory, target, 'release', target.includes('windows') ? golden.windowsBinary : golden.binary);
     cpSync(alternateBinary, payload); repack();
+    // The packed contract must describe the binary under test to get this far.
+    const contractPath = join(out, `${stem}.contract.json`), originalContract = readFileSync(contractPath);
+    writeFileSync(contractPath, JSON.stringify({ ...contract, binarySha256: sha256(alternateBinary) }));
     const wrongVersion = verifyInstall(alternateBinary);
     assert.notEqual(wrongVersion.status, 0); assert.match(wrongVersion.stderr, /installed version mismatch/);
     assert.match(wrongVersion.stderr, /screencomp 999.0.0/);
-    writeFileSync(archive, originalArchive); writeFileSync(checksumPath, originalChecksum);
+    writeFileSync(archive, originalArchive); writeFileSync(checksumPath, originalChecksum); writeFileSync(contractPath, originalContract);
     const recovered = verifyInstall(nativeBinary);
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(recovered.stdout, `verified installer ${target} ${tag}\n`);
 
+    // The split commands the Darwin job runs produce what the build mode does:
+    // pack without executing, then verify-install records the installed hash.
+    const split = join(out, 'split');
+    const unverified = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(unverified.status, 0); assert.match(unverified.stderr, /cannot read packed contract .*; run release-artifact\.mjs pack/);
+    const splitPacked = spawnSync(process.execPath, [helper, 'pack', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.equal(splitPacked.status, 0, splitPacked.stderr);
+    assert.equal(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')).installedSha256, undefined);
+    // verify-install only stamps a contract that describes this binary and tag.
+    const splitContract = join(split, `${stem}.contract.json`), packedContract = readFileSync(splitContract);
+    for (const [tampered, field] of [['42', 'contract'], [JSON.stringify({ ...JSON.parse(packedContract), binarySha256: '0'.repeat(64) }), 'binarySha256'], [JSON.stringify({ ...JSON.parse(packedContract), tag: 'v0.0.1' }), 'tag']]) {
+      writeFileSync(splitContract, tampered);
+      const refused = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+      assert.notEqual(refused.status, 0); assert.match(refused.stderr, new RegExp(`does not describe .*mismatched: ${field}`));
+      assert.equal(readFileSync(splitContract, 'utf8'), tampered);
+    }
+    writeFileSync(splitContract, packedContract);
+    const splitVerified = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.equal(splitVerified.status, 0, splitVerified.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')), contract);
+
   } finally { rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
+test("release.yml's Darwin pack step publishes exactly the Apple Silicon artifact and refuses Intel, wrong-arch and wrong-tag binaries", () => {
+  const work = mkdtempSync(join(tmpdir(), 'screencomp-macos-release-'));
+  try {
+    const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
+    const version = metadataVersion(), tag = `v${version}`;
+    const PACK = 'Pack each compiled binary';
+    // A Linux host cannot compile a Darwin binary, so the fixture stands where
+    // the native build step leaves it: <target dir>/<target>/release/screencomp.
+    const stageBinary = (targetDir, target, cpu) => { mkdirSync(join(targetDir, target, 'release'), { recursive: true }); return machoFixture(join(targetDir, target, 'release', golden.binary), cpu); };
+    const refusals = [
+      ['intel', { DARWIN_TARGETS: 'x86_64-apple-darwin' }, 'x86_64-apple-darwin', X86_64, tag, /Intel macOS \(x86_64-apple-darwin\) is no longer released/],
+      ['wrong-arch', {}, 'aarch64-apple-darwin', X86_64, tag, /Mach-O architecture mismatch/],
+      ['wrong-tag', {}, 'aarch64-apple-darwin', ARM64, 'v999.0.0', /tag does not match Cargo version/],
+    ];
+    for (const [name, env, target, cpu, badTag, reason] of refusals) {
+      const checkout = checkoutCopy(join(work, name)), targetDir = join(work, `${name}-target`);
+      stageBinary(targetDir, target, cpu);
+      const got = runDarwinStep(PACK, { checkout, targetDir, env: { ...env, TAG: badTag } });
+      assert.notEqual(got.status, 0); assert.match(got.stderr, reason);
+      assert.ok(!existsSync(join(checkout, 'dist')), `${name} must be refused before creating output`);
+    }
+    const intelBuildOut = join(work, 'intel-build');
+    const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelBuildOut], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(intelBuild.status, 0); assert.match(intelBuild.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
+    assert.ok(!existsSync(intelBuildOut));
+
+    const checkout = checkoutCopy(join(work, 'checkout')), targetDir = join(work, 'target');
+    const arm64 = stageBinary(targetDir, 'aarch64-apple-darwin', ARM64);
+    const packed = runDarwinStep(PACK, { checkout, targetDir, env: { TAG: tag } });
+    assert.equal(packed.status, 0, packed.stderr);
+    assert.equal(packed.stdout, `packaged screencomp-${tag}-aarch64-apple-darwin.tar.gz\n`);
+
+    const { jobs, producers } = releaseProducers();
+    const artifactStore = join(work, 'forge-artifact-store'); mkdirSync(artifactStore);
+    for (const producer of producers) {
+      const artifactDir = join(artifactStore, producer.step.with.name.replace('${{ matrix.target }}', producer.matrix.target ?? ''));
+      mkdirSync(artifactDir, { recursive: true });
+      if (producer.targets.some(target => target.includes('darwin'))) {
+        // The Darwin job uploads what its steps left at the upload path.
+        assert.match(producer.step.with.path, /^[\w/]+\/\*$/);
+        const uploaded = join(checkout, producer.step.with.path.slice(0, -2));
+        for (const file of readdirSync(uploaded)) cpSync(join(uploaded, file), join(artifactDir, file));
+        continue;
+      }
+      // Other lanes' artifacts are proved by their own native runs.
+      for (const target of producer.targets) {
+        const stem = golden.archiveStem.replace('$tag', tag).replace('$target', target);
+        for (const ext of [target.includes('windows') ? golden.windowsExtension : golden.unixExtension, golden.checksumExtension]) writeFileSync(join(artifactDir, `${stem}.${ext}`), `forge transport payload for ${target}`);
+      }
+    }
+    const { result, downloaded, published } = publishStaged({ jobs, artifactStore, work, tag, env: process.env });
+    assert.equal(result.status, 0, result.stderr);
+    const stem = golden.archiveStem.replace('$tag', tag).replace('$target', 'aarch64-apple-darwin');
+    const archive = `${stem}.${golden.unixExtension}`, checksum = `${stem}.${golden.checksumExtension}`;
+    assert.deepEqual(published.filter(name => /apple|darwin|macos/i.test(name)).sort(), [archive, checksum].sort());
+    const archivePath = join(downloaded, archive);
+    assert.equal(readFileSync(join(downloaded, checksum), 'utf8'), `${sha256(archivePath)}  ${archive}\n`);
+    const unpacked = join(work, 'unpacked'); mkdirSync(unpacked);
+    execFileSync('tar', ['-xzf', archive, '-C', unpacked], { cwd: downloaded });
+    assert.deepEqual(readdirSync(unpacked).sort(), [...golden.contents].sort());
+    assert.deepEqual(readFileSync(join(unpacked, golden.binary)), readFileSync(arm64));
+    const contract = JSON.parse(readFileSync(join(downloaded, `${stem}.contract.json`), 'utf8'));
+    // The verify-install step that adds installedSha256 runs only on the Mac.
+    assert.deepEqual(contract, { schemaVersion: golden.schemaVersion, target: 'aarch64-apple-darwin', tag, version, archive, checksum, binarySha256: sha256(arm64), contents: golden.contents });
+  } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
 test('compiled-artifact boundary rejects truncated and incorrectly declared architectures before execution', () => {
@@ -198,5 +322,71 @@ test('release entrypoint reports unreadable artifacts with corrective guidance',
     const blocked = spawnSync(process.execPath, [helper, 'x86_64-unknown-linux-gnu', `v${version}`, join(path, 'release')], { cwd: root, encoding: 'utf8' });
     assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /release-artifact:.*ENOTDIR/);
     assert.match(blocked.stderr, /correct permissions\/content and rerun/); assert.doesNotMatch(blocked.stderr, /at main/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('README platform lists match the release contract', () => {
+  const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
+  const readme = readFileSync(join(root, 'README.md'), 'utf8').replace(/\s+/g, ' ');
+  const arches = suffix => ['x86_64', 'aarch64'].filter(arch => golden.targets.includes(`${arch}-${suffix}`)).map(arch => arch === 'aarch64' ? 'arm64' : arch);
+  const mac = arches('apple-darwin');
+  const macLabel = mac.includes('x86_64') ? 'macOS' : 'Apple Silicon macOS';
+  const platforms = `Linux (${arches('unknown-linux-gnu').join(', ')}), ${macLabel} (${mac.join(', ')}), and Windows (${arches('pc-windows-msvc').join(', ')})`;
+  // Both the install-script and release-binaries sections state the list.
+  assert.equal(readme.split(platforms).length - 1, 2, `README must list exactly: ${platforms}`);
+  const intelNotices = [/Intel macOS is no longer supported/, /refuses Intel macOS runners/];
+  for (const notice of intelNotices) assert.equal(notice.test(readme), !mac.includes('x86_64'), `${notice} must match whether Intel macOS is released`);
+});
+
+// The installer and the install action detect the host with `uname` (and, on
+// macOS, `sysctl` for Rosetta translation); those probes and the forge
+// transport are the only doubles, so every journey runs the real scripts.
+test('installers refuse Intel macOS and install the Apple Silicon artifact on arm64 Macs', { skip: process.platform === 'win32' && 'the uname/sysctl stand-ins need a POSIX PATH' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'screencomp-macos-install-'));
+  try {
+    const tag = `v${metadataVersion()}`;
+    const assets = join(dir, 'assets');
+    const fixture = machoFixture(join(dir, 'arm64-screencomp'), ARM64);
+    const packed = pack('aarch64-apple-darwin', tag, assets, fixture);
+    assert.equal(packed.status, 0, packed.stderr);
+    const stem = `screencomp-${tag}-aarch64-apple-darwin`;
+    const action = parse(readFileSync(join(root, 'action.yml'), 'utf8')).runs.steps.find(s => s.name === 'Install screencomp');
+    const host = (name, { machine, translated }) => {
+      const bin = join(dir, name, 'bin'); mkdirSync(bin, { recursive: true });
+      const requests = join(dir, name, 'requests');
+      writeFileSync(join(bin, 'uname'), `#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo ${machine} ;; *) exit 2 ;; esac\n`);
+      writeFileSync(join(bin, 'sysctl'), `#!/bin/sh\n[ "$*" = "-n sysctl.proc_translated" ] && echo ${translated}\n`);
+      writeFileSync(join(bin, 'curl'), `#!/bin/sh\nset -eu\n[ "$1" = -fsSL ] && [ "$2" = -o ]\necho "$4" >> "${requests}"\ncp "${assets}/\${4##*/}" "$3"\n`);
+      for (const tool of ['uname', 'sysctl', 'curl']) chmodSync(join(bin, tool), 0o755);
+      const env = { ...process.env, PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` };
+      const installed = join(dir, name, 'installed'); const actionTemp = join(dir, name, 'runner'); mkdirSync(actionTemp);
+      const script = spawnSync('bash', ['scripts/install.sh', '--version', tag, '--to', installed], { cwd: root, env, encoding: 'utf8' });
+      const viaAction = spawnSync('bash', ['-c', action.run], { cwd: root, encoding: 'utf8', env: { ...env, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, GITHUB_PATH: join(actionTemp, 'path'), GH_TOKEN: 'forge-double' } });
+      return { script, viaAction, installed, actionTemp, requests: existsSync(requests) ? readFileSync(requests, 'utf8').trim().split('\n') : [] };
+    };
+
+    const intel = host('intel', { machine: 'x86_64', translated: 0 });
+    for (const got of [intel.script, intel.viaAction]) {
+      assert.notEqual(got.status, 0);
+      assert.match(got.stderr, /Intel macOS is no longer supported/);
+    }
+    assert.deepEqual(intel.requests, [], 'Intel macOS must be refused before any asset download');
+    assert.ok(!existsSync(join(intel.installed, 'screencomp')));
+
+    const macho = readFileSync(fixture);
+    for (const [name, probe] of [['apple-silicon', { machine: 'arm64', translated: 0 }], ['rosetta-shell', { machine: 'x86_64', translated: 1 }]]) {
+      const mac = host(name, probe);
+      assert.equal(mac.script.status, 0, mac.script.stderr);
+      assert.deepEqual(readFileSync(join(mac.installed, 'screencomp')), macho);
+      // The action extracts, then runs `--version`, which a Linux host cannot
+      // do for a Mach-O binary; it must have fetched only the arm64 assets.
+      assert.ok(existsSync(join(mac.actionTemp, 'screencomp-bin', 'screencomp')), mac.viaAction.stderr);
+      assert.deepEqual(readFileSync(join(mac.actionTemp, 'screencomp-bin', 'screencomp')), macho);
+      const base = `https://github.com/nickderobertis/screencomp/releases/download/${tag}`;
+      const wanted = [`${base}/${stem}.tar.gz`, `${base}/${stem}.sha256`];
+      assert.deepEqual(mac.requests, [...wanted, ...wanted], `${name}: script then action fetch the Apple Silicon assets only`);
+      const verified = spawnSync(process.execPath, [helper, 'verify-binary', 'aarch64-apple-darwin', join(mac.installed, 'screencomp')], { cwd: root, encoding: 'utf8' });
+      assert.equal(verified.status, 0, verified.stderr);
+    }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

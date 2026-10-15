@@ -89,10 +89,13 @@ note "» benchmarking $bin"
 # gallery output dirs before each run so every gallery render measures the
 # create-from-empty path rather than an idempotent overwrite; the no-op removal
 # is harmless for the other commands. `classify --exit-code` returns 3 by design
-# when differences exist, so it is wrapped with `|| true` to keep hyperfine from
-# treating it as a failure.
+# when differences exist, so exactly that exit code is ignored; no timed command
+# carries shell syntax (hyperfine refuses an unquoted `||`), and any other
+# failure still fails the run.
+# llmlint: ignore-block[changed_behavior_has_e2e] The performance suite is informational and stays out of the gate (AGENTS.md), whose legs do not install hyperfine; bench.yml runs this script with real hyperfine on every PR, where classify:exit exits 3 against the generated tree's changed shots, and hyperfine's own --ignore-failure=3 contract fails the run on any other exit code.
 hyperfine \
     --warmup "$warmup" "${runs_opt[@]}" \
+    --ignore-failure=3 \
     --prepare "rm -rf '$gallery_out' '$gallery_diff'" \
     --export-json "$out/results.json" \
     --export-markdown "$out/results.md" \
@@ -100,11 +103,12 @@ hyperfine \
     -n "help" "'$bin' --help" \
     -n "classify" "'$bin' classify --baseline '$baseline' --current '$current'" \
     -n "classify:json" "'$bin' classify --baseline '$baseline' --current '$current' --format json" \
-    -n "classify:exit" "'$bin' classify --baseline '$baseline' --current '$current' --exit-code || true" \
+    -n "classify:exit" "'$bin' classify --baseline '$baseline' --current '$current' --exit-code" \
     -n "comment" "'$bin' comment --baseline '$baseline' --current '$current'" \
     -n "comment:embed" "'$bin' comment --baseline '$baseline' --current '$current' --gallery-url https://example.test/g" \
     -n "gallery" "'$bin' gallery --input '$current' --output '$gallery_out'" \
     -n "gallery:diff" "'$bin' gallery --input '$current' --baseline '$baseline' --output '$gallery_diff'"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 
 note ""
 note "✓ wrote $out/results.json"

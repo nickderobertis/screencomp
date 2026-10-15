@@ -15,8 +15,8 @@
 # IP and 403s on shared/proxied egress (CI, Codespaces, corporate networks). Set
 # GITHUB_TOKEN to lift the limit, or sidestep the lookup by pinning --version.
 #
-# Covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
-# (Git Bash / MSYS / WSL). For native Windows PowerShell or unpublished targets,
+# Covers Linux (x86_64, arm64), Apple Silicon macOS (arm64) and Windows x86_64
+# under a POSIX shell (Git Bash / MSYS / WSL). Intel macOS is no longer supported. For native Windows PowerShell or unpublished targets,
 # build from source: cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp.
 #
 # Like the tool it installs, this script never proceeds silently: it aborts
@@ -66,6 +66,18 @@ detect_target() {
         arm64 | aarch64) arch_part="aarch64" ;;
         *) err "unsupported architecture: $arch" ;;
     esac
+
+    # A Rosetta-translated shell on Apple Silicon reports x86_64; the native
+    # arm64 binary is the one to install there.
+    if [ "$os" = "Darwin" ] && [ "$arch_part" = "x86_64" ] \
+        && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+        arch_part="aarch64"
+    fi
+
+    # macOS releases ship Apple Silicon only.
+    if [ "$os_part" = "apple-darwin" ] && [ "$arch_part" != "aarch64" ]; then
+        err "Intel macOS is no longer supported; prebuilt macOS binaries are Apple Silicon (arm64) only. Build from source: cargo install --git https://github.com/$REPO --locked $BIN"
+    fi
 
     # The release matrix publishes Windows for x86_64 only.
     if [ "$ext" = "zip" ] && [ "$arch_part" != "x86_64" ]; then

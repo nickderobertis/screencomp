@@ -81,11 +81,14 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
 
+  # Apple Silicon only: built, packed and install-verified natively on the one
+  # arm64 Mac runner, as three steps so the pack step is the same command the
+  # Linux release test drives. Intel macOS is no longer released.
   build-darwin:
     needs: test
     runs-on: macos-15
     env:
-      DARWIN_TARGETS: x86_64-apple-darwin aarch64-apple-darwin
+      DARWIN_TARGETS: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,19 +97,28 @@ jobs:
         with:
           node-version: 22
       - run: rustup show
-      - name: Provision both Darwin targets and Rosetta
+      - uses: extractions/setup-just@v2
+      - name: Build each target natively
         run: |
           read -r -a targets <<< "$DARWIN_TARGETS"
-          rustup target add "${targets[@]}"
-          softwareupdate --install-rosetta --agree-to-license
-      - uses: extractions/setup-just@v2
-      - name: Build each target once and run both staged installers
+          for target in "${targets[@]}"; do
+            just build-release "$target"
+          done
+      - name: Pack each compiled binary
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           read -r -a targets <<< "$DARWIN_TARGETS"
           for target in "${targets[@]}"; do
-            node scripts/release-artifact.mjs "$target" "$TAG"
+            node scripts/release-artifact.mjs pack "$target" "$TAG"
+          done
+      - name: Install and run each packed artifact
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          read -r -a targets <<< "$DARWIN_TARGETS"
+          for target in "${targets[@]}"; do
+            node scripts/release-artifact.mjs verify-install "$target" "$TAG"
           done
       - uses: actions/upload-artifact@v4
         with:

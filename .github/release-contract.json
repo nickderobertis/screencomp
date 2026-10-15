@@ -1,9 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "targets": [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu"
   ],
@@ -15,5 +14,5 @@
   "contents": ["screencomp", "README.md", "LICENSE", "CHANGELOG.md"],
   "windowsBinary": "screencomp.exe",
   "packagingForms": ["archive"],
-  "darwinExecution": {"x86_64-apple-darwin":"Rosetta", "aarch64-apple-darwin":"native"}
+  "darwinExecution": {"aarch64-apple-darwin":"native"}
 }

@@ -75,10 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/nickderobertis/screencomp/main/scri
   | sh -s -- --version v0.1.0 --to /usr/local/bin
 ```
 
-It covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
-(Git Bash / MSYS / WSL), and aborts rather than install a binary it cannot
-checksum-verify. Resolving `latest` calls the unauthenticated GitHub API, which
-rate-limits per IP and returns **403 on shared or proxied egress** (CI,
+It covers Linux (x86_64, arm64), Apple Silicon macOS (arm64), and Windows (x86_64)
+— Windows under a POSIX shell (Git Bash / MSYS / WSL) — and aborts rather than
+install a binary it cannot checksum-verify. Intel macOS is no longer supported:
+the script refuses it, so build from source there (see below). Resolving
+`latest` calls the unauthenticated GitHub API, which rate-limits per IP and returns **403 on shared or proxied egress** (CI,
 Codespaces, corporate networks); set `GITHUB_TOKEN` to lift the limit, or skip the
 lookup entirely by pinning `--version vX.Y.Z`.
 
@@ -86,7 +87,7 @@ lookup entirely by pinning `--version vX.Y.Z`.
 
 Prefer to do it by hand? Prebuilt archives (with SHA-256 checksums) are attached
 to each [GitHub Release](https://github.com/nickderobertis/screencomp/releases)
-for Linux (x86_64, arm64), macOS (x86_64, arm64), and Windows (x86_64). Download
+for Linux (x86_64, arm64), Apple Silicon macOS (arm64), and Windows (x86_64). Download
 the archive for your platform, verify the checksum, extract, and place
 `screencomp` on your `PATH`.
 
@@ -145,7 +146,8 @@ A composite action installs the CLI (and optionally runs it) on a runner:
 Inputs: `version` (release tag or `latest`), `method` (`download` prebuilt asset,
 the default, or `source` to build with `cargo install` from the checkout or git),
 and `args` (run `screencomp <args>` right after install). Downloads are verified
-against their published SHA-256.
+against their published SHA-256. `download` refuses Intel macOS runners, which
+have no prebuilt binary; use `method: source` there.
 
 #### Batteries-included reusable workflow
 
