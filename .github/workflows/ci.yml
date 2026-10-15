@@ -106,6 +106,13 @@ jobs:
           TIER: ${{ steps.tier.outputs.tier }}
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just check "$TIER"
+      # The host budgets after the gate: ci-tier.mjs selects `all` only for
+      # release-plz's release pull request (`none` skips), and only the Linux leg
+      # measures them (elsewhere `_pool-maintenance-budgets` prints where it runs).
+      - name: Host budgets
+        env:
+          HOST_BUDGETS: ${{ steps.tier.outputs.host-budgets }}
+        run: just budgets-host "$HOST_BUDGETS"
 
   check-macos:
     needs: policy
@@ -161,6 +168,13 @@ jobs:
           TIER: ${{ steps.tier.outputs.tier }}
           NX_BASE: ${{ steps.tier.outputs.base }}
         run: just check "$TIER"
+      # The host budgets after the gate: ci-tier.mjs selects `all` only for
+      # release-plz's release pull request (`none` skips), and only the Linux leg
+      # measures them (elsewhere `_pool-maintenance-budgets` prints where it runs).
+      - name: Host budgets
+        env:
+          HOST_BUDGETS: ${{ steps.tier.outputs.host-budgets }}
+        run: just budgets-host "$HOST_BUDGETS"
 
   macos-context:
     name: check (macos-latest)

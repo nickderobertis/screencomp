@@ -1,0 +1,14 @@
+schema_version: 1
+budgets:
+  - id: screencomp-pool-maintenance-seconds
+    description: >-
+      Wall-clock seconds one steady-state pass of the pool maintenance
+      onevcs.toml declares takes, after one ordinary run's worth of new
+      superseded builds. Protects how long a regular post-run pass holds one of
+      this repository's warm-pool slots out of service.
+    measure: reported
+    command: [./measure.sh]
+    unit: seconds
+    direction: max
+    threshold: 20
+    labels: [host]

@@ -25,6 +25,9 @@
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/tools/workspace/check-project-boundaries.mjs",
       "{workspaceRoot}/tools/workspace/nx-env.mjs"
+    ],
+    "production": [
+      "default"
     ]
   },
   "boundaries": {
@@ -100,6 +103,24 @@
       "cache": false
     },
     "msrv": {
+      "cache": false
+    },
+    "budgets": {
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**/*",
+        "^production",
+        {
+          "dependentTasksOutputFiles": "**/telemetry/*.json"
+        },
+        {
+          "externalDependencies": [
+            "@onebudgetspec/cli"
+          ]
+        }
+      ]
+    },
+    "budgets-host": {
       "cache": false
     }
   }

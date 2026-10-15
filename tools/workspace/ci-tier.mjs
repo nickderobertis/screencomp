@@ -3,9 +3,13 @@
 //
 //   node tools/workspace/ci-tier.mjs >> "$GITHUB_OUTPUT"
 //
-// Prints `tier=…` and `base=…` lines; the workflow passes `tier` to the gate
-// recipe (`just check "$TIER"`) and `base` as NX_BASE, so the tier is a flag on
-// the one recipe and never a second implementation of the gate.
+// Prints `tier=…`, `base=…` and `host-budgets=…` lines; the workflow passes
+// `tier` to the gate recipe (`just check "$TIER"`) and `base` as NX_BASE, so the
+// tier is a flag on the one recipe and never a second implementation of the
+// gate. `host-budgets` is `all` only for release-plz's release pull request and
+// `none` otherwise: the step after the gate passes it to `just budgets-host`, so
+// the host budgets (the pool-maintenance pass, which builds twice) run only on
+// the commit that ships.
 //
 // Releases are batched behind release-plz's release pull request, so that pull
 // request runs the sweep and everything else the affected tier (AGENTS.md,
@@ -36,11 +40,11 @@ export function releaseBranchPrefix(workflowText) {
 }
 
 /**
- * The tier for one event, as `{ tier, base, why }`. Pure: `mergeBase(sha)`
- * returns the merge base of `sha` and the checkout's HEAD, or null.
+ * The tier for one event, as `{ tier, base, hostBudgets, why }`. Pure:
+ * `mergeBase(sha)` returns the merge base of `sha` and the checkout's HEAD, or null.
  */
 export function selectTier({ eventName, event, releasePrefix, mergeBase }) {
-  const sweep = (why) => ({ tier: "all", base: "", why });
+  const sweep = (why) => ({ tier: "all", base: "", hostBudgets: "none", why });
   if (event === null || typeof event !== "object" || Array.isArray(event)) {
     return sweep(`no readable event object for '${eventName}', so nothing scopes the run`);
   }
@@ -52,17 +56,17 @@ export function selectTier({ eventName, event, releasePrefix, mergeBase }) {
     }
     const head = event.pull_request?.head?.ref;
     if (typeof head === "string" && head.startsWith(releasePrefix)) {
-      return sweep("release-plz's release pull request: the commit that ships is swept here");
+      return { ...sweep("release-plz's release pull request: the commit that ships is swept here"), hostBudgets: "all" };
     }
     const base = baseOf(event.pull_request?.base?.sha);
     if (!base) return sweep("the pull request's base commit is not in this checkout (fetch-depth: 0)");
-    return { tier: "affected", base, why: `pull request, merge base ${base} with its base branch` };
+    return { tier: "affected", base, hostBudgets: "none", why: `pull request, merge base ${base} with its base branch` };
   }
 
   if (eventName === "push" && event.ref === "refs/heads/main") {
     const base = baseOf(event.before);
     if (!base) return sweep("the commit this push replaced is not in this checkout");
-    return { tier: "affected", base, why: `push to main, merge base ${base} with the replaced tip` };
+    return { tier: "affected", base, hostBudgets: "none", why: `push to main, merge base ${base} with the replaced tip` };
   }
 
   return sweep(`'${eventName}' is neither a pull request nor a push to main`);
@@ -94,7 +98,7 @@ function main() {
   } catch {
     // Null sweeps every pull request.
   }
-  const { tier, base, why } = selectTier({
+  const { tier, base, hostBudgets, why } = selectTier({
     eventName: process.env.GITHUB_EVENT_NAME ?? "",
     event,
     releasePrefix,
@@ -103,6 +107,7 @@ function main() {
   console.error(`ci-tier: ${tier} tier: ${why}`);
   console.log(`tier=${tier}`);
   console.log(`base=${base}`);
+  console.log(`host-budgets=${hostBudgets}`);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

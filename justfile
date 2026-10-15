@@ -25,6 +25,11 @@ hadolint_version := "2.12.0"
 hyperfine_version := "1.20.0"
 critcmp_version := "0.1.8"
 samply_version := "0.13.1"
+# Pinned pruner the `pool-maintenance` recipe runs (onevcs.toml), installed by
+# bootstrap, and the toolchain that builds it: its rust-version is newer than
+# this repository's pinned toolchain.
+prune_superseded_version := "0.1.1"
+prune_superseded_toolchain := "1.97.1"
 
 # Show available recipes.
 default:
@@ -39,7 +44,7 @@ setup-check:
     @bash scripts/setup-check.sh
 
 # Install developer tooling, the locked Nx install and git hooks (idempotent).
-bootstrap: _ensure-tools _ensure-lefthook hooks-install node-modules
+bootstrap: _ensure-tools _ensure-prune-superseded _ensure-lefthook hooks-install node-modules
     @cargo fetch --locked
     @echo "bootstrap complete"
 
@@ -228,6 +233,30 @@ bench-tools:
     else
         cargo install --locked "${missing[@]}"
     fi
+
+# Prune superseded cargo builds older than 2 days from the target dir, keeping each unit's newest.
+pool-maintenance:
+    @cargo-prune-superseded --keep-within 2d target
+
+# Host-labelled budgets (`all`, `affected`, or `none` to skip); never part of `check`.
+# Trailing arguments reach Nx (`--graph=<file>` lists the tasks without running them).
+[positional-arguments]
+budgets-host tier="all" *nx_args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tier="$1"
+    shift
+    case "$tier" in
+        none)
+            echo "budgets-host: skipped (only release-plz's release pull request runs the host budgets)"
+            exit 0
+            ;;
+        all | affected) just _nx "$tier" -t budgets-host "$@" ;;
+        *)
+            printf "budgets-host: unknown tier '%s': use 'all' (the default), 'affected', or 'none'\n" "$tier" >&2
+            exit 2
+            ;;
+    esac
 
 # Build the consumer container image locally (requires Docker).
 image:
@@ -478,6 +507,25 @@ _ensure-tools:
     # (GITHUB_TOKEN, set in CI) avoid the rate-limiting that triggers fallback.
     cargo binstall --no-confirm --disable-strategies compile "${missing[@]}"
 
+# Install the pinned cargo-prune-superseded unless that version is already on PATH.
+_ensure-prune-superseded:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="cargo-prune-superseded {{prune_superseded_version}}"
+    if [ "$(cargo-prune-superseded --version 2>/dev/null || true)" = "$want" ]; then
+        exit 0
+    fi
+    echo "installing $want"
+    log="$(rustup toolchain install {{prune_superseded_toolchain}} --profile minimal 2>&1)" || {
+        printf '%s\n' "$log" >&2
+        echo "ACTION: fix the rustup error above (network, disk, or rustup itself), then rerun 'just bootstrap'." >&2
+        exit 1
+    }
+    cargo +{{prune_superseded_toolchain}} install --locked --quiet cargo-prune-superseded --version {{prune_superseded_version}} || {
+        echo "ACTION: fix the cargo install error above, then rerun 'just bootstrap'." >&2
+        exit 1
+    }
+
 # Install the pinned lefthook binary onto PATH if it is missing.
 _ensure-lefthook:
     #!/usr/bin/env bash
@@ -607,6 +655,27 @@ _github-workflows-lint: _github-workflows-syntax
 
 _github-workflows-budgets: _github-workflows-install
     node .github/run-budgets.mjs
+
+# The pool-maintenance budget: builds the workspace twice and times one pass on
+# this host. Pool hosts are Linux, and the measurement relies on GNU find/touch.
+[linux]
+_pool-maintenance-budgets:
+    ./node_modules/.bin/onebudgetspec check pool-maintenance/budgets.yaml --label host
+
+[macos]
+[windows]
+_pool-maintenance-budgets:
+    @echo "_pool-maintenance-budgets: the pool-maintenance budget runs on Linux (the Linux check leg of the release pull request)"
+
+[linux]
+_pool-maintenance-lint:
+    @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
+    shellcheck pool-maintenance/measure.sh
+
+[macos]
+[windows]
+_pool-maintenance-lint:
+    @echo "_pool-maintenance-lint: shellcheck runs on Linux (the Linux check leg and the workflows job)"
 
 _release-packaging-check:
     node --test scripts/tests/release-artifact.test.mjs
