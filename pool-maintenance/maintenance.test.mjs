@@ -1,19 +1,28 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// The parent of each journey's temporary directory: the dispatch's scratch
+// directory when one is set, which must then be an existing absolute directory.
+const scratch = (prefix) => {
+  const parent = process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir();
+  assert.ok(isAbsolute(parent) && existsSync(parent) && statSync(parent).isDirectory(),
+    `ONEPIPELINE_NODE_SCRATCH_DIR '${parent}' is not an existing absolute directory; unset it or point it at one`);
+  return mkdtempSync(join(parent, prefix));
+};
 
 // Drive the published declaration's command and real pruner against isolated
 // Cargo output; neither Cargo nor the pruning boundary is replaced by a double.
 test("declared maintenance removes old superseded builds and keeps ordinary builds", {
   skip: process.platform !== "linux" && "pool hosts and the backdating journey are Linux",
 }, () => {
-  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-maintenance-"));
+  const cwd = scratch("screencomp-maintenance-");
   const run = (command, args, env = {}) => spawnSync(command, args, {
     cwd, encoding: "utf8", env: { ...process.env, ...env },
   });
@@ -74,7 +83,7 @@ test("declared maintenance removes old superseded builds and keeps ordinary buil
 // fixture: the real declared command and pruner run; only the gate's test build
 // is swapped for the fixture's own cargo build so no workspace build happens.
 const measure = (prepare, gateBuild, env = {}) => {
-  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-measure-"));
+  const cwd = scratch("screencomp-measure-");
   try {
     writeFileSync(join(cwd, ".tool-versions"), readFileSync(join(root, ".tool-versions")));
     mkdirSync(join(cwd, "src"));
@@ -127,6 +136,22 @@ test("measure.sh fails naming the step when the declared maintenance fails", lin
   assert.equal(result.report, "");
 });
 
+test("measure.sh names the next action when the pruner's onebudgetspec result is not JSON", linuxOnly, () => {
+  // The real pruner runs, then a wrapper first on PATH garbles the result it wrote.
+  const pruner = spawnSync("sh", ["-c", "command -v cargo-prune-superseded"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(pruner, "cargo-prune-superseded must be on PATH; run just bootstrap");
+  const result = measure((cwd) => {
+    mkdirSync(join(cwd, "bin"));
+    writeFileSync(join(cwd, "bin/cargo-prune-superseded"),
+      `#!/bin/sh\n"${pruner}" "$@" || exit\n[ -z "$ONEBUDGETSPEC_RESULT" ] || echo "not json" >"$ONEBUDGETSPEC_RESULT"\n`, { mode: 0o755 });
+  }, "fixture-dev", (cwd) => ({ PATH: `${join(cwd, "bin")}:${process.env.PATH}` }));
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /measure\.sh: cargo-prune-superseded wrote an onebudgetspec result to .* that is not valid JSON/);
+  assert.match(result.stderr, /^ACTION: run just bootstrap to restore the pinned reporting tool, then rerun \.\/measure\.sh$/m);
+  assert.doesNotMatch(result.stderr, /SyntaxError: Unexpected token/);
+  assert.equal(result.report, "not json\n");
+});
+
 test("measure.sh fails rather than report a figure when the timed pass removes nothing", linuxOnly, () => {
   // A release build ignores the alternative dev-profile setting, so the
   // backdated build stays each unit's newest and nothing is superseded.
@@ -164,7 +189,7 @@ test("measure.sh refuses inputs outside its boundary before touching anything", 
 // Drive bootstrap's installer recipe through just with stub `cargo-prune-superseded`
 // and `rustup` executables first on PATH, so neither path downloads or compiles.
 const ensurePruner = (installedVersion) => {
-  const bin = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-bootstrap-"));
+  const bin = scratch("screencomp-bootstrap-");
   try {
     const stub = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     stub("cargo-prune-superseded", `echo "cargo-prune-superseded ${installedVersion}"`);

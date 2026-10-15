@@ -191,7 +191,14 @@ if [ -n "$result" ]; then
     node -e '
         const fs = require("node:fs");
         const [path, seconds] = process.argv.slice(1);
-        const report = JSON.parse(fs.readFileSync(path, "utf8"));
+        let report;
+        try {
+            report = JSON.parse(fs.readFileSync(path, "utf8"));
+        } catch (error) {
+            console.error("measure.sh: cargo-prune-superseded wrote an onebudgetspec result to " + path + " that is not valid JSON (" + error.message + ")");
+            console.error("ACTION: run just bootstrap to restore the pinned reporting tool, then rerun ./measure.sh");
+            process.exit(1);
+        }
         const note = "untimed backlog pass beforehand: " + seconds + " s (not in the figure)";
         report.detail = report.detail ? report.detail + "; " + note : note;
         fs.writeFileSync(path, JSON.stringify(report));
