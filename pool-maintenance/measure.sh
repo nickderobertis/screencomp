@@ -17,25 +17,78 @@
 # one (b) created. The entry lists it compares stay in target/pool-maintenance-budget/.
 #
 # Three variables let pool-maintenance/maintenance.test.mjs drive this script
-# against a small Cargo fixture without building the workspace:
-# MEASURE_WORKSPACE is the directory whose target dir is measured (default the
-# repository root), MEASURE_GATE_BUILD is a shell command run there in place of
-# the gate's test build, and MEASURE_EVIDENCE is where the entry lists and logs
-# go (default target/pool-maintenance-budget under the workspace). The declared
-# recipe always comes from this repository's justfile.
+# against a small Cargo fixture without building the workspace, and each is
+# validated before use: MEASURE_WORKSPACE is the absolute path of the Cargo
+# workspace whose target dir is measured (default the repository root);
+# MEASURE_GATE_BUILD picks the build that stands in for the gate's test build,
+# `gate` (the default), or `fixture-dev`/`fixture-release` for the fixture's
+# own `cargo build`; MEASURE_EVIDENCE is the absolute directory the entry lists
+# and logs go to (default target/pool-maintenance-budget under the workspace),
+# which is only ever cleared when it is empty or carries this script's marker.
+# The command run is the one onevcs.toml declares, read from it, resolved
+# against this repository's justfile.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${MEASURE_WORKSPACE:-$repo}"
 
-if ! command -v cargo-prune-superseded >/dev/null 2>&1; then
-    echo "measure.sh: cargo-prune-superseded is not on PATH" >&2
-    echo "ACTION: run 'just bootstrap', which installs the pinned release" >&2
+refuse() {
+    echo "measure.sh: $1" >&2
+    echo "ACTION: $2" >&2
     exit 1
-fi
+}
+
+workspace="${MEASURE_WORKSPACE:-$repo}"
+case "$workspace" in
+    /*) ;;
+    *) refuse "MEASURE_WORKSPACE '$workspace' is not an absolute path" "set it to the absolute path of a Cargo workspace, or unset it to measure this repository" ;;
+esac
+[ -f "$workspace/Cargo.toml" ] || refuse "MEASURE_WORKSPACE '$workspace' holds no Cargo.toml" "set it to the absolute path of a Cargo workspace, or unset it to measure this repository"
+cd "$workspace"
+
+gate="${MEASURE_GATE_BUILD:-gate}"
+case "$gate" in
+    gate | fixture-dev | fixture-release) ;;
+    *) refuse "MEASURE_GATE_BUILD '$gate' is not one of gate, fixture-dev, fixture-release" "unset it to run the gate's test build" ;;
+esac
+
 result="${ONEBUDGETSPEC_RESULT:-}"
-evidence="${MEASURE_EVIDENCE:-target/pool-maintenance-budget}"
-rm -rf "$evidence"
+if [ -n "$result" ]; then
+    case "$result" in
+        /*) ;;
+        *) refuse "ONEBUDGETSPEC_RESULT '$result' is not an absolute path" "run this script through 'just budgets-host', which sets it" ;;
+    esac
+    { [ -d "$(dirname "$result")" ] && [ ! -d "$result" ]; } || refuse "ONEBUDGETSPEC_RESULT '$result' is not a file path in an existing directory" "run this script through 'just budgets-host', which sets it"
+fi
+
+# A directory is cleared only when it is empty or this script made it.
+marker=.measure-evidence
+evidence="${MEASURE_EVIDENCE:-$workspace/target/pool-maintenance-budget}"
+case "$evidence" in
+    /*) ;;
+    *) refuse "MEASURE_EVIDENCE '$evidence' is not an absolute path" "set it to an absolute directory, or unset it" ;;
+esac
+if [ -e "$evidence" ]; then
+    { [ -d "$evidence" ] && { [ -f "$evidence/$marker" ] || [ -z "$(ls -A "$evidence")" ]; }; } \
+        || refuse "MEASURE_EVIDENCE '$evidence' exists and is not an evidence directory this script made" "point it at a new or empty directory"
+    rm -rf "$evidence"
+fi
 mkdir -p "$evidence"
+: >"$evidence/$marker"
+
+# The declared maintenance command, read from onevcs.toml's [pool.maintain].
+declared="$(node -e '
+    const text = require("node:fs").readFileSync(process.argv[1], "utf8");
+    const section = text.split(/^\[/m).find((part) => part.startsWith("pool.maintain]"));
+    const line = section && section.match(/^command = (\[.*\])$/m);
+    const command = line ? JSON.parse(line[1]) : null;
+    if (!Array.isArray(command) || command.length === 0 || !command.every((arg) => typeof arg === "string" && arg !== "" && !arg.includes("\n"))) {
+        process.exit(1);
+    }
+    console.log(command.join("\n"));
+' "$repo/onevcs.toml")" || refuse "onevcs.toml declares no [pool.maintain] command this script can read" "declare it as command = [\"just\", \"<recipe>\"] in onevcs.toml"
+mapfile -t maintain_command <<<"$declared"
+if ! command -v cargo-prune-superseded >/dev/null 2>&1; then
+    refuse "cargo-prune-superseded is not on PATH" "run 'just bootstrap', which installs the pinned release"
+fi
 
 # Every build entry the pruner selects among: the children of deps/,
 # .fingerprint/, build/ and incremental/ in each profile directory (one holding
@@ -60,17 +113,20 @@ by_hash() {
 # The gate's test build: both Rust suites' `test` targets, through the recipe
 # they run (cargo llvm-cov cannot compile them without running them).
 gate_build() {
-    if [ -n "${MEASURE_GATE_BUILD:-}" ]; then
-        bash -c "$MEASURE_GATE_BUILD"
-        return
-    fi
-    just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp
-    just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp-e2e screencomp
+    case "$gate" in
+        fixture-dev) cargo build --offline --quiet --target-dir target ;;
+        fixture-release) cargo build --offline --quiet --release --target-dir target ;;
+        gate)
+            just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp
+            just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp-e2e screencomp
+            ;;
+    esac
 }
 
-# The declared maintenance, run in the measured workspace.
+# The declared maintenance, run in the measured workspace exactly as onevcs
+# runs it in a slot, with this repository's justfile.
 maintain() {
-    just --justfile "$repo/justfile" --working-directory . pool-maintenance
+    JUST_JUSTFILE="$repo/justfile" JUST_WORKING_DIRECTORY="$workspace" "${maintain_command[@]}"
 }
 
 now() { date +%s.%N; }
@@ -85,7 +141,7 @@ fail_step() {
 
 
 started="$(now)"
-(unset ONEBUDGETSPEC_RESULT; maintain) >"$evidence/backlog.log" 2>&1 || fail_step backlog "untimed backlog pass" "fix the error 'just pool-maintenance' reports above"
+(unset ONEBUDGETSPEC_RESULT; maintain) >"$evidence/backlog.log" 2>&1 || fail_step backlog "untimed backlog pass" "fix the error '${maintain_command[*]}' reports above"
 backlog_seconds="$(awk -v a="$started" -v b="$(now)" 'BEGIN { printf "%.3f", b - a }')"
 
 
@@ -107,7 +163,7 @@ entries >"$evidence/before-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/alternative.txt" >"$evidence/ordinary.txt"
 
 
-maintain >"$evidence/timed-pass.log" 2>&1 || fail_step timed-pass "timed maintenance pass" "fix the error 'just pool-maintenance' reports above"
+maintain >"$evidence/timed-pass.log" 2>&1 || fail_step timed-pass "timed maintenance pass" "fix the error '${maintain_command[*]}' reports above"
 entries >"$evidence/after-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/after-pass.txt" >"$evidence/removed.txt"
 by_hash "$evidence/ordinary.txt" >"$evidence/ordinary-hashes-before.txt"

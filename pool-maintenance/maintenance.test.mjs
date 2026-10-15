@@ -67,9 +67,9 @@ test("declared maintenance removes old superseded builds and keeps ordinary buil
 });
 
 // Drive measure.sh, the budget's command, end to end against a one-crate Cargo
-// fixture: the real declared recipe and pruner run; only the gate's test build
+// fixture: the real declared command and pruner run; only the gate's test build
 // is swapped for the fixture's own cargo build so no workspace build happens.
-const measure = (prepare, gateBuild) => {
+const measure = (prepare, gateBuild, env = {}) => {
   const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-measure-"));
   try {
     writeFileSync(join(cwd, ".tool-versions"), readFileSync(join(root, ".tool-versions")));
@@ -87,9 +87,14 @@ const measure = (prepare, gateBuild) => {
         MEASURE_EVIDENCE: join(cwd, "evidence"),
         MEASURE_GATE_BUILD: gateBuild,
         ONEBUDGETSPEC_RESULT: report,
+        ...(typeof env === "function" ? env(cwd) : env),
       },
     });
-    return { ...result, report: existsSync(report) ? readFileSync(report, "utf8") : "" };
+    return {
+      ...result,
+      report: existsSync(report) ? readFileSync(report, "utf8") : "",
+      kept: existsSync(join(cwd, "foreign/keep.txt")),
+    };
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
@@ -97,7 +102,7 @@ const measure = (prepare, gateBuild) => {
 const linuxOnly = { skip: process.platform !== "linux" && "the measurement relies on GNU find and touch" };
 
 test("measure.sh reports only the timed pass, which removes the backdated alternative build", linuxOnly, () => {
-  const result = measure(() => {}, "cargo build --offline --quiet --target-dir target");
+  const result = measure(() => {}, "fixture-dev");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /measure\.sh: removed [1-9]\d* of the alternative build's \d+ entries; all [1-9]\d* ordinary entries/);
   const report = JSON.parse(result.report);
@@ -110,7 +115,7 @@ test("measure.sh reports only the timed pass, which removes the backdated altern
 
 test("measure.sh fails naming the step when the declared maintenance fails", linuxOnly, () => {
   // A regular file where the target dir belongs is the pruner's own refusal.
-  const result = measure((cwd) => writeFileSync(join(cwd, "target"), ""), "true");
+  const result = measure((cwd) => writeFileSync(join(cwd, "target"), ""), "fixture-dev");
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /Not a directory/);
   assert.match(result.stderr, /measure\.sh: the untimed backlog pass failed/);
@@ -121,9 +126,33 @@ test("measure.sh fails naming the step when the declared maintenance fails", lin
 test("measure.sh fails rather than report a figure when the timed pass removes nothing", linuxOnly, () => {
   // A release build ignores the alternative dev-profile setting, so the
   // backdated build stays each unit's newest and nothing is superseded.
-  const result = measure(() => {}, "cargo build --offline --quiet --release --target-dir target");
+  const result = measure(() => {}, "fixture-release");
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /measure\.sh: the timed pass removed none of the alternative build's entries/);
   assert.doesNotMatch(result.stderr, /measure\.sh: removed/);
   assert.doesNotMatch(result.report, /untimed backlog pass/);
+});
+
+test("measure.sh refuses inputs outside its boundary before touching anything", linuxOnly, () => {
+  const foreign = (cwd) => {
+    mkdirSync(join(cwd, "foreign"));
+    writeFileSync(join(cwd, "foreign/keep.txt"), "not measure.sh's");
+  };
+  const refusals = [
+    [{ MEASURE_WORKSPACE: "relative" }, /MEASURE_WORKSPACE 'relative' is not an absolute path/],
+    [{ MEASURE_WORKSPACE: tmpdir() }, /MEASURE_WORKSPACE '.*' holds no Cargo\.toml/],
+    [{ MEASURE_GATE_BUILD: "rm -rf /" }, /MEASURE_GATE_BUILD 'rm -rf \/' is not one of gate, fixture-dev, fixture-release/],
+    [{ ONEBUDGETSPEC_RESULT: "report.json" }, /ONEBUDGETSPEC_RESULT 'report\.json' is not an absolute path/],
+    [(cwd) => ({ ONEBUDGETSPEC_RESULT: join(cwd, "missing/report.json") }), /is not a file path in an existing directory/],
+    [{ MEASURE_EVIDENCE: "evidence" }, /MEASURE_EVIDENCE 'evidence' is not an absolute path/],
+    [(cwd) => ({ MEASURE_EVIDENCE: join(cwd, "foreign") }), /exists and is not an evidence directory this script made/],
+  ];
+  for (const [env, message] of refusals) {
+    const result = measure(foreign, "fixture-dev", env);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, message);
+    assert.match(result.stderr, /^ACTION: /m);
+    assert.ok(result.kept, "a directory measure.sh did not make must survive");
+    assert.equal(result.report, "");
+  }
 });
