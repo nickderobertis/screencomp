@@ -20,9 +20,7 @@ function machoFixture(path, cpu) {
   return path;
 }
 const ARM64 = 0x100000c, X86_64 = 0x1000007;
-// The production `pack` mode: packs a compiled binary without executing it.
 const pack = (target, tag, out, binary) => spawnSync(process.execPath, [helper, 'pack', target, tag, out, binary], { cwd: root, encoding: 'utf8' });
-// Every release.yml producer job with the targets it packs and its upload step.
 function releaseProducers() {
   const { jobs } = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
   return { jobs, producers: [

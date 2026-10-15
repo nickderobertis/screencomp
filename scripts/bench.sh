@@ -92,6 +92,7 @@ note "» benchmarking $bin"
 # when differences exist, so exactly that exit code is ignored; no timed command
 # carries shell syntax (hyperfine refuses an unquoted `||`), and any other
 # failure still fails the run.
+# llmlint: ignore-block[changed_behavior_has_e2e] The performance suite is informational and stays out of the gate (AGENTS.md), whose legs do not install hyperfine; bench.yml runs this script with real hyperfine on every PR, where classify:exit exits 3 against the generated tree's changed shots, and hyperfine's own --ignore-failure=3 contract fails the run on any other exit code.
 hyperfine \
     --warmup "$warmup" "${runs_opt[@]}" \
     --ignore-failure=3 \
@@ -107,6 +108,7 @@ hyperfine \
     -n "comment:embed" "'$bin' comment --baseline '$baseline' --current '$current' --gallery-url https://example.test/g" \
     -n "gallery" "'$bin' gallery --input '$current' --output '$gallery_out'" \
     -n "gallery:diff" "'$bin' gallery --input '$current' --baseline '$baseline' --output '$gallery_diff'"
+# llmlint: ignore-end[changed_behavior_has_e2e]
 
 note ""
 note "✓ wrote $out/results.json"
