@@ -5,7 +5,7 @@
 // as its own step. Both default to the binary cargo built for the target.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -118,6 +118,10 @@ function main() {
     const contractPath = join(out, `screencomp-${tag}-${target}.contract.json`);
     let contract;
     try { contract = JSON.parse(readFileSync(contractPath, 'utf8')); } catch { throw new Error(`cannot read packed contract ${contractPath}; run release-artifact.mjs pack ${target} ${tag} first`); }
+    const stem = `screencomp-${tag}-${target}`, exe = binName(target);
+    const expected = { schemaVersion: 2, target, tag, version, archive: `${stem}.${target.includes('windows') ? 'zip' : 'tar.gz'}`, checksum: `${stem}.sha256`, binarySha256: existsSync(binary) ? hash(binary) : undefined, contents: [exe, 'README.md', 'LICENSE', 'CHANGELOG.md'] };
+    const mismatched = contract === null || typeof contract !== 'object' || Array.isArray(contract) ? ['contract'] : Object.keys(expected).filter(key => JSON.stringify(contract[key]) !== JSON.stringify(expected[key]));
+    if (mismatched.length) throw new Error(`packed contract ${contractPath} does not describe ${binary} for ${target} ${tag} (mismatched: ${mismatched.join(', ')}); rerun release-artifact.mjs pack ${target} ${tag} on this binary`);
     const hashes = verifyInstall({ binary, target, tag, out, version });
     writeFileSync(contractPath, JSON.stringify({ ...contract, ...hashes }) + '\n');
     console.log(`verified installer ${target} ${tag}`);

@@ -180,10 +180,13 @@ test('release production commands build, pack, checksum, install and run the rea
     const alternateMetadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: clone, encoding: 'utf8' }));
     const alternateBinary = join(alternateMetadata.target_directory, target, 'release', target.includes('windows') ? golden.windowsBinary : golden.binary);
     cpSync(alternateBinary, payload); repack();
+    // The packed contract must describe the binary under test to get this far.
+    const contractPath = join(out, `${stem}.contract.json`), originalContract = readFileSync(contractPath);
+    writeFileSync(contractPath, JSON.stringify({ ...contract, binarySha256: sha256(alternateBinary) }));
     const wrongVersion = verifyInstall(alternateBinary);
     assert.notEqual(wrongVersion.status, 0); assert.match(wrongVersion.stderr, /installed version mismatch/);
     assert.match(wrongVersion.stderr, /screencomp 999.0.0/);
-    writeFileSync(archive, originalArchive); writeFileSync(checksumPath, originalChecksum);
+    writeFileSync(archive, originalArchive); writeFileSync(checksumPath, originalChecksum); writeFileSync(contractPath, originalContract);
     const recovered = verifyInstall(nativeBinary);
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(recovered.stdout, `verified installer ${target} ${tag}\n`);
@@ -196,6 +199,15 @@ test('release production commands build, pack, checksum, install and run the rea
     const splitPacked = spawnSync(process.execPath, [helper, 'pack', target, tag, split], { cwd: root, encoding: 'utf8' });
     assert.equal(splitPacked.status, 0, splitPacked.stderr);
     assert.equal(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')).installedSha256, undefined);
+    // verify-install only stamps a contract that describes this binary and tag.
+    const splitContract = join(split, `${stem}.contract.json`), packedContract = readFileSync(splitContract);
+    for (const [tampered, field] of [['42', 'contract'], [JSON.stringify({ ...JSON.parse(packedContract), binarySha256: '0'.repeat(64) }), 'binarySha256'], [JSON.stringify({ ...JSON.parse(packedContract), tag: 'v0.0.1' }), 'tag']]) {
+      writeFileSync(splitContract, tampered);
+      const refused = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+      assert.notEqual(refused.status, 0); assert.match(refused.stderr, new RegExp(`does not describe .*mismatched: ${field}`));
+      assert.equal(readFileSync(splitContract, 'utf8'), tampered);
+    }
+    writeFileSync(splitContract, packedContract);
     const splitVerified = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
     assert.equal(splitVerified.status, 0, splitVerified.stderr);
     assert.deepEqual(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')), contract);
