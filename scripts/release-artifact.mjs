@@ -87,7 +87,9 @@ function packArtifact({ binary, target, tag, version, out, verify }) {
     for (const doc of ['README.md', 'LICENSE', 'CHANGELOG.md']) copyFileSync(doc, join(stage, doc));
     const archive = join(out, `${stem}.${target.includes('windows') ? 'zip' : 'tar.gz'}`);
     if (target.includes('windows')) run('powershell.exe', ['-NoProfile', '-Command', 'Compress-Archive -Path "$env:SCREENCOMP_STAGE/*" -DestinationPath $env:SCREENCOMP_ARCHIVE -Force'], { env: { ...process.env, SCREENCOMP_STAGE: stage, SCREENCOMP_ARCHIVE: archive } });
-    else run('tar', ['-czf', archive, '-C', stage, exe, 'README.md', 'LICENSE', 'CHANGELOG.md']);
+    // GNU tar reads a `C:` archive path as a remote host, so it is named
+    // relative to the output directory.
+    else run('tar', ['-czf', basename(archive), '-C', stage, exe, 'README.md', 'LICENSE', 'CHANGELOG.md'], { cwd: out });
     writeFileSync(join(out, `${stem}.sha256`), `${hash(archive)}  ${basename(archive)}\n`);
     // llmlint: ignore-end[work_goes_through_command_surface]
     const hashes = verify ? verifyInstall({ binary, target, tag, out, version }) : { binarySha256: hash(binary) };

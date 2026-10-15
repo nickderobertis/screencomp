@@ -261,7 +261,7 @@ test("release.yml's Darwin pack step publishes exactly the Apple Silicon artifac
     const archivePath = join(downloaded, archive);
     assert.equal(readFileSync(join(downloaded, checksum), 'utf8'), `${sha256(archivePath)}  ${archive}\n`);
     const unpacked = join(work, 'unpacked'); mkdirSync(unpacked);
-    execFileSync('tar', ['-xzf', archivePath, '-C', unpacked]);
+    execFileSync('tar', ['-xzf', archive, '-C', unpacked], { cwd: downloaded });
     assert.deepEqual(readdirSync(unpacked).sort(), [...golden.contents].sort());
     assert.deepEqual(readFileSync(join(unpacked, golden.binary)), readFileSync(arm64));
     const contract = JSON.parse(readFileSync(join(downloaded, `${stem}.contract.json`), 'utf8'));
