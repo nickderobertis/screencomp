@@ -160,7 +160,7 @@ test('reusable matrix resolution matches the actual shell producer for every arc
 
 test('matrix and capture-output boundaries reject malformed shapes and preserve additional include instances', () => {
   for (const matrix of [null, false, 0, '', [], 'null', { os: 'macos-latest' }, { exclude: {} }, { exclude: [null] }, { include: [null] }]) assert.throws(() => matrices(matrix, {}), /matrix/);
-  assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'x86_64' }, { os: 'macos-latest', target: 'arm64' }]);
+  assert.deepEqual(matrices({ os: ['ubuntu-latest'], include: [{ os: 'macos-latest', target: 'arm64' }, { os: 'macos-latest', target: 'arm64-debug' }] }, {}), [{ os: 'ubuntu-latest' }, { os: 'macos-latest', target: 'arm64' }, { os: 'macos-latest', target: 'arm64-debug' }]);
   const graph = workflows(); const scenario = { eventName: 'pull_request', event: { action: 'synchronize' }, head: 'exact-head', classification: {} };
   for (const inputs of [{ arches: '[42]' }, { arches: '["arm64"]', projects: '{}' }, { arches: '["arm64"]', projects: '[{"id":"a","current":"../outside"}]' }]) assert.throws(() => resolveRun('visual-docs-reusable.yml', scenario, graph, inputs), /unresolved capture arches|invalid capture project/);
 });
