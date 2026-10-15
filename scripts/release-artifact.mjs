@@ -1,6 +1,8 @@
 // The workflow owns the target list. Each compiled binary is packed, installed
-// and run on its native runner before Linux publication; `pack` stages a binary
-// compiled elsewhere through the same packing without executing it.
+// and run on its native runner before Linux publication. The build mode does
+// all three; `pack` and `verify-install` are its last two halves as separate
+// commands, so a job can pack without executing and verify the packed archive
+// as its own step. Both default to the binary cargo built for the target.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -108,18 +110,19 @@ function main() {
   validateTarget(target);
   const { targetDirectory, version } = metadataFor(tag);
   const out = resolve(outArg);
+  const binary = suppliedBinary === undefined ? join(targetDirectory, target, 'release', binName(target)) : resolve(suppliedBinary);
   if (mode === 'verify-install') {
-    if (args.length !== 4 || typeof suppliedBinary !== 'string') throw new Error('usage: release-artifact.mjs verify-install <target> <tag> <staged assets> <compiled binary>');
-    verifyInstall({ binary: resolve(suppliedBinary), target, tag, out, version });
+    if (args.length < 2 || args.length > 4) throw new Error('usage: release-artifact.mjs verify-install <target> <tag> [staged assets] [compiled binary]');
+    const contractPath = join(out, `screencomp-${tag}-${target}.contract.json`);
+    let contract;
+    try { contract = JSON.parse(readFileSync(contractPath, 'utf8')); } catch { throw new Error(`cannot read packed contract ${contractPath}; run release-artifact.mjs pack ${target} ${tag} first`); }
+    const hashes = verifyInstall({ binary, target, tag, out, version });
+    writeFileSync(contractPath, JSON.stringify({ ...contract, ...hashes }) + '\n');
     console.log(`verified installer ${target} ${tag}`);
     return;
   }
   if (mode === 'pack') {
-    // Packs a binary compiled elsewhere without executing it, so a host can
-    // stage another platform's artifact. Releases use the build mode, which
-    // also installs and runs the archive on its native runner.
-    if (args.length !== 4 || typeof suppliedBinary !== 'string') throw new Error('usage: release-artifact.mjs pack <target> <tag> <output directory> <compiled binary>');
-    const binary = resolve(suppliedBinary);
+    if (args.length < 2 || args.length > 4) throw new Error('usage: release-artifact.mjs pack <target> <tag> [output directory] [compiled binary]');
     verifyBinary(binary, target);
     packArtifact({ binary, target, tag, version, out, verify: false });
     return;
@@ -127,7 +130,6 @@ function main() {
   if (args.length < 2 || args.length > 3) throw new Error('usage: release-artifact.mjs <target> <tag> [output directory]');
   mkdirSync(out, { recursive: true });
   run('just', ['build-release', target]);
-  const binary = join(targetDirectory, target, 'release', binName(target));
   verifyBinary(binary, target);
   packArtifact({ binary, target, tag, version, out, verify: true });
 }

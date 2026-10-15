@@ -20,8 +20,7 @@ function machoFixture(path, cpu) {
   return path;
 }
 const ARM64 = 0x100000c, X86_64 = 0x1000007;
-// The test-only `pack` mode: packs a binary compiled elsewhere through the same
-// packArtifact that release.yml's build mode uses, without executing it.
+// The production `pack` mode: packs a compiled binary without executing it.
 const pack = (target, tag, out, binary) => spawnSync(process.execPath, [helper, 'pack', target, tag, out, binary], { cwd: root, encoding: 'utf8' });
 // Every release.yml producer job with the targets it packs and its upload step.
 function releaseProducers() {
@@ -30,6 +29,18 @@ function releaseProducers() {
     ...jobs.build.strategy.matrix.include.map(row => ({ targets: [row.target], step: jobs.build.steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: row })),
     { targets: jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), step: jobs['build-darwin'].steps.find(s => s.uses === 'actions/upload-artifact@v4'), matrix: {} },
   ] };
+}
+// Runs one build-darwin step's script as the runner would, from a checkout copy
+// whose cargo target directory holds `binary` (or nothing) for each target.
+function runDarwinStep(name, { checkout, targetDir, env = {} }) {
+  const { jobs } = parse(readFileSync(join(root, '.github/workflows/release.yml'), 'utf8'));
+  const step = jobs['build-darwin'].steps.find(s => s.name === name);
+  assert.ok(step, `release.yml build-darwin has no '${name}' step`);
+  return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', step.run], { cwd: checkout, encoding: 'utf8', env: { ...process.env, DARWIN_TARGETS: jobs['build-darwin'].env.DARWIN_TARGETS, CARGO_TARGET_DIR: targetDir, ...env } });
+}
+function checkoutCopy(dir) {
+  for (const path of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src', 'e2e', 'benches', 'README.md', 'LICENSE', 'CHANGELOG.md', 'scripts/release-artifact.mjs']) cpSync(join(root, path), join(dir, path), { recursive: true });
+  return dir;
 }
 // Runs release.yml's artifact download selection and its publication command
 // over the staged per-job artifacts; only the forge transport (`gh`, and the
@@ -177,45 +188,67 @@ test('release production commands build, pack, checksum, install and run the rea
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(recovered.stdout, `verified installer ${target} ${tag}\n`);
 
+    // The split commands the Darwin job runs produce what the build mode does:
+    // pack without executing, then verify-install records the installed hash.
+    const split = join(out, 'split');
+    const unverified = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(unverified.status, 0); assert.match(unverified.stderr, /cannot read packed contract .*; run release-artifact\.mjs pack/);
+    const splitPacked = spawnSync(process.execPath, [helper, 'pack', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.equal(splitPacked.status, 0, splitPacked.stderr);
+    assert.equal(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')).installedSha256, undefined);
+    const splitVerified = spawnSync(process.execPath, [helper, 'verify-install', target, tag, split], { cwd: root, encoding: 'utf8' });
+    assert.equal(splitVerified.status, 0, splitVerified.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(join(split, `${stem}.contract.json`), 'utf8')), contract);
+
   } finally { rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
-test('the Apple Silicon artifact is packed by the shared release packer and is the only macOS asset published', () => {
+test("release.yml's Darwin pack step publishes exactly the Apple Silicon artifact and refuses Intel, wrong-arch and wrong-tag binaries", () => {
   const work = mkdtempSync(join(tmpdir(), 'screencomp-macos-release-'));
   try {
     const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
     const version = metadataVersion(), tag = `v${version}`;
-    const arm64 = machoFixture(join(work, 'arm64-screencomp'), ARM64);
-    const intel = machoFixture(join(work, 'x86_64-screencomp'), X86_64);
+    const PACK = 'Pack each compiled binary';
+    // A Linux host cannot compile a Darwin binary, so the fixture stands where
+    // the native build step leaves it: <target dir>/<target>/release/screencomp.
+    const stageBinary = (targetDir, target, cpu) => { mkdirSync(join(targetDir, target, 'release'), { recursive: true }); return machoFixture(join(targetDir, target, 'release', golden.binary), cpu); };
     const refusals = [
-      [['x86_64-apple-darwin', tag, intel], /Intel macOS \(x86_64-apple-darwin\) is no longer released/],
-      [['aarch64-apple-darwin', tag, intel], /Mach-O architecture mismatch/],
-      [['aarch64-apple-darwin', 'v999.0.0', arm64], /tag does not match Cargo version/],
+      ['intel', { DARWIN_TARGETS: 'x86_64-apple-darwin' }, 'x86_64-apple-darwin', X86_64, tag, /Intel macOS \(x86_64-apple-darwin\) is no longer released/],
+      ['wrong-arch', {}, 'aarch64-apple-darwin', X86_64, tag, /Mach-O architecture mismatch/],
+      ['wrong-tag', {}, 'aarch64-apple-darwin', ARM64, 'v999.0.0', /tag does not match Cargo version/],
     ];
-    for (const [[target, badTag, binary], reason] of refusals) {
-      const refusedOut = join(work, 'refused');
-      const got = pack(target, badTag, refusedOut, binary);
+    for (const [name, env, target, cpu, badTag, reason] of refusals) {
+      const checkout = checkoutCopy(join(work, name)), targetDir = join(work, `${name}-target`);
+      stageBinary(targetDir, target, cpu);
+      const got = runDarwinStep(PACK, { checkout, targetDir, env: { ...env, TAG: badTag } });
       assert.notEqual(got.status, 0); assert.match(got.stderr, reason);
-      assert.ok(!existsSync(refusedOut), `${reason} must be refused before creating output`);
+      assert.ok(!existsSync(join(checkout, 'dist')), `${name} must be refused before creating output`);
     }
     const intelBuildOut = join(work, 'intel-build');
     const intelBuild = spawnSync(process.execPath, [helper, 'x86_64-apple-darwin', tag, intelBuildOut], { cwd: root, encoding: 'utf8' });
     assert.notEqual(intelBuild.status, 0); assert.match(intelBuild.stderr, /Intel macOS \(x86_64-apple-darwin\) is no longer released/);
     assert.ok(!existsSync(intelBuildOut));
 
+    const checkout = checkoutCopy(join(work, 'checkout')), targetDir = join(work, 'target');
+    const arm64 = stageBinary(targetDir, 'aarch64-apple-darwin', ARM64);
+    const packed = runDarwinStep(PACK, { checkout, targetDir, env: { TAG: tag } });
+    assert.equal(packed.status, 0, packed.stderr);
+    assert.equal(packed.stdout, `packaged screencomp-${tag}-aarch64-apple-darwin.tar.gz\n`);
+
     const { jobs, producers } = releaseProducers();
     const artifactStore = join(work, 'forge-artifact-store'); mkdirSync(artifactStore);
     for (const producer of producers) {
       const artifactDir = join(artifactStore, producer.step.with.name.replace('${{ matrix.target }}', producer.matrix.target ?? ''));
+      mkdirSync(artifactDir, { recursive: true });
+      if (producer.targets.some(target => target.includes('darwin'))) {
+        // The Darwin job uploads what its steps left at the upload path.
+        assert.match(producer.step.with.path, /^[\w/]+\/\*$/);
+        const uploaded = join(checkout, producer.step.with.path.slice(0, -2));
+        for (const file of readdirSync(uploaded)) cpSync(join(uploaded, file), join(artifactDir, file));
+        continue;
+      }
+      // Other lanes' artifacts are proved by their own native runs.
       for (const target of producer.targets) {
-        if (target.includes('darwin')) {
-          const packed = pack(target, tag, artifactDir, arm64);
-          assert.equal(packed.status, 0, packed.stderr);
-          assert.equal(packed.stdout, `packaged screencomp-${tag}-${target}.tar.gz\n`);
-          continue;
-        }
-        // Other lanes' artifacts are proved by their own native runs.
-        mkdirSync(artifactDir, { recursive: true });
         const stem = golden.archiveStem.replace('$tag', tag).replace('$target', target);
         for (const ext of [target.includes('windows') ? golden.windowsExtension : golden.unixExtension, golden.checksumExtension]) writeFileSync(join(artifactDir, `${stem}.${ext}`), `forge transport payload for ${target}`);
       }
@@ -232,7 +265,7 @@ test('the Apple Silicon artifact is packed by the shared release packer and is t
     assert.deepEqual(readdirSync(unpacked).sort(), [...golden.contents].sort());
     assert.deepEqual(readFileSync(join(unpacked, golden.binary)), readFileSync(arm64));
     const contract = JSON.parse(readFileSync(join(downloaded, `${stem}.contract.json`), 'utf8'));
-    // Not installed or run on this host, so the contract records no installed hash.
+    // The verify-install step that adds installedSha256 runs only on the Mac.
     assert.deepEqual(contract, { schemaVersion: golden.schemaVersion, target: 'aarch64-apple-darwin', tag, version, archive, checksum, binarySha256: sha256(arm64), contents: golden.contents });
   } finally { rmSync(work, { recursive: true, force: true }); }
 });

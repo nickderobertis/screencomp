@@ -82,7 +82,8 @@ jobs:
           if-no-files-found: error
 
   # Apple Silicon only: built, packed and install-verified natively on the one
-  # arm64 Mac runner. Intel macOS is no longer released.
+  # arm64 Mac runner, as three steps so the pack step is the same command the
+  # Linux release test drives. Intel macOS is no longer released.
   build-darwin:
     needs: test
     runs-on: macos-15
@@ -97,13 +98,27 @@ jobs:
           node-version: 22
       - run: rustup show
       - uses: extractions/setup-just@v2
-      - name: Build each target once and run its staged installer
+      - name: Build each target natively
+        run: |
+          read -r -a targets <<< "$DARWIN_TARGETS"
+          for target in "${targets[@]}"; do
+            just build-release "$target"
+          done
+      - name: Pack each compiled binary
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           read -r -a targets <<< "$DARWIN_TARGETS"
           for target in "${targets[@]}"; do
-            node scripts/release-artifact.mjs "$target" "$TAG"
+            node scripts/release-artifact.mjs pack "$target" "$TAG"
+          done
+      - name: Install and run each packed artifact
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          read -r -a targets <<< "$DARWIN_TARGETS"
+          for target in "${targets[@]}"; do
+            node scripts/release-artifact.mjs verify-install "$target" "$TAG"
           done
       - uses: actions/upload-artifact@v4
         with:

@@ -82,19 +82,22 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
     assert.equal(jobs[id].needs, 'test');
     assert.equal(jobs[id].steps[0].with.ref, '${{ github.event.release.tag_name }}');
     assert.ok(jobs[id].steps.some(s => s.run?.includes('node scripts/release-artifact.mjs')));
+    assert.ok(jobs[id].steps.findIndex(s => s.run?.includes('node scripts/release-artifact.mjs')) < jobs[id].steps.findIndex(s => s.uses === 'actions/upload-artifact@v4'));
     assert.equal(jobs[id].permissions, undefined);
     assert.ok(jobs[id].steps.some(s => s.uses === 'actions/upload-artifact@v4' && s.with['if-no-files-found'] === 'error'));
   }
   assert.equal(jobs['build-darwin']['runs-on'], 'macos-15');
-  const darwinBuild = jobs['build-darwin'].steps.filter(s => s.run?.includes('node scripts/release-artifact.mjs'));
-  assert.equal(darwinBuild.length, 1);
-  assert.deepEqual(darwinBuild[0].run.trim().split('\n').map(line => line.trim()), [
-    'read -r -a targets <<< "$DARWIN_TARGETS"',
-    'for target in "${targets[@]}"; do',
-    'node scripts/release-artifact.mjs "$target" "$TAG"',
-    'done',
-  ], 'Darwin build must invoke the production builder exactly once for every declared target');
-  assert.equal(darwinBuild[0].env.TAG, '${{ github.event.release.tag_name }}');
+  // Native build, then the production pack command the Linux release test
+  // drives, then install-and-run of the packed archive, all before upload.
+  const darwinSteps = jobs['build-darwin'].steps.filter(s => s.run && s.run !== 'rustup show');
+  const perTarget = command => ['read -r -a targets <<< "$DARWIN_TARGETS"', 'for target in "${targets[@]}"; do', command, 'done'];
+  assert.deepEqual(darwinSteps.map(s => [s.name, s.run.trim().split('\n').map(line => line.trim())]), [
+    ['Build each target natively', perTarget('just build-release "$target"')],
+    ['Pack each compiled binary', perTarget('node scripts/release-artifact.mjs pack "$target" "$TAG"')],
+    ['Install and run each packed artifact', perTarget('node scripts/release-artifact.mjs verify-install "$target" "$TAG"')],
+  ], 'Darwin release must build, pack and install-verify every declared target, in that order');
+  for (const step of darwinSteps.slice(1)) assert.equal(step.env.TAG, '${{ github.event.release.tag_name }}');
+  assert.equal(jobs['build-darwin'].steps.at(-1).uses, 'actions/upload-artifact@v4');
   assert.deepEqual(jobs['build-darwin'].env.DARWIN_TARGETS.split(/\s+/), ['aarch64-apple-darwin'], 'macOS releases are Apple Silicon only');
   assert.deepEqual(Object.keys(contract.darwinExecution), ['aarch64-apple-darwin']);
   assert.ok(Object.values(contract.darwinExecution).every(mode => mode === 'native'));
@@ -103,14 +106,15 @@ test('release graph preserves every platform/artifact and gates Linux publicatio
   // execution or extra rustup target for a cross-compiled Darwin build.
   for (const step of jobs['build-darwin'].steps) assert.doesNotMatch(JSON.stringify(step), /rosetta|arch -x86_64|x86_64-apple-darwin|rustup target add/i);
   assert.match(jobs.upload.steps.at(-1).run, /\*\.tar\.gz.*\*\.zip.*\*\.sha256/);
-  // Every released artifact goes through the build mode, which installs and
-  // runs it on its native runner; `pack` (no execution) stays test-only.
-  for (const step of Object.values(jobs).flatMap(job => job.steps ?? [])) assert.doesNotMatch(step.run ?? '', /release-artifact\.mjs\s+(pack|verify-)/);
+  // Every other lane uses the build mode, which packs, installs and runs in one
+  // command on its native runner.
+  for (const step of Object.entries(jobs).filter(([id]) => id !== 'build-darwin').flatMap(([, job]) => job.steps ?? [])) assert.doesNotMatch(step.run ?? '', /release-artifact\.mjs\s+(pack|verify-)/);
   for (const id of ['publish-crate', 'advance-major-tag']) assert.deepEqual(jobs[id].needs, ['upload']);
   const helper = readFileSync(join(root, 'scripts/release-artifact.mjs'), 'utf8');
   // Mach-O execution requires a Mac host. The native subprocess journey proves
-  // the shared builder/installer; this structural check covers the Darwin
-  // architecture declaration and the release job's native commands.
+  // the shared builder/installer and the Linux test drives the Darwin pack
+  // step; this structural check covers the architecture declaration and the
+  // release job's native commands.
   assert.doesNotMatch(helper, /\/usr\/bin\/arch|Rosetta/);
   assert.match(helper, /binarySha256 !== installedSha256/);
   for (const doc of contract.contents.slice(1)) assert.ok(helper.includes(doc));
