@@ -1,7 +1,7 @@
 {
   "name": "pool-maintenance",
   "$schema": "../node_modules/nx/schemas/project-schema.json",
-  "//": "The budget of the onevcs pool maintenance onevcs.toml declares. Its measurement builds the workspace twice, so its host-labelled `budgets-host` target is excluded from every `check` tier: the release pull request's Linux check leg runs it after the gate (`just budgets-host`). `lint` checks the measurement script; `test` drives the declared command against isolated Cargo builds.",
+  "//": "The budget of the onevcs pool maintenance onevcs.toml declares. Its measurement builds the workspace twice, so its host-labelled `budgets-host` target is excluded from every `check` tier: the release pull request's Linux check leg runs it after the gate (`just budgets-host`). `lint` checks the measurement script; `test` drives the declared command, and measure.sh's report and failure paths, against isolated one-crate Cargo builds without building the workspace.",
   "projectType": "application",
   "tags": [
     "type:workspace",

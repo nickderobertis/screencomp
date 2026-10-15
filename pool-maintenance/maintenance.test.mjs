@@ -65,3 +65,65 @@ test("declared maintenance removes old superseded builds and keeps ordinary buil
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// Drive measure.sh, the budget's command, end to end against a one-crate Cargo
+// fixture: the real declared recipe and pruner run; only the gate's test build
+// is swapped for the fixture's own cargo build so no workspace build happens.
+const measure = (prepare, gateBuild) => {
+  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-measure-"));
+  try {
+    writeFileSync(join(cwd, ".tool-versions"), readFileSync(join(root, ".tool-versions")));
+    mkdirSync(join(cwd, "src"));
+    writeFileSync(join(cwd, "Cargo.toml"), '[package]\nname = "measure-journey"\nversion = "0.1.0"\nedition = "2021"\n');
+    writeFileSync(join(cwd, "src/main.rs"), "fn main() {}\n");
+    prepare(cwd);
+    const report = join(cwd, "report.json");
+    const result = spawnSync(join(root, "pool-maintenance/measure.sh"), [], {
+      cwd: join(root, "pool-maintenance"),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MEASURE_WORKSPACE: cwd,
+        MEASURE_EVIDENCE: join(cwd, "evidence"),
+        MEASURE_GATE_BUILD: gateBuild,
+        ONEBUDGETSPEC_RESULT: report,
+      },
+    });
+    return { ...result, report: existsSync(report) ? readFileSync(report, "utf8") : "" };
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+};
+const linuxOnly = { skip: process.platform !== "linux" && "the measurement relies on GNU find and touch" };
+
+test("measure.sh reports only the timed pass, which removes the backdated alternative build", linuxOnly, () => {
+  const result = measure(() => {}, "cargo build --offline --quiet --target-dir target");
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /measure\.sh: removed [1-9]\d* of the alternative build's \d+ entries; all [1-9]\d* ordinary entries/);
+  const report = JSON.parse(result.report);
+  assert.equal(typeof report.value, "number");
+  assert.ok(report.value >= 0 && report.value < 20, `figure ${report.value}`);
+  assert.match(report.detail, /builds removed: [1-9]/);
+  assert.match(report.detail, /bytes freed: [1-9]/);
+  assert.match(report.detail, /untimed backlog pass beforehand: [\d.]+ s \(not in the figure\)$/);
+});
+
+test("measure.sh fails naming the step when the declared maintenance fails", linuxOnly, () => {
+  // A regular file where the target dir belongs is the pruner's own refusal.
+  const result = measure((cwd) => writeFileSync(join(cwd, "target"), ""), "true");
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Not a directory/);
+  assert.match(result.stderr, /measure\.sh: the untimed backlog pass failed/);
+  assert.match(result.stderr, /ACTION: fix the error 'just pool-maintenance' reports above, then rerun \.\/measure\.sh/);
+  assert.equal(result.report, "");
+});
+
+test("measure.sh fails rather than report a figure when the timed pass removes nothing", linuxOnly, () => {
+  // A release build ignores the alternative dev-profile setting, so the
+  // backdated build stays each unit's newest and nothing is superseded.
+  const result = measure(() => {}, "cargo build --offline --quiet --release --target-dir target");
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /measure\.sh: the timed pass removed none of the alternative build's entries/);
+  assert.doesNotMatch(result.stderr, /measure\.sh: removed/);
+  assert.doesNotMatch(result.report, /untimed backlog pass/);
+});

@@ -15,8 +15,17 @@
 # as separate evidence. The script fails, rather than reporting a meaningless
 # figure, unless (d) removed at least one build and every entry it removed is
 # one (b) created. The entry lists it compares stay in target/pool-maintenance-budget/.
+#
+# Three variables let pool-maintenance/maintenance.test.mjs drive this script
+# against a small Cargo fixture without building the workspace:
+# MEASURE_WORKSPACE is the directory whose target dir is measured (default the
+# repository root), MEASURE_GATE_BUILD is a shell command run there in place of
+# the gate's test build, and MEASURE_EVIDENCE is where the entry lists and logs
+# go (default target/pool-maintenance-budget under the workspace). The declared
+# recipe always comes from this repository's justfile.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${MEASURE_WORKSPACE:-$repo}"
 
 if ! command -v cargo-prune-superseded >/dev/null 2>&1; then
     echo "measure.sh: cargo-prune-superseded is not on PATH" >&2
@@ -24,7 +33,7 @@ if ! command -v cargo-prune-superseded >/dev/null 2>&1; then
     exit 1
 fi
 result="${ONEBUDGETSPEC_RESULT:-}"
-evidence=target/pool-maintenance-budget
+evidence="${MEASURE_EVIDENCE:-target/pool-maintenance-budget}"
 rm -rf "$evidence"
 mkdir -p "$evidence"
 
@@ -32,6 +41,7 @@ mkdir -p "$evidence"
 # .fingerprint/, build/ and incremental/ in each profile directory (one holding
 # .fingerprint/), sorted.
 entries() {
+    [ -d target ] || return 0
     find target -type d -name .fingerprint -prune -print | while IFS= read -r fingerprint; do
         profile="$(dirname "$fingerprint")"
         for kind in deps .fingerprint build incremental; do
@@ -50,8 +60,17 @@ by_hash() {
 # The gate's test build: both Rust suites' `test` targets, through the recipe
 # they run (cargo llvm-cov cannot compile them without running them).
 gate_build() {
-    just _rust-test screencomp
-    just _rust-test screencomp-e2e screencomp
+    if [ -n "${MEASURE_GATE_BUILD:-}" ]; then
+        bash -c "$MEASURE_GATE_BUILD"
+        return
+    fi
+    just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp
+    just --justfile "$repo/justfile" --working-directory "$repo" _rust-test screencomp-e2e screencomp
+}
+
+# The declared maintenance, run in the measured workspace.
+maintain() {
+    just --justfile "$repo/justfile" --working-directory . pool-maintenance
 }
 
 now() { date +%s.%N; }
@@ -66,7 +85,7 @@ fail_step() {
 
 
 started="$(now)"
-env -u ONEBUDGETSPEC_RESULT just pool-maintenance >"$evidence/backlog.log" 2>&1 || fail_step backlog "untimed backlog pass" "fix the error 'just pool-maintenance' reports above"
+(unset ONEBUDGETSPEC_RESULT; maintain) >"$evidence/backlog.log" 2>&1 || fail_step backlog "untimed backlog pass" "fix the error 'just pool-maintenance' reports above"
 backlog_seconds="$(awk -v a="$started" -v b="$(now)" 'BEGIN { printf "%.3f", b - a }')"
 
 
@@ -88,7 +107,7 @@ entries >"$evidence/before-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/alternative.txt" >"$evidence/ordinary.txt"
 
 
-just pool-maintenance >"$evidence/timed-pass.log" 2>&1 || fail_step timed-pass "timed maintenance pass" "fix the error 'just pool-maintenance' reports above"
+maintain >"$evidence/timed-pass.log" 2>&1 || fail_step timed-pass "timed maintenance pass" "fix the error 'just pool-maintenance' reports above"
 entries >"$evidence/after-pass.txt"
 LC_ALL=C comm -23 "$evidence/before-pass.txt" "$evidence/after-pass.txt" >"$evidence/removed.txt"
 by_hash "$evidence/ordinary.txt" >"$evidence/ordinary-hashes-before.txt"
@@ -111,14 +130,12 @@ if [ -n "$result" ]; then
         echo "measure.sh: cargo-prune-superseded wrote no onebudgetspec result to $result; run just bootstrap to restore the pinned reporting tool, then retry" >&2
         exit 1
     fi
-    # The `${…}` below is a JavaScript template literal for node, not the shell's.
-    # shellcheck disable=SC2016
     node -e '
         const fs = require("node:fs");
         const [path, seconds] = process.argv.slice(1);
         const report = JSON.parse(fs.readFileSync(path, "utf8"));
-        const note = `untimed backlog pass beforehand: ${seconds} s (not in the figure)`;
-        report.detail = report.detail ? `${report.detail}; ${note}` : note;
+        const note = "untimed backlog pass beforehand: " + seconds + " s (not in the figure)";
+        report.detail = report.detail ? report.detail + "; " + note : note;
         fs.writeFileSync(path, JSON.stringify(report));
     ' "$result" "$backlog_seconds"
 fi
