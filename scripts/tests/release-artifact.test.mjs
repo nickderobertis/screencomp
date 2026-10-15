@@ -20,8 +20,8 @@ function machoFixture(path, cpu) {
   return path;
 }
 const ARM64 = 0x100000c, X86_64 = 0x1000007;
-// The production pack command release.yml's packaging uses, run on a binary
-// compiled elsewhere.
+// The test-only `pack` mode: packs a binary compiled elsewhere through the same
+// packArtifact that release.yml's build mode uses, without executing it.
 const pack = (target, tag, out, binary) => spawnSync(process.execPath, [helper, 'pack', target, tag, out, binary], { cwd: root, encoding: 'utf8' });
 // Every release.yml producer job with the targets it packs and its upload step.
 function releaseProducers() {
@@ -180,7 +180,7 @@ test('release production commands build, pack, checksum, install and run the rea
   } finally { rmSync(out, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
-test('the Apple Silicon artifact is packed by the production command and is the only macOS asset published', () => {
+test('the Apple Silicon artifact is packed by the shared release packer and is the only macOS asset published', () => {
   const work = mkdtempSync(join(tmpdir(), 'screencomp-macos-release-'));
   try {
     const golden = JSON.parse(readFileSync(join(root, '.github/release-contract.json'), 'utf8'));
