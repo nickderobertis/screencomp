@@ -23,8 +23,9 @@
 # MEASURE_GATE_BUILD picks the build that stands in for the gate's test build,
 # `gate` (the default), or `fixture-dev`/`fixture-release` for the fixture's
 # own `cargo build`; MEASURE_EVIDENCE is the absolute directory the entry lists
-# and logs go to (default target/pool-maintenance-budget under the workspace),
-# which is only ever cleared when it is empty or carries this script's marker.
+# and logs go to (default target/pool-maintenance-budget under the workspace,
+# this script's own); a supplied one is only ever cleared when it is empty or
+# carries this script's marker.
 # The command run is the one onevcs.toml declares, read from it, resolved
 # against this repository's justfile.
 set -euo pipefail
@@ -59,7 +60,8 @@ if [ -n "$result" ]; then
     { [ -d "$(dirname "$result")" ] && [ ! -d "$result" ]; } || refuse "ONEBUDGETSPEC_RESULT '$result' is not a file path in an existing directory" "run this script through 'just budgets-host', which sets it"
 fi
 
-# A directory is cleared only when it is empty or this script made it.
+# The default evidence directory is this script's own; a supplied one is
+# cleared only when it is empty or this script made it.
 marker=.measure-evidence
 evidence="${MEASURE_EVIDENCE:-$workspace/target/pool-maintenance-budget}"
 case "$evidence" in
@@ -67,7 +69,7 @@ case "$evidence" in
     *) refuse "MEASURE_EVIDENCE '$evidence' is not an absolute path" "set it to an absolute directory, or unset it" ;;
 esac
 if [ -e "$evidence" ]; then
-    { [ -d "$evidence" ] && { [ -f "$evidence/$marker" ] || [ -z "$(ls -A "$evidence")" ]; }; } \
+    { [ -z "${MEASURE_EVIDENCE:-}" ] || { [ -d "$evidence" ] && { [ -f "$evidence/$marker" ] || [ -z "$(ls -A "$evidence")" ]; }; }; } \
         || refuse "MEASURE_EVIDENCE '$evidence' exists and is not an evidence directory this script made" "point it at a new or empty directory"
     rm -rf "$evidence"
 fi
