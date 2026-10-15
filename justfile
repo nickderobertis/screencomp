@@ -239,18 +239,21 @@ pool-maintenance:
     @cargo-prune-superseded --keep-within 2d target
 
 # Host-labelled budgets (`all`, `affected`, or `none` to skip); never part of `check`.
+# Trailing arguments reach Nx (`--graph=<file>` lists the tasks without running them).
 [positional-arguments]
-budgets-host tier="all":
+budgets-host tier="all" *nx_args:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "$1" in
+    tier="$1"
+    shift
+    case "$tier" in
         none)
             echo "budgets-host: skipped (only release-plz's release pull request runs the host budgets)"
             exit 0
             ;;
-        all | affected) just _nx "$1" -t budgets-host ;;
+        all | affected) just _nx "$tier" -t budgets-host "$@" ;;
         *)
-            printf "budgets-host: unknown tier '%s': use 'all' (the default), 'affected', or 'none'\n" "$1" >&2
+            printf "budgets-host: unknown tier '%s': use 'all' (the default), 'affected', or 'none'\n" "$tier" >&2
             exit 2
             ;;
     esac

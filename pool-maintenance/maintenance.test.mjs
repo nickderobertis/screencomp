@@ -222,3 +222,34 @@ test("bootstrap installs a different pruner version and names the next action wh
   assert.match(result.stderr, /rustup: could not download toolchain/);
   assert.match(result.stderr, /ACTION: fix the rustup error above .*then rerun 'just bootstrap'/);
 });
+
+// `just budgets-host` is the release pull request's only route to the
+// measurement. Each tier runs the real recipe; the selecting tiers pass Nx's
+// `--graph=<file>`, which writes the tasks they would run instead of running
+// the twice-building measurement. The affected tier diffs against the commit
+// before this project's last change, so the project is affected.
+test("budgets-host skips on none, refuses an unknown tier, and selects only the measurement", () => {
+  const last = spawnSync("git", ["log", "-1", "--format=%P", "--", "pool-maintenance/project.json"], { cwd: root, encoding: "utf8" });
+  const base = last.stdout.trim().split(" ")[0];
+  assert.match(base, /^[0-9a-f]{40}$/, `git history of pool-maintenance/project.json: ${last.stderr}`);
+  const env = { ...process.env, NX_BASE: base };
+  const recipe = (...args) => spawnSync("just", ["budgets-host", ...args], { cwd: root, encoding: "utf8", env });
+  const skipped = recipe("none");
+  assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
+  assert.match(skipped.stdout, /budgets-host: skipped/);
+  const unknown = recipe("nightly");
+  assert.equal(unknown.status, 2, unknown.stdout + unknown.stderr);
+  assert.match(unknown.stderr, /unknown tier 'nightly': use 'all' \(the default\), 'affected', or 'none'/);
+  const dir = scratch("screencomp-budgets-host-");
+  try {
+    for (const [tier, ...args] of [["all"], ["affected"]]) {
+      const graph = join(dir, `${tier}.json`);
+      const selected = recipe(tier, ...args, `--graph=${graph}`);
+      assert.equal(selected.status, 0, selected.stdout + selected.stderr);
+      assert.deepEqual(Object.keys(JSON.parse(readFileSync(graph, "utf8")).tasks.tasks),
+        ["pool-maintenance:budgets-host"], tier);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
