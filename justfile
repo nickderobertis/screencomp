@@ -513,8 +513,15 @@ _ensure-prune-superseded:
         exit 0
     fi
     echo "installing $want"
-    log="$(rustup toolchain install {{prune_superseded_toolchain}} --profile minimal 2>&1)" || { printf '%s\n' "$log" >&2; exit 1; }
-    cargo +{{prune_superseded_toolchain}} install --locked --quiet cargo-prune-superseded --version {{prune_superseded_version}}
+    log="$(rustup toolchain install {{prune_superseded_toolchain}} --profile minimal 2>&1)" || {
+        printf '%s\n' "$log" >&2
+        echo "ACTION: fix the rustup error above (network, disk, or rustup itself), then rerun 'just bootstrap'." >&2
+        exit 1
+    }
+    cargo +{{prune_superseded_toolchain}} install --locked --quiet cargo-prune-superseded --version {{prune_superseded_version}} || {
+        echo "ACTION: fix the cargo install error above, then rerun 'just bootstrap'." >&2
+        exit 1
+    }
 
 # Install the pinned lefthook binary onto PATH if it is missing.
 _ensure-lefthook:

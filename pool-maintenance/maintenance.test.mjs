@@ -44,7 +44,11 @@ test("declared maintenance removes old superseded builds and keeps ordinary buil
     const ordinary = entries().filter((path) => !alternative.includes(path));
     assert.ok(ordinary.length > 0, "ordinary build must create distinct metadata hashes");
     const declaration = readFileSync(join(root, "onevcs.toml"), "utf8");
-    const command = JSON.parse(declaration.match(/^command = (.+)$/m)[1]);
+    const declared = declaration.match(/^command = (\[.+\])$/m);
+    assert.ok(declared, "onevcs.toml must declare a one-line command array");
+    const command = JSON.parse(declared[1]);
+    assert.ok(Array.isArray(command) && command.length > 0 && command.every((part) => typeof part === "string"),
+      `declared command ${declared[1]} must be a non-empty array of strings`);
     const maintain = () => run(command[0], ["--justfile", join(root, "justfile"), "--working-directory", cwd, ...command.slice(1)]);
     const result = maintain();
     succeeds(result);
@@ -155,4 +159,41 @@ test("measure.sh refuses inputs outside its boundary before touching anything", 
     assert.ok(result.kept, "a directory measure.sh did not make must survive");
     assert.equal(result.report, "");
   }
+});
+
+// Drive bootstrap's installer recipe through just with stub `cargo-prune-superseded`
+// and `rustup` executables first on PATH, so neither path downloads or compiles.
+const ensurePruner = (installedVersion) => {
+  const bin = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR || tmpdir(), "screencomp-bootstrap-"));
+  try {
+    const stub = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    stub("cargo-prune-superseded", `echo "cargo-prune-superseded ${installedVersion}"`);
+    stub("rustup", 'echo "rustup: could not download toolchain" >&2; exit 1');
+    return spawnSync("just", ["--justfile", join(root, "justfile"), "--working-directory", root, "_ensure-prune-superseded"], {
+      encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+};
+const pinnedPruner = () => {
+  const pin = readFileSync(join(root, "justfile"), "utf8").match(/^prune_superseded_version := "([^"]+)"$/m);
+  assert.ok(pin, "justfile must pin prune_superseded_version");
+  return pin[1];
+};
+const posixOnly = { skip: process.platform === "win32" && "the stubs are POSIX shell scripts" };
+
+test("bootstrap skips installing the pruner when the pinned version is on PATH", posixOnly, () => {
+  const result = ensurePruner(pinnedPruner());
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.doesNotMatch(result.stderr, /installing|rustup/);
+});
+
+test("bootstrap installs a different pruner version and names the next action when that fails", posixOnly, () => {
+  const result = ensurePruner("0.0.0");
+  assert.notEqual(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, new RegExp(`installing cargo-prune-superseded ${pinnedPruner().replaceAll(".", "\\.")}`));
+  assert.match(result.stderr, /rustup: could not download toolchain/);
+  assert.match(result.stderr, /ACTION: fix the rustup error above .*then rerun 'just bootstrap'/);
 });
