@@ -88,6 +88,10 @@ test("the check jobs run the tier ci-tier.mjs selects, so a red sweep fails them
   assert.equal(steps[gate].run, 'just check "$TIER"');
   assert.equal(steps[gate].env.TIER, "${{ steps.tier.outputs.tier }}");
   assert.equal(steps[gate].env.NX_BASE, "${{ steps.tier.outputs.base }}");
+  const hostBudgets = steps.findIndex((step) => step.name === "Host budgets");
+  assert.ok(hostBudgets > gate, "the host budgets run after the gate");
+  assert.equal(steps[hostBudgets].run, 'just budgets-host "$HOST_BUDGETS"');
+  assert.equal(steps[hostBudgets].env.HOST_BUDGETS, "${{ steps.tier.outputs.host-budgets }}");
   for (const step of steps) {
     assert.equal(step.if, undefined, `${step.name ?? step.uses}: conditional`);
     assert.ok(!step["continue-on-error"], `${step.name ?? step.uses}: continue-on-error`);

@@ -5,9 +5,12 @@
 // change to a suite or the benchmarks reaches only that suite (and the coverage
 // aggregate over it).
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { affectedBy } from "./support.mjs";
+import { affectedBy, nx, root } from "./support.mjs";
 
 const CRATE_AND_DEPENDENTS = [
   "browser-tests",
@@ -71,4 +74,51 @@ test("workflow tooling selects its telemetry and budgets without a crate depende
 
 test("release packaging contract participants select the owning production journey", () => {
   for (const file of ["action.yml", ".github/workflows/release.yml", "scripts/tests/release-artifact.test.mjs"]) assert.ok(affectedBy([file]).includes("release-packaging"), file);
+});
+
+test("the pool-maintenance project's own files select only it", () => {
+  for (const file of ["pool-maintenance/measure.sh", "pool-maintenance/budgets.yaml"]) {
+    assert.deepEqual(affectedBy([file]), ["pool-maintenance"], file);
+  }
+  // Every project.json is an input of the graph's own tests.
+  assert.deepEqual(affectedBy(["pool-maintenance/project.json"]), ["pool-maintenance", "workspace"]);
+});
+
+/** The targets `just check` runs, read from the recipe's run-many line. */
+function gateTargets() {
+  const line = readFileSync(join(root, "justfile"), "utf8").match(/nx run-many -t ([^\n]+)/);
+  assert.ok(line, "the check recipe's run-many line");
+  return line[1].trim().split(/\s+/);
+}
+
+/** The task ids Nx would run for `args` (a run-many or affected selection) over `targets`. */
+function taskIds(args, targets = gateTargets()) {
+  const dir = mkdtempSync(join(tmpdir(), "screencomp-graph-"));
+  try {
+    const path = join(dir, "graph.json");
+    nx(root, [...args, "-t", ...targets, `--graph=${path}`]);
+    return Object.keys(JSON.parse(readFileSync(path, "utf8")).tasks.tasks);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("no gate selection runs the pool-maintenance measurement, only its cheap script checks", () => {
+  const selections = [
+    ["run-many"],
+    ...[
+      ["src/lib.rs"],
+      ["pool-maintenance/measure.sh"],
+      ["pool-maintenance/budgets.yaml"],
+      ["pool-maintenance/project.json", "nx.json"],
+      ["justfile", "onevcs.toml"],
+    ].map((files) => ["affected", `--files=${files.join(",")}`]),
+  ];
+  for (const args of selections) {
+    const pool = taskIds(args).filter((id) => id.startsWith("pool-maintenance:"));
+    assert.ok(pool.every((id) => ["pool-maintenance:lint", "pool-maintenance:test"].includes(id)), `${args.join(" ")}: ${pool.join(", ")}`);
+  }
+  // The measurement is a real target, reached only by naming it (`just budgets-host`).
+  assert.deepEqual(taskIds(["run-many"], ["budgets-host"]), ["pool-maintenance:budgets-host"]);
+  assert.ok(taskIds(["run-many"]).includes("pool-maintenance:lint"), "the sweep lints the measurement script");
 });
