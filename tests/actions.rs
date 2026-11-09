@@ -2213,6 +2213,8 @@ mod install_action {
         NoTag,
         /// A 200 lookup response that carries this tag.
         Tag(&'static str),
+        /// A 200 lookup response with exactly this body.
+        Raw(&'static str),
     }
 
     const TRANSIENT: [Reply; 4] = [
@@ -2357,6 +2359,7 @@ mod install_action {
                 let _ = stream.write_all(head.as_bytes());
             }
             Reply::NoTag => respond(&mut stream, 200, b"{}"),
+            Reply::Raw(body) => respond(&mut stream, 200, body.as_bytes()),
             Reply::Tag(tag) => {
                 let body = format!(r#"{{"tag_name":"{tag}"}}"#);
                 respond(&mut stream, 200, body.as_bytes());
@@ -2935,5 +2938,138 @@ mod install_action {
                 "{call}"
             );
         }
+    }
+
+    /// The install of a `latest` whose lookup answers with exactly `body`.
+    fn install_latest_answering(body: &'static str) -> Install {
+        install(
+            plan_for(Op::Lookup, vec![Reply::Raw(body)]),
+            "latest",
+            Timing::Scaled,
+        )
+    }
+
+    fn assert_lookup_refused(body: &str, run: &Install, expected: &str) {
+        assert!(!run.success, "{body}: {}", run.output());
+        let failure = run.stderr.lines().last().unwrap_or_default();
+        assert!(
+            failure.contains(expected)
+                && failure.contains("latest release of owner/repo")
+                && failure.contains("/api/repos/owner/repo/releases/latest"),
+            "{body}: {failure}"
+        );
+        assert_eq!(run.attempts(Op::Lookup).len(), 1, "{body}");
+        assert!(run.attempts(Op::Archive).is_empty(), "{body}");
+        run.assert_nothing_installed();
+    }
+
+    #[test]
+    fn a_malformed_release_response_is_refused_before_any_download() {
+        for body in [
+            r#"{"tag_name":"v9.9.9""#,
+            r#"{"tag_name":"v9.9.9"} trailing"#,
+            r#"{"tag_name":"v9.9.9",}"#,
+            r#"{"tag_name":"v9.9.9","x":01}"#,
+            r#"{"tag_name":"v9.9.9","x":1.}"#,
+            r#"{"tag_name":"v9.9.9","x":"\q"}"#,
+            r#"{"tag_name":"v9.9.9","x":"\u12"}"#,
+            "{\"tag_name\":\"v9.9.9\",\"x\":\"a\nb\"}",
+            r#"{"x":truex,"tag_name":"v9.9.9"}"#,
+            r#"{"a":[1,],"tag_name":"v9.9.9"}"#,
+            r#"{"a":{"b"},"tag_name":"v9.9.9"}"#,
+            r#"[{"tag_name":"v9.9.9"}]"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "is not a valid JSON object");
+        }
+    }
+
+    #[test]
+    fn a_tag_name_only_in_a_nested_value_is_not_the_release_tag() {
+        for body in [
+            r#"{"release":{"tag_name":"v9.9.9"}}"#,
+            r#"{"assets":[{"tag_name":"v9.9.9"}]}"#,
+            r#"{"body":"\"tag_name\":\"v9.9.9\""}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has no tag_name");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_top_level_tag_name_is_refused() {
+        for body in [
+            r#"{"tag_name":"v9.9.9","tag_name":"v9.9.9"}"#,
+            r#"{"tag_name":"v9.9.9","x":{},"tag\u005fname":"v0.0.1"}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has more than one tag_name");
+        }
+    }
+
+    #[test]
+    fn a_non_string_tag_name_is_refused() {
+        for body in [
+            r#"{"tag_name":9}"#,
+            r#"{"tag_name":null}"#,
+            r#"{"tag_name":["v9.9.9"]}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has a non-string tag_name");
+        }
+    }
+
+    #[test]
+    fn a_tag_that_decodes_to_something_unsafe_is_refused() {
+        for (body, decoded) in [
+            (r#"{"tag_name":"..\u002fevil"}"#, "../evil"),
+            (r#"{"tag_name":"v9.9.9\n"}"#, "v9.9.9\n"),
+        ] {
+            let run = install_latest_answering(body);
+            assert!(!run.success, "{body}: {}", run.output());
+            assert!(
+                run.stderr.contains(&format!("invalid tag '{decoded}'")),
+                "{body}: {}",
+                run.stderr
+            );
+            assert!(run.attempts(Op::Archive).is_empty(), "{body}");
+            run.assert_nothing_installed();
+        }
+    }
+
+    #[test]
+    fn the_top_level_tag_is_read_past_nesting_escapes_and_formatting() {
+        for body in [
+            r#"{"tag\u005fname":"v9\u002e9\u002e9"}"#,
+            r#"{"author":{"tag_name":"v0.0.1"},"assets":[{"tag_name":"v0.0.2"}],"tag_name":"v9.9.9"}"#,
+            "{\n  \"id\" : -1.5e+3 ,\r\n\t\"ok\" : true , \"no\" : false , \"nil\" : null ,\n  \"empty\" : { } , \"list\" : [ ] , \"zero\" : 0 ,\n  \"body\" : \"h\u{e9}llo \\\" \\\\ \\/ \\b \\f \\n \\r \\t \\u00E9\" ,\n  \"tag_name\" : \"v9.9.9\"\n}\n",
+        ] {
+            let run = install_latest_answering(body);
+            assert!(run.success, "{body}: {}", run.output());
+            let archive = run.hits.iter().filter(|hit| hit.op == Op::Archive).count();
+            assert_eq!(archive, 1, "{body}");
+            assert!(
+                run.stdout
+                    .contains(&format!("Installing screencomp {TAG} ")),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn nesting_is_accepted_up_to_its_limit_and_refused_beyond_it() {
+        let nested = |arrays: usize| -> &'static str {
+            let body = format!(
+                r#"{{"x":{}{},"tag_name":"{TAG}"}}"#,
+                "[".repeat(arrays),
+                "]".repeat(arrays)
+            );
+            Box::leak(body.into_boxed_str())
+        };
+        let within = install_latest_answering(nested(63));
+        assert!(within.success, "{}", within.output());
+        let body = nested(64);
+        let beyond = install_latest_answering(body);
+        assert_lookup_refused(body, &beyond, "is not a valid JSON object");
     }
 }
