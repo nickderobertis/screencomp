@@ -255,8 +255,10 @@ needs only the permission named:
    the rebuild request is refused, the gate `git push`es one empty commit, never
    forced, to the branch Pages builds from. GitHub's documentation says a push made
    with `GITHUB_TOKEN` does not trigger a Pages build. In practice this action's own
-   `git push` deploys with `github_token` do start them, which is what this step
-   relies on, but GitHub does not promise it. A push with a personal access token,
+   `git push` deploys with `github_token` do start them, and the recovery push uses
+   that same token, transport and branch, which is what this step relies on. GitHub
+   does not promise it, and the recovery push itself is proven against real GitHub
+   only once a consumer's CI meets this race. A push with a personal access token,
    which is what an external `pages-repository` uses via `pages-token`, is the
    documented trigger. **Only `pages: write` gives a supported
    recovery on the default token.**
