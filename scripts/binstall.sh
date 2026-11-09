@@ -43,7 +43,6 @@ kill_group() {
   kill "-$2" -- "-$1" 2>/dev/null || kill "-$2" "$1" 2>/dev/null || true
 }
 
-# Whole-second sleeps until the group is gone or the grace period ends.
 group_outlives_grace() {
   local waited=0
   while [ "${waited}" -lt "${kill_grace}" ]; do
