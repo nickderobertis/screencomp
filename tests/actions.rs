@@ -3613,6 +3613,20 @@ mod install_action {
         }
 
         #[test]
+        fn a_forbidden_download_stops_after_one_attempt_and_names_the_status() {
+            let run = download(vec![Reply::Status(403)], Timing::Scaled);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(run.hits.len(), 1, "{}", run.stderr);
+            assert_no_files_left(&run);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.starts_with(&format!("download failed (HTTP 403): {}", run.url)),
+                "{failure}"
+            );
+            assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+        }
+
+        #[test]
         fn a_missing_download_stops_after_one_attempt() {
             let run = download(vec![Reply::Status(404)], Timing::Scaled);
             assert!(!run.success, "{}", run.stderr);
