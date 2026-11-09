@@ -263,10 +263,17 @@ needs only the permission named:
    documented trigger. **Only `pages: write` gives a supported
    recovery on the default token.**
 
-The build from step 2 or 3 must settle `built`, or the run fails naming it; a
-recovery build superseded by a newer build that settles `built` passes, and there
-is no second attempt. If the empty commit is refused or starts no build, the run
-fails naming the errored build and the `pages:write` remedy.
+Neither recovery is attempted twice, and they differ in how they finish:
+
+- After an accepted rebuild request (step 2), the rebuild must settle `built`. Any
+  other result fails the run at once with a stale-gallery error that gives the
+  status but not a build ID.
+- After the empty commit (step 3), a build that ends `errored` gets one more look
+  for a newer build. If a newer build settles `built`, the run passes. If none
+  does, the run fails naming the last errored build. A build still running at the
+  settle bound fails with the still-running message, which names no build.
+- If the empty commit is refused or starts no build, the run fails naming the
+  errored build and the `pages:write` remedy.
 
 Coalescing removes the race a run creates for itself, not one created from
 outside it (a scheduled prune, a second repository deploying into a shared
