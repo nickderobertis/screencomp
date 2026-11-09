@@ -4962,6 +4962,12 @@ mod install_action {
             let run = sync_install(plan, Some(4));
             run.assert_installed("release");
             assert_eq!(run.gh_calls, 4, "{}", run.output);
+            assert_eq!(
+                run.output.matches("waiting for release").count(),
+                1,
+                "{}",
+                run.output
+            );
             assert_eq!(run.sleeps, ["15", "30", "60"], "{}", run.output);
             // The assets waited for are the ones install.sh then requests.
             if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
