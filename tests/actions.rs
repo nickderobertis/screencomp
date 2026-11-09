@@ -3994,6 +3994,151 @@ mod install_action {
             }
         }
 
+        /// `dir`'s `cargo-binstall` packed the way the host's release asset is.
+        fn pack_binstall_dir(dir: &Path) -> Vec<u8> {
+            let packed = dir.join("asset");
+            let status = if cfg!(target_os = "macos") {
+                command("zip")
+                    .arg("-qj")
+                    .arg(&packed)
+                    .arg(dir.join("cargo-binstall"))
+                    .status()
+            } else {
+                command("tar")
+                    .arg("-czf")
+                    .arg(&packed)
+                    .arg("-C")
+                    .arg(dir)
+                    .arg("cargo-binstall")
+                    .status()
+            };
+            assert!(status.unwrap().success());
+            let file = if cfg!(target_os = "macos") {
+                dir.join("asset.zip")
+            } else {
+                packed
+            };
+            std::fs::read(file).unwrap()
+        }
+
+        fn run_binstall_installer(body: Vec<u8>) -> (bool, String) {
+            let (url, _hits) = start_asset_server(vec![Reply::Valid], body);
+            let work = TempDir::new().unwrap();
+            let output = command("bash")
+                .arg("scripts/install-cargo-binstall.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("CARGO_HOME", work.path().join("cargo-home"))
+                .env("SCREENCOMP_BINSTALL_RELEASE_URL", &url)
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn the_binstall_installer_names_a_corrupt_asset() {
+            let (success, stderr) = run_binstall_installer(b"not an archive".to_vec());
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not extract"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn the_binstall_installer_names_a_failed_self_install() {
+            let dir = TempDir::new().unwrap();
+            let binary = dir.path().join("cargo-binstall");
+            std::fs::write(&binary, "#!/bin/sh\nexit 7\n").unwrap();
+            make_executable(&binary);
+            let (success, stderr) = run_binstall_installer(pack_binstall_dir(dir.path()));
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not install itself"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn the_rustup_install_keeps_rustup_inits_exit_code_and_names_the_next_step() {
+            let work = TempDir::new().unwrap();
+            let (url, _hits) =
+                start_asset_server(vec![Reply::Valid], b"#!/bin/sh\nexit 3\n".to_vec());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/install-rustup.sh", "-y"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("RUSTUP_UPDATE_ROOT", &url);
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            assert_eq!(status.code(), Some(3), "{stderr}");
+            assert!(stderr.contains("rustup-init failed"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn a_download_that_cannot_be_renamed_into_place_says_so() {
+            archive();
+            let server = start_server(plan_for(Op::Archive, vec![Reply::Valid]));
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("mv");
+            std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+            make_executable(&stub);
+            let dest = work.path().join("tool.tar.gz");
+            let output = command("bash")
+                .arg("scripts/download.sh")
+                .arg(format!("{}{TOOL_PATH}", server.url))
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{stderr}");
+            assert!(stderr.contains("could not be written"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+            assert!(!dest.exists());
+        }
+
+        #[test]
+        fn a_release_whose_assets_cannot_be_named_skips_the_install() {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("uname");
+            std::fs::write(&stub, "#!/bin/sh\necho Plan9\n").unwrap();
+            make_executable(&stub);
+            let github_path = work.path().join("github-path");
+            let output = command("bash")
+                .arg("scripts/sync-demo-install.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("HAVE_TOKEN", "present")
+                .env("EVENT_NAME", "release")
+                .env("RELEASE_TAG", TAG)
+                .env("GITHUB_PATH", &github_path)
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "{stdout}");
+            assert!(stdout.contains("could not name the assets"), "{stdout}");
+            assert!(!github_path.exists());
+        }
+
+        #[test]
+        fn listing_assets_needs_a_version() {
+            let (status, stderr) = script_failure("scripts/install.sh", &["--list-assets"], &[]);
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("--list-assets needs --version"), "{stderr}");
+        }
+
         /// `scripts/download.sh` onto an existing file, with `env` applied.
         fn download_over_existing(
             reply: Reply,

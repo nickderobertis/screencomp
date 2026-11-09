@@ -34,4 +34,9 @@ trap 'rm -rf "${work}"' EXIT
 
 bash scripts/download.sh "${root}/dist/${arch}-${os}/rustup-init" "${work}/rustup-init"
 chmod +x "${work}/rustup-init"
-"${work}/rustup-init" "$@"
+exit_code=0
+"${work}/rustup-init" "$@" || exit_code=$?
+if [ "${exit_code}" -ne 0 ]; then
+  echo "rustup-init failed (exit ${exit_code}). ACTION: fix the error above, then rerun 'just setup'" >&2
+  exit "${exit_code}"
+fi
