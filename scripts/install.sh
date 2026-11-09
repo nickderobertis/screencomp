@@ -32,6 +32,12 @@ REPO="nickderobertis/screencomp"
 GITHUB_URL="${SCREENCOMP_INSTALL_GITHUB_URL:-https://github.com}"
 GITHUB_API_URL="${SCREENCOMP_INSTALL_GITHUB_API_URL:-https://api.github.com}"
 DOWNLOADER="${SCREENCOMP_INSTALL_DOWNLOADER:-}"
+for _base_url in "$GITHUB_URL" "$GITHUB_API_URL"; do
+    case "$_base_url" in
+        http://* | https://*) ;;
+        *) printf 'error: expected an http(s) base URL, got: %s\n' "$_base_url" >&2; exit 1 ;;
+    esac
+done
 BIN="screencomp"
 # Overridden to `screencomp.exe` on Windows targets by detect_target.
 BIN_FILE="$BIN"

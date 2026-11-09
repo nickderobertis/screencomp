@@ -28,6 +28,7 @@ if [ "${EVENT_NAME:-}" = "release" ]; then
       echo "::warning::release ${RELEASE_TAG} assets were not uploaded after ${attempt} checks; continuing without screencomp, the baseline reseed is skipped. ACTION: check the release workflow's upload, then rerun this workflow"
       exit 0
     fi
+    # llmlint: ignore[tool_output_is_signal] A wait of minutes needs progress in the job log.
     echo "release ${RELEASE_TAG} assets are not uploaded yet (check ${attempt}/${max}); checking again in ${delay}s"
     sleep "${delay}"
     attempt=$((attempt + 1))

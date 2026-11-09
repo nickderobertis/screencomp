@@ -3805,6 +3805,73 @@ mod install_action {
             }
         }
 
+        /// `scripts/download.sh` over a `curl` that always exits `code` and logs
+        /// its arguments, for failures a plain-HTTP local server cannot provoke.
+        fn download_with_curl_exiting(url: &str, code: u8) -> (bool, Vec<String>, String) {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.path().join("calls");
+            let stub = bin.join("curl");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\necho \"$*\" >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let output = command("bash")
+                .arg("scripts/download.sh")
+                .arg(url)
+                .arg(work.path().join("dest"))
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2")
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                read_lines(&log),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn download_classifies_transport_failures_a_local_server_cannot_provoke() {
+            // DNS, TLS handshake and HTTP/2 stream failures are retried.
+            for code in [6, 35, 92] {
+                let (success, calls, stderr) =
+                    download_with_curl_exiting("https://example.invalid/asset", code);
+                assert!(!success, "{code}");
+                assert_eq!(calls.len(), MAX_ATTEMPTS, "{code}: {stderr}");
+            }
+            // A local write error and a certificate failure are permanent.
+            for code in [23, 60] {
+                let (success, calls, stderr) =
+                    download_with_curl_exiting("https://example.invalid/asset", code);
+                assert!(!success, "{code}");
+                assert_eq!(calls.len(), 1, "{code}: {stderr}");
+                assert!(stderr.contains(&format!("curl exit {code}")), "{stderr}");
+            }
+        }
+
+        #[test]
+        fn an_https_download_refuses_a_downgrading_redirect() {
+            let (_, https_calls, _) = download_with_curl_exiting("https://example.invalid/a", 23);
+            assert!(
+                https_calls[0].contains("--proto-redir =https"),
+                "{https_calls:?}"
+            );
+            let (_, http_calls, _) = download_with_curl_exiting("http://example.invalid/a", 23);
+            assert!(!http_calls[0].contains("--proto-redir"), "{http_calls:?}");
+        }
+
         /// Runs `script` with `args` from the repository root with `env` set.
         fn script_failure(
             script: &str,
