@@ -1782,14 +1782,20 @@ fn write_git_shim(work: &Path, body: &str) -> String {
     )
     .trim()
     .to_owned();
+    write_path_shim(
+        work,
+        "git",
+        &format!("#!/usr/bin/env bash\nREAL_GIT={real_git}\n{body}\nexec \"$REAL_GIT\" \"$@\"\n"),
+    )
+}
+
+/// Put an executable `name` holding `script` first on a `PATH`, returning that `PATH`.
+#[cfg(unix)]
+fn write_path_shim(work: &Path, name: &str, script: &str) -> String {
     let shim_dir = work.join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
-    let shim = shim_dir.join("git");
-    std::fs::write(
-        &shim,
-        format!("#!/usr/bin/env bash\nREAL_GIT={real_git}\n{body}\nexec \"$REAL_GIT\" \"$@\"\n"),
-    )
-    .unwrap();
+    let shim = shim_dir.join(name);
+    std::fs::write(&shim, script).unwrap();
     std::fs::set_permissions(
         &shim,
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
@@ -2032,13 +2038,19 @@ fn pages_build_gate_names_the_recovery_step_that_failed() {
     let work = dir.path().join("no-tmp");
     std::fs::create_dir_all(&work).unwrap();
     std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    // A shim rather than an unusable TMPDIR: macOS mktemp falls back and succeeds.
+    let path = write_path_shim(
+        &work,
+        "mktemp",
+        "#!/usr/bin/env bash\necho 'shim refused' >&2\nexit 1\n",
+    );
     let (failed, _) = run_pages_build_gate_with_env(
         dir.path(),
         "no-tmp",
         &["101 errored"],
         "100",
         "verify",
-        &[("TMPDIR", work.join("absent").display().to_string())],
+        &[("PATH", path)],
     );
     let stderr = String::from_utf8_lossy(&failed.stderr);
     assert!(!failed.status.success(), "{stderr}");
