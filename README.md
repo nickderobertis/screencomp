@@ -251,13 +251,20 @@ needs only the permission named:
    settle bound fails the run.
 2. **One rebuild request (`pages: write`).** With no newer build, or one that also
    errored, the gate asks for one fresh build of the same commit.
-3. **One empty commit (`contents: write`).** If the rebuild request is refused,
-   the gate pushes one empty commit to the branch Pages builds from, through the
-   GitHub API and never forced, which starts a fresh build.
+3. **One empty commit (`contents: write`, best effort on the default token).** If
+   the rebuild request is refused, the gate `git push`es one empty commit, never
+   forced, to the branch Pages builds from. GitHub's documentation says a push made
+   with `GITHUB_TOKEN` does not trigger a Pages build. In practice this action's own
+   `git push` deploys with `github_token` do start them, which is what this step
+   relies on, but GitHub does not promise it. A push with a personal access token,
+   which is what an external `pages-repository` uses via `pages-token`, is the
+   documented trigger. **Only `pages: write` gives a supported
+   recovery on the default token.**
 
-The build from step 2 or 3 must settle `built`, or the run fails naming it; there
-is no second attempt. If both step 2 and step 3 are refused, the run fails naming
-the errored build and the `pages:write` remedy.
+The build from step 2 or 3 must settle `built`, or the run fails naming it; a
+recovery build superseded by a newer build that settles `built` passes, and there
+is no second attempt. If the empty commit is refused or starts no build, the run
+fails naming the errored build and the `pages:write` remedy.
 
 Coalescing removes the race a run creates for itself, not one created from
 outside it (a scheduled prune, a second repository deploying into a shared

@@ -26,7 +26,7 @@
 # gallery repository's token. A token that cannot reach the Pages API warns and
 # passes rather than failing every run of a caller that never granted it. The
 # empty commit uses only that contents:write, so a `pages: read` token can still
-# recover.
+# attempt recovery; see push_empty_commit for why that is best effort.
 #
 # Environment:
 #   REPO             owner/name whose Pages build to gate on (required).
@@ -149,24 +149,29 @@ die_stuck() {
   die "the Pages build for ${REPO} was still running after ${SETTLE_ATTEMPTS} polls; the published gallery is stale until it finishes — watch it at https://github.com/${REPO}/deployments and re-run this job once it settles"
 }
 
-# Start a build using only contents access: an empty commit on the branch Pages
-# builds from, made through the Git Data API because the gate has no checkout.
-# The ref update is not forced, so it can never overwrite a concurrent deploy.
-push_empty_commit() {
-  local branch head tree commit
+# Start a build using only contents access: one empty commit on the branch Pages
+# builds from. It must be a real `git push`, the transport every deploy here uses:
+# GitHub's docs say a GITHUB_TOKEN push does not trigger a Pages build, yet the
+# deploy pushes do (onepipeline's build 1353912887, pusher github-actions[bot],
+# built commit f7f70ec from `git push` with github_token), and nothing shows a REST
+# ref update behaving the same. So a push that starts no build is a handled failure.
+# Blobless and index-free because a gallery branch holds every preview's PNGs; the
+# non-forced push can never overwrite a concurrent deploy.
+push_empty_commit() (
+  local branch remote work commit
   branch="$("$GH_BIN" api "repos/${REPO}/pages" --jq '.source.branch' 2>/dev/null)" || return 1
   [ -n "$branch" ] || return 1
-  head="$("$GH_BIN" api "repos/${REPO}/git/ref/heads/${branch}" --jq '.object.sha' 2>/dev/null)" || return 1
-  [ -n "$head" ] || return 1
-  tree="$("$GH_BIN" api "repos/${REPO}/git/commits/${head}" --jq '.tree.sha' 2>/dev/null)" || return 1
-  [ -n "$tree" ] || return 1
-  commit="$("$GH_BIN" api --method POST "repos/${REPO}/git/commits" \
-    -f "message=chore: rebuild Pages after a superseded build" \
-    -f "tree=${tree}" -f "parents[]=${head}" --jq '.sha' 2>/dev/null)" || return 1
-  [ -n "$commit" ] || return 1
-  "$GH_BIN" api --method PATCH "repos/${REPO}/git/refs/heads/${branch}" \
-    -f "sha=${commit}" >/dev/null 2>&1
-}
+  remote="https://x-access-token:${GH_TOKEN:-}@github.com/${REPO}.git"
+  work="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064 # expand now: the local is gone when EXIT fires.
+  trap "rm -rf '${work}'" EXIT
+  git -C "$work" init -q >/dev/null 2>&1 || return 1
+  git -C "$work" fetch -q --depth=1 --filter=blob:none "$remote" "refs/heads/${branch}" >/dev/null 2>&1 || return 1
+  commit="$(GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+    GIT_COMMITTER_NAME='github-actions[bot]' GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+    git -C "$work" commit-tree 'FETCH_HEAD^{tree}' -p FETCH_HEAD -m 'chore: rebuild Pages after a superseded build' 2>/dev/null)" || return 1
+  git -C "$work" push -q "$remote" "${commit}:refs/heads/${branch}" >/dev/null 2>&1
+)
 
 cmd_record() {
   local build
@@ -230,11 +235,29 @@ cmd_verify() {
   warn "a rebuild of ${REPO} could not be requested without pages:write; pushing an empty commit to start one"
   push_empty_commit ||
     die "the Pages build ${build} for ${REPO} ended '${status}' and neither a rebuild nor an empty commit could start another; grant the deploy token pages:write to recover from a superseded build"
-  read -r status newer_build <<<"$(wait_for_new_build)"
+  local recovery_build
+  read -r status recovery_build <<<"$(wait_for_new_build)"
   case "$status" in
     built) ;;
     stuck) die_stuck ;;
-    *) die "the Pages build ${newer_build:-after build ${build}} for ${REPO} ended '${status}' after an empty-commit rebuild; the published gallery is stale (see https://github.com/${REPO}/deployments)" ;;
+    absent | unavailable)
+      die "the empty commit pushed after Pages build ${build} for ${REPO} ended '${status}' started no Pages build; GitHub does not document that a GITHUB_TOKEN push triggers one, so grant the deploy token pages:write to recover from a superseded build"
+      ;;
+    *)
+      # The recovery build can be superseded exactly as the deploy's was.
+      PREVIOUS_BUILD="$recovery_build"
+      read -r newer_status newer_build <<<"$(wait_for_new_build)"
+      case "$newer_status" in
+        built)
+          echo "pages build succeeded for ${REPO} via newer build ${newer_build}, which superseded the empty-commit rebuild"
+          return 0
+          ;;
+        stuck) die_stuck ;;
+        absent | unavailable) ;;
+        *) recovery_build="$newer_build" status="$newer_status" ;;
+      esac
+      die "the Pages build ${recovery_build} for ${REPO} ended '${status}' after an empty-commit rebuild; the published gallery is stale (see https://github.com/${REPO}/deployments)"
+      ;;
   esac
   echo "pages build succeeded for ${REPO} after an empty-commit rebuild"
 }

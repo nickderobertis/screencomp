@@ -1129,8 +1129,8 @@ fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
 /// script — are the only thing under test. `$WORK` must point at `work`.
 ///
 /// A `"<rebuild>"` entry splits the list: polls after it are only served once a
-/// rebuild was accepted or an empty commit was pushed, as GitHub only starts that
-/// build then. The Git Data API answers only when `$WORK/allow-push` exists.
+/// rebuild was accepted or a real push reached the remote (`post-receive` in
+/// `write_gallery_remote`), as GitHub only starts that build then.
 #[cfg(unix)]
 fn write_gh_stub(work: &Path, polls: &[&str]) -> PathBuf {
     std::fs::create_dir_all(work).unwrap();
@@ -1145,9 +1145,7 @@ for arg in "$@"; do
   case "$arg" in repos/*) path="$arg" ;; esac
   prev="$arg"
 done
-start_triggered_build() {
-  [ ! -f "$WORK/polls-after" ] || { mv "$WORK/polls-after" "$WORK/polls"; rm -f "$WORK/cursor"; }
-}
+start_triggered_build() { "$WORK/start-triggered-build"; }
 case "$method $path" in
   "POST "*/pages/builds)
     echo rebuild >>"$WORK/posts"
@@ -1158,16 +1156,6 @@ case "$method $path" in
   " "*/pages)
     [ "$filter" = .source.branch ] || exit 1
     echo gallery-branch
-    exit 0
-    ;;
-  *" "*/git/*)
-    [ -f "$WORK/allow-push" ] || exit 1
-    case "$method" in
-      "") case "$filter" in .object.sha) echo head-sha ;; .tree.sha) echo tree-sha ;; *) exit 1 ;; esac ;;
-      POST) echo "$*" >>"$WORK/commits"; echo empty-sha ;;
-      PATCH) echo "$*" >>"$WORK/pushes"; start_triggered_build ;;
-      *) exit 1 ;;
-    esac
     exit 0
     ;;
 esac
@@ -1193,6 +1181,20 @@ esac
         Some(split) => (&polls[..split], Some(&polls[split + 1..])),
         None => (polls, None),
     };
+    let starter = work.join("start-triggered-build");
+    std::fs::write(
+        &starter,
+        format!(
+            "#!/usr/bin/env bash\nW={w}\n[ ! -f \"$W/polls-after\" ] || {{ mv \"$W/polls-after\" \"$W/polls\"; rm -f \"$W/cursor\"; }}\n",
+            w = work.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &starter,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
     std::fs::write(work.join("polls"), format!("{}\n", before.join("\n"))).unwrap();
     if let Some(after) = after {
         std::fs::write(work.join("polls-after"), format!("{}\n", after.join("\n"))).unwrap();
@@ -1227,6 +1229,18 @@ fn run_pages_build_gate(
         .env("WORK", &work)
         .env("GH_BIN", &stub)
         .env("REPO", "o/r")
+        .env("GH_TOKEN", "token")
+        // Real git, redirected to a local bare remote (absent unless a test made
+        // one, so a push there fails as a refused one would, and never goes online).
+        .env("GIT_CONFIG_COUNT", "1")
+        .env(
+            "GIT_CONFIG_KEY_0",
+            format!("url.file://{}.insteadOf", work.join("remote.git").display()),
+        )
+        .env(
+            "GIT_CONFIG_VALUE_0",
+            "https://x-access-token:token@github.com/o/r.git",
+        )
         .env("PREVIOUS_BUILD", previous_build)
         .env("POLL_SECONDS", "0")
         .env("APPEAR_ATTEMPTS", "3")
@@ -1403,12 +1417,80 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
     }
 }
 
-/// Lines the stub recorded in one of its logs, or none when it never wrote it.
+/// Output of git run against one bare remote.
 #[cfg(unix)]
-fn gh_stub_log(work: &Path, log: &str) -> Vec<String> {
-    std::fs::read_to_string(work.join(log))
-        .map(|text| text.lines().map(str::to_owned).collect())
-        .unwrap_or_default()
+fn remote_git(remote: &Path, args: &[&str]) -> String {
+    let output = command("git")
+        .arg("-C")
+        .arg(remote)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Create the bare gallery remote: `gallery-branch` with one commit, whose
+/// `post-receive` starts the scripted build and logs the push. Returns its head.
+#[cfg(unix)]
+fn write_gallery_remote(work: &Path) -> String {
+    let remote = work.join("remote.git");
+    let seed = work.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::write(seed.join("index.html"), "gallery").unwrap();
+    assert!(
+        command("git")
+            .args(["init", "-q", "--bare", remote.to_str().unwrap()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    for args in [
+        vec!["init", "-q", "-b", "gallery-branch"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e",
+            "commit",
+            "-qm",
+            "deploy",
+        ],
+        vec!["push", "-q", remote.to_str().unwrap(), "gallery-branch"],
+    ] {
+        assert!(
+            command("git")
+                .args(&args)
+                .current_dir(&seed)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let hook = remote.join("hooks/post-receive");
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/usr/bin/env bash\ncat >>{w}/pushes\n{w}/start-triggered-build\n",
+            w = work.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &hook,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    remote_git(&remote, &["rev-parse", "refs/heads/gallery-branch"])
+}
+
+/// Pushes the remote received for one work directory.
+#[cfg(unix)]
+fn gh_stub_pushes(work: &Path) -> usize {
+    std::fs::read_to_string(work.join("pushes"))
+        .map(|log| log.lines().count())
+        .unwrap_or(0)
 }
 
 /// Run `verify` with a token holding only `pages: read` and contents access:
@@ -1418,7 +1500,7 @@ fn run_read_only_pages_gate(dir: &Path, label: &str, polls: &[&str]) -> std::pro
     let work = dir.join(label);
     std::fs::create_dir_all(&work).unwrap();
     std::fs::write(work.join("deny-rebuild"), "").unwrap();
-    std::fs::write(work.join("allow-push"), "").unwrap();
+    write_gallery_remote(&work);
     run_pages_build_gate(dir, label, polls, "100", "verify").0
 }
 
@@ -1439,7 +1521,7 @@ fn pages_build_gate_accepts_a_newer_build_that_settles_built() {
     assert!(String::from_utf8_lossy(&passed.stdout).contains("pages build succeeded for o/r"));
     let work = dir.path().join("newer");
     assert_eq!(gh_stub_rebuilds(&work), 0, "no rebuild may be requested");
-    assert!(gh_stub_log(&work, "pushes").is_empty(), "no push is needed");
+    assert_eq!(gh_stub_pushes(&work), 0, "no push is needed");
 }
 
 /// With no newer build, a read-only token falls back to the one thing it can do:
@@ -1458,21 +1540,17 @@ fn pages_build_gate_recovers_a_read_only_token_with_an_empty_commit() {
     assert!(String::from_utf8_lossy(&passed.stdout).contains("after an empty-commit rebuild"));
     let work = dir.path().join("alone");
     assert_eq!(gh_stub_rebuilds(&work), 1, "pages:write is tried first");
-    let commits = gh_stub_log(&work, "commits");
-    assert_eq!(commits.len(), 1, "{commits:?}");
-    assert!(
-        commits[0].contains("tree=tree-sha") && commits[0].contains("parents[]=head-sha"),
-        "the commit must reuse the head's tree on top of the head: {commits:?}"
+    assert_eq!(gh_stub_pushes(&work), 1);
+    let remote = work.join("remote.git");
+    assert_eq!(
+        remote_git(&remote, &["rev-list", "--count", "gallery-branch"]),
+        "2",
+        "exactly one commit, on top of the deployed head"
     );
-    let pushes = gh_stub_log(&work, "pushes");
-    assert_eq!(pushes.len(), 1, "{pushes:?}");
-    assert!(
-        pushes[0].contains("git/refs/heads/gallery-branch") && pushes[0].contains("sha=empty-sha"),
-        "{pushes:?}"
-    );
-    assert!(
-        !pushes[0].contains("force"),
-        "recovery must never overwrite a concurrent deploy: {pushes:?}"
+    assert_eq!(
+        remote_git(&remote, &["rev-parse", "gallery-branch^{tree}"]),
+        remote_git(&remote, &["rev-parse", "gallery-branch~1^{tree}"]),
+        "the recovery commit must not change the published tree"
     );
 
     // Same recovery when the newer build errored too: the baseline moves to it,
@@ -1484,10 +1562,7 @@ fn pages_build_gate_recovers_a_read_only_token_with_an_empty_commit() {
     );
     let stderr = String::from_utf8_lossy(&passed.stderr);
     assert!(passed.status.success(), "{stderr}");
-    assert_eq!(
-        gh_stub_log(&dir.path().join("newer-errored"), "pushes").len(),
-        1
-    );
+    assert_eq!(gh_stub_pushes(&dir.path().join("newer-errored")), 1);
 }
 
 /// The empty commit is the last resort: its build failing is a real failure,
@@ -1507,7 +1582,7 @@ fn pages_build_gate_stops_after_one_empty_commit() {
         stderr.contains("::error::") && stderr.contains("build 102"),
         "{stderr}"
     );
-    assert_eq!(gh_stub_log(&dir.path().join("broken"), "pushes").len(), 1);
+    assert_eq!(gh_stub_pushes(&dir.path().join("broken")), 1);
 
     // No recovery path left at all: refused rebuild and refused push.
     let work = dir.path().join("no-access");
@@ -1524,6 +1599,48 @@ fn pages_build_gate_stops_after_one_empty_commit() {
     assert_eq!(posts, 1);
 }
 
+/// The build the recovery push starts can itself be superseded; a newer build
+/// that settles `built` publishes the same content, so no second push is due.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_accepts_a_newer_build_superseding_the_recovery_build() {
+    let dir = TempDir::new().unwrap();
+    let passed = run_read_only_pages_gate(
+        dir.path(),
+        "recovery-superseded",
+        &[
+            "101 errored",
+            "<rebuild>",
+            "102 errored",
+            "103 building",
+            "103 built",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&passed.stdout).contains("via newer build 103"));
+    assert_eq!(gh_stub_pushes(&dir.path().join("recovery-superseded")), 1);
+}
+
+/// GitHub documents that a GITHUB_TOKEN push does not trigger a Pages build. If
+/// the push lands and no build follows, the gate must say so and fail, not hang
+/// or pass on the deploy's old `errored` build.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_fails_when_the_recovery_push_starts_no_build() {
+    let dir = TempDir::new().unwrap();
+    let failed = run_read_only_pages_gate(dir.path(), "no-build", &["101 errored"]);
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("started no Pages build")
+            && stderr.contains("build 101")
+            && stderr.contains("pages:write"),
+        "{stderr}"
+    );
+    assert_eq!(gh_stub_pushes(&dir.path().join("no-build")), 1);
+}
+
 /// A newer build still running at the bound leaves the gallery unproven, and
 /// recovering would only supersede it, so it fails with no further wait.
 #[cfg(unix)]
@@ -1536,7 +1653,7 @@ fn pages_build_gate_fails_within_the_bound_when_a_newer_build_keeps_running() {
     assert!(stderr.contains("still running after 3 polls"), "{stderr}");
     let work = dir.path().join("running");
     assert_eq!(gh_stub_rebuilds(&work), 0);
-    assert!(gh_stub_log(&work, "pushes").is_empty());
+    assert_eq!(gh_stub_pushes(&work), 0);
     // One read of the errored build, one that finds 102, then SETTLE_ATTEMPTS.
     assert_eq!(
         std::fs::read_to_string(work.join("cursor")).unwrap().trim(),
@@ -1561,7 +1678,7 @@ fn pages_build_gate_with_pages_write_requests_exactly_one_rebuild() {
     assert!(passed.status.success(), "{stderr}");
     assert!(String::from_utf8_lossy(&passed.stdout).contains("after a rebuild"));
     assert_eq!(posts, 1);
-    assert!(gh_stub_log(&dir.path().join("writer"), "pushes").is_empty());
+    assert_eq!(gh_stub_pushes(&dir.path().join("writer")), 0);
 }
 
 /// The coalescing has to be wired end to end to be worth anything: report lanes
