@@ -8,9 +8,10 @@ set -euo pipefail
 case "$(uname -s)" in
   Linux)
     os="unknown-linux-gnu"
-    if ldd --version 2>&1 | grep -qi musl; then
-      os="unknown-linux-musl"
-    fi
+    # musl's ldd exits nonzero for --version, so the output is read on its own.
+    case "$(ldd --version 2>&1 || true)" in
+      *musl*) os="unknown-linux-musl" ;;
+    esac
     ;;
   Darwin) os="apple-darwin" ;;
   *)

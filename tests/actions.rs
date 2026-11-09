@@ -4673,7 +4673,13 @@ mod install_action {
             .unwrap();
             make_executable(&stub);
             let ldd_stub = bin.join("ldd");
-            std::fs::write(&ldd_stub, format!("#!/bin/sh\necho '{ldd}'\n")).unwrap();
+            // musl's ldd prints to stderr and exits 1 for --version.
+            let body = if ldd.contains("musl") {
+                format!("#!/bin/sh\necho '{ldd}' >&2\nexit 1\n")
+            } else {
+                format!("#!/bin/sh\necho '{ldd}'\n")
+            };
+            std::fs::write(&ldd_stub, body).unwrap();
             make_executable(&ldd_stub);
             let (url, _hits) = start_asset_server(vec![Reply::Status(404)], Vec::new());
             let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
@@ -4823,8 +4829,9 @@ mod install_action {
             }
         }
 
-        /// A `gh` that reports the release's assets uploaded from poll `ready_at`
-        /// (1-based) onward, and fails like an unreachable API before poll 2.
+        /// A `gh` that lists the release's assets as `starter` until poll `ready_at`
+        /// (1-based), then `uploaded`, applying the caller's real `--jq` filter. It
+        /// fails like an unreachable API on the first poll.
         fn gh_stub(work: &Path, ready_at: usize) -> (PathBuf, PathBuf) {
             let bin = work.join("gh-bin");
             std::fs::create_dir(&bin).unwrap();
@@ -4835,9 +4842,11 @@ mod install_action {
                 format!(
                     "#!/bin/sh\necho \"$*\" >>'{log}'\ncalls=$(wc -l <'{log}')\n\
                      [ \"$calls\" -gt 1 ] || exit 1\n\
-                     case \"$*\" in *'select(.state == \"uploaded\")'*) ;; *) scripts/install.sh --list-assets --version {TAG}; exit 0 ;; esac\n\
-                     [ \"$calls\" -ge {ready_at} ] || {{ echo uploading.tmp; exit 0; }}\n\
-                     scripts/install.sh --list-assets --version {TAG}\n",
+                     state=starter\n[ \"$calls\" -lt {ready_at} ] || state=uploaded\n\
+                     prev=\nfor arg; do [ \"$prev\" = --jq ] && query=$arg; prev=$arg; done\n\
+                     body=\nfor name in $(scripts/install.sh --list-assets --version {TAG}); do\n\
+                     body=\"$body${{body:+,}}{{\\\"name\\\":\\\"$name\\\",\\\"state\\\":\\\"$state\\\"}}\"\ndone\n\
+                     printf '{{\"assets\":[%s]}}\\n' \"$body\" | jq -r \"$query\"\n",
                     log = path_str(&log)
                 ),
             )
