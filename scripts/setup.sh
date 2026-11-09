@@ -88,8 +88,10 @@ ensure_rust() {
   if ! have rustup; then
     say "installing rustup (minimal); rust-toolchain.toml drives the toolchain"
     have curl || { printf 'error: curl is required to install rustup\n' >&2; exit 1; }
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --no-modify-path
+    local installer; installer="$(mktemp)"
+    bash scripts/download.sh https://sh.rustup.rs "$installer"
+    bash scripts/retry.sh "rustup installer" sh "$installer" -y --profile minimal --no-modify-path
+    rm -f "$installer"
   fi
   # shellcheck disable=SC1091
   [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"

@@ -2512,27 +2512,7 @@ mod install_action {
         // the pipes open past the deadline.
         let stdout_path = work.path().join("stdout");
         let stderr_path = work.path().join("stderr");
-        cmd.stdout(std::fs::File::create(&stdout_path).unwrap())
-            .stderr(std::fs::File::create(&stderr_path).unwrap())
-            .process_group(0);
-        let started = Instant::now();
-        let mut child = cmd.spawn().unwrap();
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if started.elapsed() > INSTALL_DEADLINE {
-                let group = format!("-{}", child.id());
-                let _ = command("kill").args(["-KILL", "--", &group]).status();
-                let _ = child.wait();
-                panic!(
-                    "install script had not exited by the {INSTALL_DEADLINE:?} install deadline; stderr so far:\n{}",
-                    std::fs::read_to_string(&stderr_path).unwrap_or_default()
-                );
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        let elapsed = started.elapsed();
+        let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
         let hits = server.hits.lock().unwrap().clone();
         Install {
             sleeps: std::fs::read_to_string(&sleep_log).ok(),
@@ -2545,6 +2525,34 @@ mod install_action {
             path_file,
             runner_temp,
             _work: work,
+        }
+    }
+
+    /// Run `cmd` with its output in the given files, killing it at the deadline.
+    fn run_to_deadline(
+        mut cmd: Command,
+        stdout_path: &Path,
+        stderr_path: &Path,
+    ) -> (std::process::ExitStatus, Duration) {
+        cmd.stdout(std::fs::File::create(stdout_path).unwrap())
+            .stderr(std::fs::File::create(stderr_path).unwrap())
+            .process_group(0);
+        let started = Instant::now();
+        let mut child = cmd.spawn().unwrap();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return (status, started.elapsed());
+            }
+            if started.elapsed() > INSTALL_DEADLINE {
+                let group = format!("-{}", child.id());
+                let _ = command("kill").args(["-KILL", "--", &group]).status();
+                let _ = child.wait();
+                panic!(
+                    "script had not exited by the {INSTALL_DEADLINE:?} deadline; stderr so far:\n{}",
+                    std::fs::read_to_string(stderr_path).unwrap_or_default()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -3122,5 +3130,310 @@ mod install_action {
             cmd.env("PATH", path);
         });
         assert_lookup_refused("awk stand-in", &run, "could not be parsed (awk exit 2)");
+    }
+
+    /// `scripts/download.sh` and `scripts/retry.sh`, invoked from the repository
+    /// root exactly as the workflows and recipes invoke them.
+    mod repo_tooling {
+        use super::*;
+
+        const TOOL_PATH: &str = "/tool.tar.gz";
+
+        struct Run {
+            _work: TempDir,
+            dest: PathBuf,
+            hits: Vec<Hit>,
+            url: String,
+            success: bool,
+            stderr: String,
+            elapsed: Duration,
+            sleeps: Vec<String>,
+        }
+
+        struct RetryRun {
+            _work: TempDir,
+            calls: usize,
+            success: bool,
+            code: Option<i32>,
+            stderr: String,
+            elapsed: Duration,
+            sleeps: Vec<String>,
+        }
+
+        /// A PATH whose `sleep` records its argument instead of waiting.
+        fn recording_sleep(work: &Path) -> (String, PathBuf) {
+            let bin = work.join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.join("sleeps");
+            let stub = bin.join("sleep");
+            std::fs::write(
+                &stub,
+                format!("#!/bin/sh\necho \"$1\" >>'{}'\n", path_str(&log)),
+            )
+            .unwrap();
+            assert!(
+                command("chmod")
+                    .arg("+x")
+                    .arg(&stub)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let path = std::env::var("PATH").unwrap();
+            (format!("{}:{path}", path_str(&bin)), log)
+        }
+
+        fn download(replies: Vec<Reply>, timing: Timing) -> Run {
+            archive();
+            let server = start_server(plan_for(Op::Archive, replies));
+            let work = TempDir::new().unwrap();
+            let dest = work.path().join("tool.tar.gz");
+            let url = format!("{}{TOOL_PATH}", server.url);
+            let mut cmd = command("bash");
+            cmd.arg("scripts/download.sh")
+                .arg(&url)
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"));
+            let mut sleep_log = None;
+            match timing {
+                Timing::Scaled => {
+                    cmd.env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                        .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+                        .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80");
+                }
+                Timing::ShippedWithRecordedSleep => {
+                    let (path, log) = recording_sleep(work.path());
+                    cmd.env("PATH", path);
+                    sleep_log = Some(log);
+                }
+            }
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let hits = server.hits.lock().unwrap().clone();
+            Run {
+                dest,
+                hits,
+                url,
+                success: status.success(),
+                stderr: std::fs::read_to_string(&stderr_path).unwrap(),
+                elapsed,
+                sleeps: sleep_log
+                    .and_then(|log| std::fs::read_to_string(log).ok())
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_owned)
+                    .collect(),
+                _work: work,
+            }
+        }
+
+        fn assert_no_files_left(run: &Run) {
+            let dir = run.dest.parent().unwrap();
+            let leftovers: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("tool.tar.gz"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}: {}", run.stderr);
+        }
+
+        fn for_each_transient(check: impl Fn(Reply) + Sync) {
+            std::thread::scope(|scope| {
+                for reply in TRANSIENT {
+                    let check = &check;
+                    scope.spawn(move || check(reply));
+                }
+            });
+        }
+
+        #[test]
+        fn a_transient_failure_recovers_into_a_file_that_extracts() {
+            for_each_transient(|reply| {
+                let run = download(vec![reply, reply, Reply::Valid], Timing::Scaled);
+                assert!(run.success, "{reply:?}: {}", run.stderr);
+                assert_eq!(run.hits.len(), 3, "{reply:?}");
+                let out = run.dest.parent().unwrap().join("out");
+                std::fs::create_dir(&out).unwrap();
+                let extracted = command("tar")
+                    .arg("-xzf")
+                    .arg(&run.dest)
+                    .arg("-C")
+                    .arg(&out)
+                    .status()
+                    .unwrap();
+                assert!(extracted.success(), "{reply:?}");
+                let version = command(out.join("screencomp"))
+                    .arg("--version")
+                    .output()
+                    .unwrap();
+                assert!(version.status.success(), "{reply:?}");
+            });
+        }
+
+        #[test]
+        fn a_persistent_transient_failure_is_bounded_names_the_url_and_leaves_no_file() {
+            for_each_transient(|reply| {
+                let run = download(vec![reply], Timing::Scaled);
+                assert!(!run.success, "{reply:?}: {}", run.stderr);
+                assert_eq!(run.hits.len(), MAX_ATTEMPTS, "{reply:?}");
+                assert_no_files_left(&run);
+                let backoff: u64 = SCALED_DELAYS_MS.iter().sum();
+                let limit =
+                    Duration::from_millis(backoff) + Duration::from_secs(MAX_ATTEMPTS as u64 + 30);
+                assert!(run.elapsed < limit, "{reply:?}: {:?}", run.elapsed);
+                let failure = run.stderr.lines().last().unwrap();
+                assert!(
+                    failure.contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                        && failure.contains(&run.url),
+                    "{reply:?}: {failure}"
+                );
+                for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                    let gap = run.hits[index + 1].at - run.hits[index].at;
+                    assert!(
+                        gap >= Duration::from_millis(*delay_ms),
+                        "{reply:?}: attempt gap {index} was {gap:?}"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn the_shipped_schedule_doubles_to_its_cap() {
+            let run = download(vec![Reply::Status(503)], Timing::ShippedWithRecordedSleep);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(
+                run.sleeps,
+                [
+                    "2.000", "4.000", "8.000", "16.000", "30.000", "30.000", "30.000"
+                ]
+            );
+        }
+
+        #[test]
+        fn a_missing_download_stops_after_one_attempt() {
+            let run = download(vec![Reply::Status(404)], Timing::Scaled);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(run.hits.len(), 1);
+            assert_no_files_left(&run);
+            assert_eq!(
+                run.stderr.lines().last().unwrap(),
+                format!("download not found (HTTP 404): {}", run.url)
+            );
+        }
+
+        /// Runs `retry.sh` over a command that fails `failures` times with exit 94.
+        fn retry(failures: usize) -> RetryRun {
+            let work = TempDir::new().unwrap();
+            let count = work.path().join("count");
+            let installer = work.path().join("installer");
+            std::fs::write(
+                &installer,
+                format!(
+                    "#!/bin/sh\necho call >>'{count}'\n[ \"$(wc -l <'{count}')\" -gt {failures} ] || exit 94\n",
+                    count = path_str(&count)
+                ),
+            )
+            .unwrap();
+            assert!(
+                command("chmod")
+                    .arg("+x")
+                    .arg(&installer)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let (path, log) = recording_sleep(work.path());
+            let mut cmd = command("bash");
+            cmd.arg("scripts/retry.sh")
+                .arg("cargo binstall")
+                .arg(&installer)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path);
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            RetryRun {
+                calls: std::fs::read_to_string(&count).unwrap().lines().count(),
+                success: status.success(),
+                code: status.code(),
+                stderr: std::fs::read_to_string(&stderr_path).unwrap(),
+                elapsed,
+                sleeps: std::fs::read_to_string(log)
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_owned)
+                    .collect(),
+                _work: work,
+            }
+        }
+
+        #[test]
+        fn a_tool_install_recovers_from_a_failing_attempt() {
+            let run = retry(2);
+            assert!(run.success, "{}", run.stderr);
+            assert_eq!(run.calls, 3);
+            assert_eq!(run.sleeps, ["5.000", "10.000"]);
+        }
+
+        #[test]
+        fn a_tool_install_that_keeps_failing_is_bounded_and_keeps_its_exit_code() {
+            let run = retry(usize::MAX >> 1);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(run.code, Some(94));
+            assert_eq!(run.calls, 4);
+            assert_eq!(run.sleeps, ["5.000", "10.000", "20.000"]);
+            assert!(run.elapsed < INSTALL_DEADLINE);
+            assert_eq!(
+                run.stderr.lines().last().unwrap(),
+                "cargo binstall failed after 4 attempts (last exit 94)"
+            );
+        }
+
+        /// Every file whose shell performs this repository's own downloads.
+        fn download_surfaces() -> Vec<(String, String)> {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let mut surfaces: Vec<PathBuf> = std::fs::read_dir(root.join(".github/workflows"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            surfaces.push(root.join("justfile"));
+            surfaces.push(root.join("scripts/setup.sh"));
+            surfaces
+                .into_iter()
+                .map(|path| {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    (path_str(&path), text)
+                })
+                .collect()
+        }
+
+        #[test]
+        fn workflows_and_recipes_only_download_through_the_retrying_mechanism() {
+            let mut routed = 0;
+            for (path, text) in download_surfaces() {
+                for line in text.lines().map(str::trim) {
+                    // `have curl` is setup.sh's prerequisite check, not a fetch.
+                    if line.starts_with('#') || line.starts_with("have curl") {
+                        continue;
+                    }
+                    assert!(
+                        !line
+                            .split_whitespace()
+                            .any(|word| word == "curl" || word == "wget"),
+                        "{path}: `{line}` bypasses scripts/download.sh"
+                    );
+                    if line.contains("cargo binstall --no-confirm") {
+                        assert!(
+                            line.contains("scripts/retry.sh"),
+                            "{path}: `{line}` is not retried"
+                        );
+                    }
+                    routed += usize::from(line.contains("bash scripts/download.sh"));
+                }
+            }
+            // ci.yml 2, release-plz.yml 1, justfile 4, setup.sh 1.
+            assert_eq!(routed, 8);
+        }
     }
 }

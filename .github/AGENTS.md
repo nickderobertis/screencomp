@@ -21,6 +21,10 @@
 - The release workflow runs tests before building any artifact and never
   publishes untested binaries or images. crates.io publish stays gated behind a
   repo variable and a token secret.
+- Downloads in workflows and recipes go through `scripts/download.sh`, and tool
+  installers that fetch on their own through `scripts/retry.sh`; never a bare
+  `curl`. `workflows_and_recipes_only_download_through_the_retrying_mechanism`
+  holds this. `action.yml` keeps its own copy of the policy for consumers.
 - Provision the toolchain with `rustup show` so `rust-toolchain.toml` stays the
   single source of truth.
 - The reusable action, Dockerfile, and example workflow are part of the gate:

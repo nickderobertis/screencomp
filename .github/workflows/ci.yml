@@ -201,11 +201,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: actionlint
         run: |
-          curl -fsSL https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz | tar -xz actionlint
+          bash scripts/download.sh https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz actionlint.tar.gz
+          tar -xzf actionlint.tar.gz actionlint
           ./actionlint -color .github/workflows/*.yml examples/*.yml
       - name: hadolint
         run: |
-          curl -fsSL -o hadolint https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64
+          bash scripts/download.sh https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 hadolint
           chmod +x hadolint
           ./hadolint Dockerfile
       # The gh-pages maintenance and Pages build-gate scripts are shared by the
@@ -213,7 +214,7 @@ jobs:
       # workflows, so lint the extracted scripts here (shellcheck ships on the
       # runner image).
       - name: shellcheck
-        run: shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh
+        run: shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/retry.sh
 
   # Prove the end-user install path, separate from the dev gate: exercise the
   # composite action end to end — install from source, then use the binary it
