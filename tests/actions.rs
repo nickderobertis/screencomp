@@ -2583,10 +2583,15 @@ mod install_action {
         }
 
         fn install(&self) -> Install {
+            self.install_adjusted(TAG, |_| {})
+        }
+
+        fn install_adjusted(&self, version: &str, adjust: impl FnOnce(&mut Command)) -> Install {
             let path = std::env::var("PATH").unwrap();
             let path = format!("{}:{path}", path_str(self.dir.path()));
-            install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+            install_with(Plan::new(), version, Timing::Scaled, |cmd| {
                 cmd.env("PATH", path);
+                adjust(cmd);
             })
         }
 
@@ -3071,5 +3076,51 @@ mod install_action {
         let body = nested(64);
         let beyond = install_latest_answering(body);
         assert_lookup_refused(body, &beyond, "is not a valid JSON object");
+    }
+
+    #[test]
+    fn the_shipped_attempt_timeout_is_sixty_seconds() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install_adjusted(TAG, |cmd| {
+            cmd.env_remove("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT");
+        });
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        assert!(
+            calls.iter().all(|call| call.contains("--max-time 60")),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn the_token_stays_out_of_curls_arguments() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install_adjusted("latest", |_| {});
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        assert!(
+            calls.iter().all(|call| !call.contains("test-token")),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn an_awk_that_cannot_run_is_reported_with_its_exit_code() {
+        let dir = TempDir::new().unwrap();
+        let awk = dir.path().join("awk");
+        std::fs::write(&awk, "#!/bin/sh\nexit 2\n").unwrap();
+        let made_executable = command("chmod").arg("+x").arg(&awk).status().unwrap();
+        assert!(made_executable.success());
+        let path = format!(
+            "{}:{}",
+            path_str(dir.path()),
+            std::env::var("PATH").unwrap()
+        );
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("PATH", path);
+        });
+        assert_lookup_refused("awk stand-in", &run, "could not be parsed (awk exit 2)");
     }
 }
