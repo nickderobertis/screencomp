@@ -16,7 +16,7 @@ kill_grace="${SCREENCOMP_BINSTALL_KILL_GRACE:-5}"
 for setting in attempt_timeout retry_base_ms retry_cap_ms kill_grace; do
   # Nine digits at most keeps the backoff doubling inside shell arithmetic.
   if ! [[ "${!setting}" =~ ^[1-9][0-9]{0,8}$ ]]; then
-    echo "binstall.sh: ${setting} must be a positive integer of at most 9 digits, got '${!setting}'" >&2
+    echo "binstall.sh: ${setting} must be a positive integer of at most 9 digits, got '${!setting}'. ACTION: correct or unset the SCREENCOMP_BINSTALL_ override" >&2
     exit 1
   fi
 done
@@ -25,7 +25,8 @@ transient_log='Received status code (408|429|5[0-9][0-9])|HTTP status server err
 
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
-log="${work}/attempt.log"
+log="${work}/stdout.log"
+error_log="${work}/stderr.log"
 expired="${work}/expired"
 
 # Job control gives each background job its own process group, so the watchdog
@@ -56,7 +57,7 @@ attempt=1
 delay_ms="${retry_base_ms}"
 while :; do
   rm -f "${expired}"
-  cargo-binstall "$@" >"${log}" 2>&1 </dev/null &
+  cargo-binstall "$@" >"${log}" 2>"${error_log}" </dev/null &
   installer=$!
   (
     sleep "${attempt_timeout}"
@@ -77,6 +78,7 @@ while :; do
   fi
   wait "${watchdog}" 2>/dev/null || true
   cat "${log}"
+  cat "${error_log}" >&2
 
   if [ "${exit_code}" -eq 0 ]; then
     exit 0
@@ -85,15 +87,15 @@ while :; do
   if [ -e "${expired}" ]; then
     exit_code=124
     failure="timed out after ${attempt_timeout}s"
-  elif grep -Eq "${transient_log}" "${log}"; then
+  elif grep -Eq "${transient_log}" "${log}" "${error_log}"; then
     failure="transient error, exit ${exit_code}"
   else
-    echo "cargo-binstall failed with a permanent error (exit ${exit_code}), see its output above" >&2
+    echo "cargo-binstall failed with a permanent error (exit ${exit_code}), see its output above. ACTION: check the crate name and that it publishes a prebuilt release for this target" >&2
     exit "${exit_code}"
   fi
 
   if [ "${attempt}" -ge "${max_attempts}" ]; then
-    echo "cargo-binstall failed after ${attempt} attempts (last error: ${failure})" >&2
+    echo "cargo-binstall failed after ${attempt} attempts (last error: ${failure}). ACTION: check GitHub's status, then rerun 'just bootstrap'" >&2
     exit "${exit_code}"
   fi
   if [ "${delay_ms}" -gt "${retry_cap_ms}" ]; then

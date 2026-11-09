@@ -25,7 +25,7 @@ if [ "${EVENT_NAME:-}" = "release" ]; then
   attempt=1 max=8 delay=15
   until assets_uploaded; do
     if [ "${attempt}" -ge "${max}" ]; then
-      echo "::warning::release ${RELEASE_TAG} assets were not uploaded after ${attempt} checks; continuing without screencomp, the baseline reseed is skipped"
+      echo "::warning::release ${RELEASE_TAG} assets were not uploaded after ${attempt} checks; continuing without screencomp, the baseline reseed is skipped. ACTION: check the release workflow's upload, then rerun this workflow"
       exit 0
     fi
     echo "release ${RELEASE_TAG} assets are not uploaded yet (check ${attempt}/${max}); checking again in ${delay}s"
@@ -38,5 +38,5 @@ fi
 if SCREENCOMP_INSTALL_DOWNLOADER=scripts/download.sh scripts/install.sh --to "${HOME}/.local/bin"; then
   echo "${HOME}/.local/bin" >>"${GITHUB_PATH}"
 else
-  echo "::warning::could not install the released screencomp; continuing without it, the baseline reseed is skipped"
+  echo "::warning::could not install the released screencomp; continuing without it, the baseline reseed is skipped. ACTION: fix the install error above, then rerun this workflow"
 fi

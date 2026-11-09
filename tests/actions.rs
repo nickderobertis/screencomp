@@ -2159,8 +2159,8 @@ fn the_in_container_capture_script_needs_no_root() {
     }
 }
 
-/// Drives `scripts/binstall.sh` and the real cargo-binstall under Git Bash, on
-/// the platform whose job first failed on a release download.
+/// Drives `scripts/binstall.sh` and the real cargo-binstall under Git Bash, where
+/// signals do not reach native processes and the watchdog needs `taskkill`.
 #[cfg(windows)]
 mod binstall_on_windows {
     use std::io::{Read as _, Write as _};
@@ -2468,6 +2468,7 @@ mod install_action {
         op: Op,
         at: Instant,
         authorization: Option<String>,
+        path: String,
     }
 
     type Plan = HashMap<Op, Vec<Reply>>;
@@ -2575,6 +2576,7 @@ mod install_action {
                 op,
                 at: Instant::now(),
                 authorization,
+                path: path.clone(),
             });
             hits.iter().filter(|hit| hit.op == op).count() - 1
         };
@@ -3545,9 +3547,14 @@ mod install_action {
             assert!(!run.success, "{}", run.stderr);
             assert_eq!(run.hits.len(), 1);
             assert_no_files_left(&run);
-            assert_eq!(
-                run.stderr.lines().last().unwrap(),
-                format!("download not found (HTTP 404): {}", run.url)
+            assert!(
+                run.stderr
+                    .lines()
+                    .last()
+                    .unwrap()
+                    .starts_with(&format!("download not found (HTTP 404): {}", run.url)),
+                "{}",
+                run.stderr
             );
         }
 
@@ -3786,11 +3793,194 @@ mod install_action {
                 let run = binstall(binstall_reply(Reply::Status(status)), None);
                 assert_eq!(run.code, Some(94), "{status}: {}", run.output());
                 assert!(run.sleeps.is_empty(), "{status}: {:?}", run.sleeps);
-                assert_eq!(
-                    run.stderr.lines().last().unwrap(),
-                    "cargo-binstall failed with a permanent error (exit 94), see its output above",
-                    "{status}"
+                assert!(
+                    run.stderr
+                        .lines()
+                        .last()
+                        .unwrap()
+                        .starts_with("cargo-binstall failed with a permanent error (exit 94)"),
+                    "{status}: {}",
+                    run.output()
                 );
+            }
+        }
+
+        /// Runs `script` with `args` from the repository root with `env` set.
+        fn script_failure(
+            script: &str,
+            args: &[&str],
+            env: &[(&str, &str)],
+        ) -> (Option<i32>, String) {
+            let mut cmd = command("bash");
+            cmd.arg(script)
+                .args(args)
+                .current_dir(env!("CARGO_MANIFEST_DIR"));
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+            let output = cmd.output().unwrap();
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn download_refuses_bad_arguments_and_settings_before_any_request() {
+            let url = "http://127.0.0.1:9/never-requested";
+            for (args, env, expected, code) in [
+                (vec![url], vec![], "usage: download.sh", 2),
+                (
+                    vec!["--output=/tmp/x", "dest"],
+                    vec![],
+                    "expected an http(s) URL",
+                    2,
+                ),
+                (
+                    vec![url, "dest"],
+                    vec![("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "0")],
+                    "retry_base_ms must be a positive integer",
+                    1,
+                ),
+                (
+                    vec![url, "dest"],
+                    vec![("SCREENCOMP_DOWNLOAD_BEARER_TOKEN", "bad\ntoken")],
+                    "without control characters",
+                    1,
+                ),
+            ] {
+                let (status, stderr) = script_failure("scripts/download.sh", &args, &env);
+                assert_eq!(status, Some(code), "{stderr}");
+                assert!(stderr.contains(expected), "{expected}: {stderr}");
+            }
+        }
+
+        #[test]
+        fn binstall_refuses_bad_timing_settings_before_running_anything() {
+            let (status, stderr) = script_failure(
+                "scripts/binstall.sh",
+                &["never-installed"],
+                &[("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", "soon")],
+            );
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("attempt_timeout must be"), "{stderr}");
+        }
+
+        #[test]
+        fn the_sync_demo_install_is_a_no_op_without_its_token() {
+            let work = TempDir::new().unwrap();
+            let github_path = work.path().join("github-path");
+            let output = command("bash")
+                .arg("scripts/sync-demo-install.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("HAVE_TOKEN", "")
+                .env("GITHUB_PATH", &github_path)
+                .env("HOME", work.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("skipping screencomp install")
+            );
+            assert!(!github_path.exists());
+        }
+
+        /// The URL each bootstrap installer requests for a stubbed `uname`.
+        fn requested_url(script: &str, os: &str, machine: &str) -> (bool, String) {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("uname");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in\n-s) echo {os} ;;\n*) echo {machine} ;;\nesac\n"
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let (url, _hits) = start_asset_server(vec![Reply::Status(404)], Vec::new());
+            let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
+            let output = command("bash")
+                .arg(script)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_RELEASE_URL", &url)
+                .env("RUSTUP_UPDATE_ROOT", &url)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            (output.status.success(), stderr.replace(&url, "SERVER"))
+        }
+
+        #[test]
+        fn the_bootstrap_installers_request_each_platforms_published_asset() {
+            for (script, os, machine, expected) in [
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "x86_64",
+                    "SERVER/cargo-binstall-x86_64-unknown-linux-musl.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "aarch64",
+                    "SERVER/cargo-binstall-aarch64-unknown-linux-musl.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "armv7l",
+                    "SERVER/cargo-binstall-armv7-unknown-linux-musleabihf.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Darwin",
+                    "arm64",
+                    "SERVER/cargo-binstall-universal-apple-darwin.zip",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "MINGW64_NT-10.0",
+                    "x86_64",
+                    "SERVER/cargo-binstall-x86_64-pc-windows-msvc.zip",
+                ),
+                (
+                    "scripts/install-rustup.sh",
+                    "Darwin",
+                    "arm64",
+                    "SERVER/dist/aarch64-apple-darwin/rustup-init",
+                ),
+                (
+                    "scripts/install-rustup.sh",
+                    "Darwin",
+                    "x86_64",
+                    "SERVER/dist/x86_64-apple-darwin/rustup-init",
+                ),
+            ] {
+                let (success, stderr) = requested_url(script, os, machine);
+                assert!(!success, "{script} {os} {machine}");
+                assert!(
+                    stderr.contains(&format!("HTTP 404): {expected}.")),
+                    "{script} {os} {machine}: {stderr}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_bootstrap_installers_name_an_unsupported_platform() {
+            for script in [
+                "scripts/install-cargo-binstall.sh",
+                "scripts/install-rustup.sh",
+            ] {
+                let (success, stderr) = requested_url(script, "Plan9", "x86_64");
+                assert!(!success, "{script}");
+                assert!(
+                    stderr.contains("unsupported OS Plan9"),
+                    "{script}: {stderr}"
+                );
+                assert!(stderr.contains("ACTION:"), "{script}: {stderr}");
             }
         }
 
@@ -3982,6 +4172,20 @@ mod install_action {
             run.assert_installed("release");
             assert_eq!(run.gh_calls, 4, "{}", run.output);
             assert_eq!(run.sleeps, ["15", "30", "60"], "{}", run.output);
+            // The assets waited for are the ones install.sh then requests.
+            if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                let stem = format!("/screencomp-{TAG}-x86_64-unknown-linux-gnu");
+                for (op, suffix) in [(Op::Archive, ".tar.gz"), (Op::Checksum, ".sha256")] {
+                    let wanted = format!("{stem}{suffix}");
+                    assert!(
+                        run.hits
+                            .iter()
+                            .any(|hit| hit.op == op && hit.path.ends_with(&wanted)),
+                        "{wanted}: {}",
+                        run.output
+                    );
+                }
+            }
             for op in OPS {
                 assert_eq!(run.attempts(op).len(), 1, "{op:?}: {}", run.output);
             }

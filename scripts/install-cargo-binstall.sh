@@ -4,6 +4,7 @@
 # retry dropped connections, and pipes straight into tar. Same assets as upstream.
 # Run from the repository root. There is deliberately no fallback to
 # `cargo-binstall -y --force cargo-binstall`, a second fetch outside download.sh.
+# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] The asset names are upstream's published contract, with no source in this repository to share; a rename surfaces at once as a 404 naming the URL.
 set -euo pipefail
 
 base="${SCREENCOMP_BINSTALL_RELEASE_URL:-https://github.com/cargo-bins/cargo-binstall/releases/latest/download}"
@@ -22,7 +23,7 @@ case "${os}" in
     ;;
   MINGW* | MSYS* | CYGWIN*) asset="cargo-binstall-${machine}-pc-windows-msvc.zip" ;;
   *)
-    echo "install-cargo-binstall.sh: unsupported OS ${os}" >&2
+    echo "install-cargo-binstall.sh: unsupported OS ${os}. ACTION: install cargo-binstall from https://github.com/cargo-bins/cargo-binstall" >&2
     exit 1
     ;;
 esac

@@ -17,6 +17,13 @@ if [ "$#" -ne 2 ]; then
 fi
 url="$1"
 dest="$2"
+case "${url}" in
+  http://* | https://*) ;;
+  *)
+    echo "download.sh: expected an http(s) URL, got '${url}'. ACTION: pass the full URL as the first argument" >&2
+    exit 2
+    ;;
+esac
 
 max_attempts=8
 # Environment knobs exist so tests can shrink the waits.
@@ -27,13 +34,13 @@ retry_cap_ms="${SCREENCOMP_DOWNLOAD_RETRY_CAP_MS:-30000}"
 for setting in attempt_timeout retry_base_ms retry_cap_ms; do
   # Nine digits at most keeps the backoff doubling inside shell arithmetic.
   if ! [[ "${!setting}" =~ ^[1-9][0-9]{0,8}$ ]]; then
-    echo "download.sh: ${setting} must be a positive integer of at most 9 digits, got '${!setting}'" >&2
+    echo "download.sh: ${setting} must be a positive integer of at most 9 digits, got '${!setting}'. ACTION: correct or unset the SCREENCOMP_DOWNLOAD_ override" >&2
     exit 1
   fi
 done
 
 part="${dest}.part.$$"
-trap 'rm -f "${part}"' EXIT
+trap 'rm -f -- "${part}"' EXIT
 
 # An https URL must not be redirected to anything weaker.
 redirect_args=()
@@ -44,7 +51,7 @@ esac
 config=""
 token="${SCREENCOMP_DOWNLOAD_BEARER_TOKEN:-}"
 if [[ "${token}" == *[[:cntrl:]]* ]]; then
-  echo "download needs a token without control characters: ${url}" >&2
+  echo "download needs a token without control characters: ${url}. ACTION: correct SCREENCOMP_DOWNLOAD_BEARER_TOKEN" >&2
   exit 1
 fi
 if [ -n "${token}" ]; then
@@ -62,10 +69,10 @@ while :; do
     --config - --connect-timeout 10 --max-time "${attempt_timeout}" \
     --write-out '%{http_code}' "${url}" <<<"${config}")" || exit_code=$?
   if [ "${exit_code}" -eq 0 ]; then
-    mv -f "${part}" "${dest}"
+    mv -f -- "${part}" "${dest}"
     exit 0
   fi
-  rm -f "${part}"
+  rm -f -- "${part}"
 
   transient=false
   if [ "${exit_code}" -eq 22 ]; then
@@ -73,7 +80,7 @@ while :; do
     case "${status}" in
       408 | 429 | 5??) transient=true ;;
       404)
-        echo "download not found (HTTP 404): ${url}" >&2
+        echo "download not found (HTTP 404): ${url}. ACTION: check the version and asset name in this URL" >&2
         exit 1
         ;;
     esac
@@ -86,11 +93,11 @@ while :; do
     esac
   fi
   if [ "${transient}" != true ]; then
-    echo "download failed (${failure}): ${url}" >&2
+    echo "download failed (${failure}): ${url}. ACTION: fix the access or URL problem this error names, then rerun" >&2
     exit 1
   fi
   if [ "${attempt}" -ge "${max_attempts}" ]; then
-    echo "download failed after ${attempt} attempts (last error: ${failure}): ${url}" >&2
+    echo "download failed after ${attempt} attempts (last error: ${failure}): ${url}. ACTION: check the host's status, then rerun" >&2
     exit 1
   fi
   if [ "${delay_ms}" -gt "${retry_cap_ms}" ]; then
