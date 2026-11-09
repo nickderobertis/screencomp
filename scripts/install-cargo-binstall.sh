@@ -4,7 +4,6 @@
 # retry dropped connections, and pipes straight into tar. Same assets as upstream.
 # Run from the repository root. There is deliberately no fallback to
 # `cargo-binstall -y --force cargo-binstall`, a second fetch outside download.sh.
-# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] The asset names are upstream's published contract, with no source in this repository to share; a rename surfaces at once as a 404 naming the URL.
 set -euo pipefail
 
 base="${SCREENCOMP_BINSTALL_RELEASE_URL:-https://github.com/cargo-bins/cargo-binstall/releases/latest/download}"
