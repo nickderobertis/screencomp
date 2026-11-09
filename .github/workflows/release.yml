@@ -29,15 +29,31 @@ jobs:
   # workspace member) included.
   test:
     runs-on: ubuntu-latest
+    env:
+      # Authenticate cargo-binstall's GitHub API calls in `just bootstrap` so it
+      # is not rate-limited into falling back to a source compile.
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
       - run: rustup show
+      # ~/.cargo/bin stays uncached and the tools come from the bootstrap below,
+      # for the reasons on ci.yml's `check` job: the suite drives some of them.
       - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          cache-bin: false
+      - uses: extractions/setup-just@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Bootstrap
+        run: just bootstrap
       # llmlint: ignore-block[release_does_not_regate_an_already_swept_commit, no_second_broader_sweep_over_an_already_gated_commit, work_goes_through_command_surface, diagnostics_error_or_absent] A hand-cut Release is a supported fallback and this job is its only gate (AGENTS.md, "Release & git"); clippy's -D warnings over the same targets makes a compiler warning fatal here.
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo nextest run --locked --workspace
