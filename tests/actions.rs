@@ -1127,6 +1127,10 @@ fn coalesced_pages_deploy_merges_every_lane_into_one_publishable_tree() {
 /// `--jq` selector from a scripted list of "<build-id> <status>" polls and
 /// records rebuild requests, so the shipped script's decisions — real bash, real
 /// script — are the only thing under test. `$WORK` must point at `work`.
+///
+/// A `"<rebuild>"` entry splits the list: polls after it are only served once a
+/// rebuild was accepted or an empty commit was pushed, as GitHub only starts that
+/// build then. The Git Data API answers only when `$WORK/allow-push` exists.
 #[cfg(unix)]
 fn write_gh_stub(work: &Path, polls: &[&str]) -> PathBuf {
     std::fs::create_dir_all(work).unwrap();
@@ -1135,16 +1139,38 @@ fn write_gh_stub(work: &Path, polls: &[&str]) -> PathBuf {
         &stub,
         r#"#!/usr/bin/env bash
 set -uo pipefail
-filter=""; method=""; prev=""
+filter=""; method=""; path=""; prev=""
 for arg in "$@"; do
   case "$prev" in --jq) filter="$arg" ;; --method) method="$arg" ;; esac
+  case "$arg" in repos/*) path="$arg" ;; esac
   prev="$arg"
 done
-if [ "$method" = POST ]; then
-  echo rebuild >>"$WORK/posts"
-  [ ! -f "$WORK/deny-rebuild" ] || exit 1
-  exit 0
-fi
+start_triggered_build() {
+  [ ! -f "$WORK/polls-after" ] || { mv "$WORK/polls-after" "$WORK/polls"; rm -f "$WORK/cursor"; }
+}
+case "$method $path" in
+  "POST "*/pages/builds)
+    echo rebuild >>"$WORK/posts"
+    [ ! -f "$WORK/deny-rebuild" ] || exit 1
+    start_triggered_build
+    exit 0
+    ;;
+  " "*/pages)
+    [ "$filter" = .source.branch ] || exit 1
+    echo gallery-branch
+    exit 0
+    ;;
+  *" "*/git/*)
+    [ -f "$WORK/allow-push" ] || exit 1
+    case "$method" in
+      "") case "$filter" in .object.sha) echo head-sha ;; .tree.sha) echo tree-sha ;; *) exit 1 ;; esac ;;
+      POST) echo "$*" >>"$WORK/commits"; echo empty-sha ;;
+      PATCH) echo "$*" >>"$WORK/pushes"; start_triggered_build ;;
+      *) exit 1 ;;
+    esac
+    exit 0
+    ;;
+esac
 seen=$(cat "$WORK/cursor" 2>/dev/null || echo 0)
 poll=$(sed -n "$((seen + 1))p" "$WORK/polls")
 [ -n "$poll" ] || poll=$(tail -1 "$WORK/polls")
@@ -1163,7 +1189,14 @@ esac
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
     )
     .unwrap();
-    std::fs::write(work.join("polls"), format!("{}\n", polls.join("\n"))).unwrap();
+    let (before, after) = match polls.iter().position(|poll| *poll == "<rebuild>") {
+        Some(split) => (&polls[..split], Some(&polls[split + 1..])),
+        None => (polls, None),
+    };
+    std::fs::write(work.join("polls"), format!("{}\n", before.join("\n"))).unwrap();
+    if let Some(after) = after {
+        std::fs::write(work.join("polls-after"), format!("{}\n", after.join("\n"))).unwrap();
+    }
     stub
 }
 
@@ -1240,7 +1273,7 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
     let (recovered, posts) = run_pages_build_gate(
         dir.path(),
         "superseded",
-        &["101 errored", "101 errored", "102 building", "102 built"],
+        &["101 errored", "<rebuild>", "102 building", "102 built"],
         "100",
         "verify",
     );
@@ -1259,7 +1292,7 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
     let (failed, posts) = run_pages_build_gate(
         dir.path(),
         "errored",
-        &["101 errored", "101 errored", "102 errored"],
+        &["101 errored", "<rebuild>", "102 errored"],
         "100",
         "verify",
     );
@@ -1368,6 +1401,167 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
             String::from_utf8_lossy(&rejected.stderr)
         );
     }
+}
+
+/// Lines the stub recorded in one of its logs, or none when it never wrote it.
+#[cfg(unix)]
+fn gh_stub_log(work: &Path, log: &str) -> Vec<String> {
+    std::fs::read_to_string(work.join(log))
+        .map(|text| text.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// Run `verify` with a token holding only `pages: read` and contents access:
+/// `POST pages/builds` is refused and the gallery branch can be pushed.
+#[cfg(unix)]
+fn run_read_only_pages_gate(dir: &Path, label: &str, polls: &[&str]) -> std::process::Output {
+    let work = dir.join(label);
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    std::fs::write(work.join("allow-push"), "").unwrap();
+    run_pages_build_gate(dir, label, polls, "100", "verify").0
+}
+
+/// A concurrent deploy to the same branch supersedes this one, and the newer
+/// build publishes the converged branch, so no permission beyond `pages: read`
+/// and no rebuild is needed.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_accepts_a_newer_build_that_settles_built() {
+    let dir = TempDir::new().unwrap();
+    let passed = run_read_only_pages_gate(
+        dir.path(),
+        "newer",
+        &["101 errored", "101 errored", "102 building", "102 built"],
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&passed.stdout).contains("pages build succeeded for o/r"));
+    let work = dir.path().join("newer");
+    assert_eq!(gh_stub_rebuilds(&work), 0, "no rebuild may be requested");
+    assert!(gh_stub_log(&work, "pushes").is_empty(), "no push is needed");
+}
+
+/// With no newer build, a read-only token falls back to the one thing it can do:
+/// an empty commit on the branch Pages builds from.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_recovers_a_read_only_token_with_an_empty_commit() {
+    let dir = TempDir::new().unwrap();
+    let passed = run_read_only_pages_gate(
+        dir.path(),
+        "alone",
+        &["101 errored", "<rebuild>", "102 building", "102 built"],
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&passed.stdout).contains("after an empty-commit rebuild"));
+    let work = dir.path().join("alone");
+    assert_eq!(gh_stub_rebuilds(&work), 1, "pages:write is tried first");
+    let commits = gh_stub_log(&work, "commits");
+    assert_eq!(commits.len(), 1, "{commits:?}");
+    assert!(
+        commits[0].contains("tree=tree-sha") && commits[0].contains("parents[]=head-sha"),
+        "the commit must reuse the head's tree on top of the head: {commits:?}"
+    );
+    let pushes = gh_stub_log(&work, "pushes");
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert!(
+        pushes[0].contains("git/refs/heads/gallery-branch") && pushes[0].contains("sha=empty-sha"),
+        "{pushes:?}"
+    );
+    assert!(
+        !pushes[0].contains("force"),
+        "recovery must never overwrite a concurrent deploy: {pushes:?}"
+    );
+
+    // Same recovery when the newer build errored too: the baseline moves to it,
+    // so its own `errored` is not mistaken for the pushed build.
+    let passed = run_read_only_pages_gate(
+        dir.path(),
+        "newer-errored",
+        &["101 errored", "102 errored", "<rebuild>", "103 built"],
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert_eq!(
+        gh_stub_log(&dir.path().join("newer-errored"), "pushes").len(),
+        1
+    );
+}
+
+/// The empty commit is the last resort: its build failing is a real failure,
+/// named, and is not retried with another push.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_stops_after_one_empty_commit() {
+    let dir = TempDir::new().unwrap();
+    let failed = run_read_only_pages_gate(
+        dir.path(),
+        "broken",
+        &["101 errored", "<rebuild>", "102 errored"],
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("::error::") && stderr.contains("build 102"),
+        "{stderr}"
+    );
+    assert_eq!(gh_stub_log(&dir.path().join("broken"), "pushes").len(), 1);
+
+    // No recovery path left at all: refused rebuild and refused push.
+    let work = dir.path().join("no-access");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    let (refused, posts) =
+        run_pages_build_gate(dir.path(), "no-access", &["101 errored"], "100", "verify");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("build 101") && stderr.contains("pages:write"),
+        "{stderr}"
+    );
+    assert_eq!(posts, 1);
+}
+
+/// A newer build still running at the bound leaves the gallery unproven, and
+/// recovering would only supersede it, so it fails with no further wait.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_fails_within_the_bound_when_a_newer_build_keeps_running() {
+    let dir = TempDir::new().unwrap();
+    let failed = run_read_only_pages_gate(dir.path(), "running", &["101 errored", "102 building"]);
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(stderr.contains("still running after 3 polls"), "{stderr}");
+    let work = dir.path().join("running");
+    assert_eq!(gh_stub_rebuilds(&work), 0);
+    assert!(gh_stub_log(&work, "pushes").is_empty());
+    // One read of the errored build, one that finds 102, then SETTLE_ATTEMPTS.
+    assert_eq!(
+        std::fs::read_to_string(work.join("cursor")).unwrap().trim(),
+        "5"
+    );
+}
+
+/// `pages: write` keeps its single rebuild when nothing newer was queued, and
+/// never reaches for the branch.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_with_pages_write_requests_exactly_one_rebuild() {
+    let dir = TempDir::new().unwrap();
+    let (passed, posts) = run_pages_build_gate(
+        dir.path(),
+        "writer",
+        &["101 errored", "<rebuild>", "102 built"],
+        "100",
+        "verify",
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert!(String::from_utf8_lossy(&passed.stdout).contains("after a rebuild"));
+    assert_eq!(posts, 1);
+    assert!(gh_stub_log(&dir.path().join("writer"), "pushes").is_empty());
 }
 
 /// The coalescing has to be wired end to end to be worth anything: report lanes
@@ -1735,7 +1929,7 @@ fn direct_per_lane_deploy_fails_when_its_pages_build_errors() {
     let (failed, _, rebuilds) = step(
         &local("Wait for the Pages build"),
         "errored",
-        &["101 errored", "101 errored", "102 errored"],
+        &["101 errored", "<rebuild>", "102 errored"],
         &[("PREVIOUS_BUILD", "100")],
     );
     assert!(

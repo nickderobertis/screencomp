@@ -237,10 +237,27 @@ the exact subpath it would have deployed to, and a run-wide `deploy-pages` job
 merges them and publishes **one** commit — the same tree N pushes into N
 `destination_dir`s produced, with one commit and one Pages build instead of N.
 That also stops the branch accreting a run's worth of PNG blobs per project. It
-then waits for that build and **fails the run if it errored**, retrying once
-first, since a superseded build is transient and the identical commit builds
-cleanly unraced. A single-project run is unaffected: one artifact, one commit,
-one build, exactly as before.
+then waits for that build. A single-project run is unaffected: one artifact, one
+commit, one build, exactly as before.
+
+When that build ends `errored`, the gate recovers in this order, and each path
+needs only the permission named:
+
+1. **A newer build (`pages: read`).** The gate waits for up to the same bound it
+   gives a deploy's own build to appear (`APPEAR_ATTEMPTS` polls, ~2 minutes). If
+   another deploy superseded this one and that newer build settles `built`, the
+   gate passes without requesting anything: the branch content converges, so the
+   newer build publishes this gallery too. A newer build still running at the
+   settle bound fails the run.
+2. **One rebuild request (`pages: write`).** With no newer build, or one that also
+   errored, the gate asks for one fresh build of the same commit.
+3. **One empty commit (`contents: write`).** If the rebuild request is refused,
+   the gate pushes one empty commit to the branch Pages builds from, through the
+   GitHub API and never forced, which starts a fresh build.
+
+The build from step 2 or 3 must settle `built`, or the run fails naming it; there
+is no second attempt. If both step 2 and step 3 are refused, the run fails naming
+the errored build and the `pages:write` remedy.
 
 Coalescing removes the race a run creates for itself, not one created from
 outside it (a scheduled prune, a second repository deploying into a shared
