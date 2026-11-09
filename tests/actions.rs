@@ -1183,7 +1183,7 @@ esac
         &starter,
         format!(
             "#!/usr/bin/env bash\nW={w}\n[ ! -f \"$W/polls-after\" ] || {{ mv \"$W/polls-after\" \"$W/polls\"; rm -f \"$W/cursor\"; }}\n",
-            w = work.display()
+            w = shell_quote(work.display())
         ),
     )
     .unwrap();
@@ -1429,6 +1429,13 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
     }
 }
 
+/// Render `value` as one single-quoted shell word: these generated scripts embed
+/// `TMPDIR`-derived paths, which may hold spaces or shell metacharacters.
+#[cfg(unix)]
+fn shell_quote(value: impl std::fmt::Display) -> String {
+    format!("'{}'", value.to_string().replace('\'', r"'\''"))
+}
+
 #[cfg(unix)]
 fn remote_git(remote: &Path, args: &[&str]) -> String {
     let output = command("git")
@@ -1483,8 +1490,8 @@ fn write_gallery_remote(work: &Path) -> String {
     std::fs::write(
         &hook,
         format!(
-            "#!/usr/bin/env bash\ncat >>{w}/pushes\n{w}/start-triggered-build\n",
-            w = work.display()
+            "#!/usr/bin/env bash\nW={w}\ncat >>\"$W/pushes\"\n\"$W/start-triggered-build\"\n",
+            w = shell_quote(work.display())
         ),
     )
     .unwrap();
@@ -1767,19 +1774,19 @@ fn pages_build_gate_keeps_the_errored_status_apart_from_the_poll_result() {
 /// before the real `git` (as `$REAL_GIT`), so a test can act at one exact step.
 #[cfg(unix)]
 fn write_git_shim(work: &Path, body: &str) -> String {
-    let real_git = String::from_utf8_lossy(
-        &command("bash")
-            .args(["-c", "command -v git"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .trim()
-    .to_owned();
+    let located = command("bash")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(located.status.success(), "git is not on PATH");
+    let real_git = String::from_utf8_lossy(&located.stdout).trim().to_owned();
     write_path_shim(
         work,
         "git",
-        &format!("#!/usr/bin/env bash\nREAL_GIT={real_git}\n{body}\nexec \"$REAL_GIT\" \"$@\"\n"),
+        &format!(
+            "#!/usr/bin/env bash\nREAL_GIT={real_git}\n{body}\nexec \"$REAL_GIT\" \"$@\"\n",
+            real_git = shell_quote(&real_git),
+        ),
     )
 }
 
@@ -1810,34 +1817,31 @@ fn pages_build_gate_recovery_push_never_overwrites_a_concurrent_deploy() {
     std::fs::write(work.join("deny-rebuild"), "").unwrap();
     write_gallery_remote(&work);
     let remote = work.join("remote.git");
-    let concurrent = String::from_utf8_lossy(
-        &command("git")
-            .args([
-                "-c",
-                "user.name=T",
-                "-c",
-                "user.email=t@e",
-                "-C",
-                remote.to_str().unwrap(),
-                "commit-tree",
-                "gallery-branch^{tree}",
-                "-p",
-                "gallery-branch",
-                "-m",
-                "concurrent deploy",
-            ])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .trim()
-    .to_owned();
+    let concurrent = remote_git(
+        &remote,
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e",
+            "commit-tree",
+            "gallery-branch^{tree}",
+            "-p",
+            "gallery-branch",
+            "-m",
+            "concurrent deploy",
+        ],
+    );
+    assert!(
+        !concurrent.is_empty() && concurrent.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "commit-tree printed {concurrent:?}"
+    );
 
     let path = write_git_shim(
         &work,
         &format!(
             "case \" $* \" in *' commit-tree '*) \"$REAL_GIT\" -C {remote} update-ref refs/heads/gallery-branch {concurrent} ;; esac",
-            remote = remote.display(),
+            remote = shell_quote(remote.display()),
         ),
     );
 
