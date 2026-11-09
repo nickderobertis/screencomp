@@ -4823,7 +4823,9 @@ mod install_action {
 
         #[test]
         fn a_release_waits_for_its_assets_before_a_single_install() {
-            let run = sync_install(Plan::new(), Some(4));
+            // `latest` names another release: the install must use the event's tag.
+            let plan = plan_for(Op::Lookup, vec![Reply::Tag("v0.0.1")]);
+            let run = sync_install(plan, Some(4));
             run.assert_installed("release");
             assert_eq!(run.gh_calls, 4, "{}", run.output);
             assert_eq!(run.sleeps, ["15", "30", "60"], "{}", run.output);
@@ -4841,7 +4843,8 @@ mod install_action {
                     );
                 }
             }
-            for op in OPS {
+            assert!(run.attempts(Op::Lookup).is_empty(), "{}", run.output);
+            for op in [Op::Archive, Op::Checksum] {
                 assert_eq!(run.attempts(op).len(), 1, "{op:?}: {}", run.output);
             }
         }
@@ -5154,6 +5157,35 @@ mod install_action {
             assert_eq!(run.hits.len(), 1, "{}", run.output);
             assert!(run.output.contains("download not found (HTTP 404)"));
             assert!(!args_log.exists());
+        }
+
+        #[test]
+        fn an_attempt_that_exits_zero_when_stopped_still_counts_as_timed_out() {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                "#!/bin/bash\ntrap 'exit 0' TERM\nwhile :; do /bin/sleep 0.05; done\n",
+            )
+            .unwrap();
+            make_executable(&stub);
+            let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/binstall.sh", "probe"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", "1")
+                .env("SCREENCOMP_BINSTALL_KILL_GRACE", "1")
+                .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "20")
+                .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "80");
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            assert_eq!(status.code(), Some(124), "{stderr}");
+            assert!(stderr.contains("failed after 4 attempts"), "{stderr}");
         }
 
         #[test]

@@ -80,13 +80,11 @@ while :; do
   cat "${log}"
   cat "${error_log}" >&2
 
-  if [ "${exit_code}" -eq 0 ]; then
-    exit 0
-  fi
-
   if [ -e "${expired}" ]; then
     exit_code=124
     failure="timed out after ${attempt_timeout}s"
+  elif [ "${exit_code}" -eq 0 ]; then
+    exit 0
   elif grep -Eq "${transient_log}" "${log}" "${error_log}"; then
     failure="transient error, exit ${exit_code}"
   else

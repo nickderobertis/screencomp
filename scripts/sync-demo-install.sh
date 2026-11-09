@@ -41,7 +41,12 @@ if [ "${EVENT_NAME:-}" = "release" ]; then
   done
 fi
 
-if SCREENCOMP_INSTALL_DOWNLOADER=scripts/download.sh scripts/install.sh --to "${HOME}/.local/bin"; then
+# A release installs its own tag, the one whose assets were waited for.
+version_args=()
+if [ "${EVENT_NAME:-}" = "release" ]; then
+  version_args=(--version "${RELEASE_TAG}")
+fi
+if SCREENCOMP_INSTALL_DOWNLOADER=scripts/download.sh scripts/install.sh ${version_args[@]+"${version_args[@]}"} --to "${HOME}/.local/bin"; then
   echo "${HOME}/.local/bin" >>"${GITHUB_PATH}"
 else
   echo "::warning::could not install the released screencomp; continuing without it, the baseline reseed is skipped. ACTION: fix the install error above, then rerun this workflow"
