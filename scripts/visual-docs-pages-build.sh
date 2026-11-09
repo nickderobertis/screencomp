@@ -149,10 +149,18 @@ die_stuck() {
   die "the Pages build for ${REPO} was still running after ${SETTLE_ATTEMPTS} polls; the published gallery is stale until it finishes — watch it at https://github.com/${REPO}/deployments and re-run this job once it settles"
 }
 
+# Echo a command's stderr on one line, for a workflow-command message, with the
+# token removed: a git remote URL embeds it.
+redact_one_line() {
+  local detail="$1"
+  [ -z "${GH_TOKEN:-}" ] || detail="${detail//"$GH_TOKEN"/***}"
+  printf '%s' "${detail//$'\n'/ }"
+}
+
 # Run one step of the empty-commit recovery, keeping its stdout. On failure, warn
 # with the step's own stderr on one line, so a refused credential, a missing ref
 # and a rejected push stay distinguishable. The remote URL embeds the token, so it
-# is redacted first. Uses the caller's $work for the capture file.
+# is redacted. Uses the caller's $work for the capture file.
 recovery_step() {
   local what="$1" detail
   shift
@@ -160,8 +168,7 @@ recovery_step() {
     return 0
   fi
   detail="$(<"${work}/step-stderr")"
-  [ -z "${GH_TOKEN:-}" ] || detail="${detail//"$GH_TOKEN"/***}"
-  warn "the empty-commit recovery failed ${what}: ${detail//$'\n'/ }"
+  warn "the empty-commit recovery failed ${what}: $(redact_one_line "$detail")"
   return 1
 }
 
@@ -250,14 +257,15 @@ cmd_verify() {
 
   # A superseded build errors with duration 0 and rebuilds cleanly, so start one
   # more before calling the gallery broken.
-  if "$GH_BIN" api --method POST "repos/${REPO}/pages/builds" >/dev/null 2>&1; then
+  local rebuild_error
+  if rebuild_error="$("$GH_BIN" api --method POST "repos/${REPO}/pages/builds" 2>&1 >/dev/null)"; then
     read -r status build <<<"$(wait_for_new_build)"
     [ "$status" = built ] || die "the Pages build for ${REPO} ended '${status}' after a rebuild; the published gallery is stale (see https://github.com/${REPO}/deployments)"
     echo "pages build succeeded for ${REPO} after a rebuild"
     return 0
   fi
 
-  warn "a rebuild of ${REPO} could not be requested without pages:write; pushing an empty commit to start one"
+  warn "a rebuild of ${REPO}, which needs pages:write, was refused ($(redact_one_line "${rebuild_error:-no detail given}")); pushing an empty commit to start one"
   push_empty_commit ||
     die "the Pages build ${build} for ${REPO} ended '${status}' and neither a rebuild nor an empty commit could start another; grant the deploy token pages:write to recover from a superseded build"
   local recovery_build recovery_status
