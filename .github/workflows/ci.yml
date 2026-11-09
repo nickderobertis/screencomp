@@ -80,12 +80,14 @@ jobs:
           cache-bin: false
       - name: Install just
         uses: extractions/setup-just@v2
-      # The Node toolchain Nx runs on. bun, at package.json's packageManager pin,
-      # comes from the npm registry through node-modules.sh: setup-bun's GitHub
-      # release download fails the job whenever that endpoint returns 5xx.
+      # The Node toolchain Nx runs on, and bun at package.json's packageManager pin
+      # for the root workspace lock.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
       # `just bootstrap` installs cargo-nextest/llvm-cov/deny/machete. With only
       # `cargo install` available it compiles them from source against the pinned
       # 1.89 toolchain, and the newest nextest's MSRV is higher — it fails to
@@ -140,12 +142,14 @@ jobs:
           cache-bin: false
       - name: Install just
         uses: extractions/setup-just@v2
-      # The Node toolchain Nx runs on. bun, at package.json's packageManager pin,
-      # comes from the npm registry through node-modules.sh: setup-bun's GitHub
-      # release download fails the job whenever that endpoint returns 5xx.
+      # The Node toolchain Nx runs on, and bun at package.json's packageManager pin
+      # for the root workspace lock.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
       # `just bootstrap` installs cargo-nextest/llvm-cov/deny/machete. With only
       # `cargo install` available it compiles them from source against the pinned
       # 1.89 toolchain, and the newest nextest's MSRV is higher — it fails to

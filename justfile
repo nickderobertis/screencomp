@@ -548,7 +548,7 @@ _ensure-lefthook:
     mkdir -p "$dest"
     url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}${ext}"
     echo "installing lefthook {{lefthook_version}}"
-    curl -fsSL --retry 6 --connect-timeout 10 "$url" -o "$dest/lefthook${ext}"
+    curl -fsSL "$url" -o "$dest/lefthook${ext}"
     chmod +x "$dest/lefthook${ext}"
 
 # Install the pinned actionlint binary onto PATH if it is missing.
@@ -570,7 +570,7 @@ _ensure-actionlint:
     mkdir -p "$dest"
     url="https://github.com/rhysd/actionlint/releases/download/v{{actionlint_version}}/actionlint_{{actionlint_version}}_${os}_${arch}.tar.gz"
     echo "installing actionlint {{actionlint_version}}"
-    curl -fsSL --retry 6 --connect-timeout 10 "$url" | tar -xz -C "$dest" actionlint
+    curl -fsSL "$url" | tar -xz -C "$dest" actionlint
 
 # Install the pinned hadolint binary onto PATH if it is missing.
 _ensure-hadolint:
@@ -596,7 +596,7 @@ _ensure-hadolint:
     mkdir -p "$dest"
     url="https://github.com/hadolint/hadolint/releases/download/v{{hadolint_version}}/hadolint-${os}-${arch}"
     echo "installing hadolint {{hadolint_version}}"
-    curl -fsSL --retry 6 --connect-timeout 10 "$url" -o "$dest/hadolint"
+    curl -fsSL "$url" -o "$dest/hadolint"
     chmod +x "$dest/hadolint"
 
 # The LLM-judge tier (llmlint) is never part of `check`: it is non-deterministic
