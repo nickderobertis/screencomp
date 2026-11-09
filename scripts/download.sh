@@ -6,6 +6,9 @@
 # connections) retry with capped exponential backoff; any other failure stops at
 # once. The root action.yml carries its own copy of this policy because it must
 # work wherever the action is consumed.
+#
+# SCREENCOMP_DOWNLOAD_BEARER_TOKEN, when set, is sent as an Authorization header
+# through curl's stdin config, keeping it out of `ps`.
 set -euo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -38,13 +41,26 @@ case "${url}" in
   https://*) redirect_args=(--proto-redir "=https") ;;
 esac
 
+config=""
+token="${SCREENCOMP_DOWNLOAD_BEARER_TOKEN:-}"
+if [[ "${token}" == *[[:cntrl:]]* ]]; then
+  echo "download needs a token without control characters: ${url}" >&2
+  exit 1
+fi
+if [ -n "${token}" ]; then
+  # Backslash and double quote are curl config's quoted-value escapes.
+  token="${token//\\/\\\\}"
+  token="${token//\"/\\\"}"
+  config="header = \"Authorization: Bearer ${token}\""
+fi
+
 attempt=1
 delay_ms="${retry_base_ms}"
 while :; do
   exit_code=0
   status="$(curl -fsSL --tlsv1.2 ${redirect_args[@]+"${redirect_args[@]}"} -o "${part}" \
-    --connect-timeout 10 --max-time "${attempt_timeout}" \
-    --write-out '%{http_code}' "${url}")" || exit_code=$?
+    --config - --connect-timeout 10 --max-time "${attempt_timeout}" \
+    --write-out '%{http_code}' "${url}" <<<"${config}")" || exit_code=$?
   if [ "${exit_code}" -eq 0 ]; then
     mv -f "${part}" "${dest}"
     exit 0

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# sync-demo.yml's "Install the released screencomp" step. A failed install warns
+# and exits 0: the baseline reseed skips without the CLI, and the demo refresh
+# that follows must still run.
+#
+# On `release: published` this races release.yml, whose assets arrive a minute
+# or two later. The race is waited out by polling the release's asset list, so
+# the install that follows can treat a 404 as permanent.
+set -euo pipefail
+
+if [ -z "${HAVE_TOKEN:-}" ]; then
+  echo "no SCREENCOMP_DEMO_PAT configured; skipping screencomp install"
+  exit 0
+fi
+
+assets_uploaded() {
+  local names
+  names="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+    --json assets --jq '.assets[] | select(.state == "uploaded") | .name')" || return 1
+  local stem="screencomp-${RELEASE_TAG}-x86_64-unknown-linux-gnu"
+  grep -qxF "${stem}.tar.gz" <<<"${names}" && grep -qxF "${stem}.sha256" <<<"${names}"
+}
+
+if [ "${EVENT_NAME:-}" = "release" ]; then
+  attempt=1 max=8 delay=15
+  until assets_uploaded; do
+    if [ "${attempt}" -ge "${max}" ]; then
+      echo "::warning::release ${RELEASE_TAG} assets were not uploaded after ${attempt} checks; continuing without screencomp, the baseline reseed is skipped"
+      exit 0
+    fi
+    echo "release ${RELEASE_TAG} assets are not uploaded yet (check ${attempt}/${max}); checking again in ${delay}s"
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2 > 60 ? 60 : delay * 2))
+  done
+fi
+
+if SCREENCOMP_INSTALL_DOWNLOADER=scripts/download.sh scripts/install.sh --to "${HOME}/.local/bin"; then
+  echo "${HOME}/.local/bin" >>"${GITHUB_PATH}"
+else
+  echo "::warning::could not install the released screencomp; continuing without it, the baseline reseed is skipped"
+fi

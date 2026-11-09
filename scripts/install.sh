@@ -19,12 +19,19 @@
 # under a POSIX shell (Git Bash / MSYS / WSL). Intel macOS is no longer supported. For native Windows PowerShell or unpublished targets,
 # build from source: cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp.
 #
+# SCREENCOMP_INSTALL_DOWNLOADER names a script taking `<url> <destination>` that
+# replaces curl/wget; this repository's own workflows pass scripts/download.sh.
+# The script itself stays standalone, because it is usually piped from the web.
+#
 # Like the tool it installs, this script never proceeds silently: it aborts
 # rather than install a binary it cannot checksum-verify.
 
 set -eu
 
 REPO="nickderobertis/screencomp"
+GITHUB_URL="${SCREENCOMP_INSTALL_GITHUB_URL:-https://github.com}"
+GITHUB_API_URL="${SCREENCOMP_INSTALL_GITHUB_API_URL:-https://api.github.com}"
+DOWNLOADER="${SCREENCOMP_INSTALL_DOWNLOADER:-}"
 BIN="screencomp"
 # Overridden to `screencomp.exe` on Windows targets by detect_target.
 BIN_FILE="$BIN"
@@ -93,7 +100,16 @@ detect_target() {
 # Authorization header to the redirected (signed) asset URL.
 api_get() {
     _url="$1"
-    if [ "$DL" = "curl" ]; then
+    if [ "$DL" = "external" ]; then
+        _body_file="$(mktemp)" || return 1
+        if SCREENCOMP_DOWNLOAD_BEARER_TOKEN="${GITHUB_TOKEN:-}" bash "$DOWNLOADER" "$_url" "$_body_file"; then
+            cat "$_body_file"
+            rm -f "$_body_file"
+        else
+            rm -f "$_body_file"
+            return 1
+        fi
+    elif [ "$DL" = "curl" ]; then
         if [ -n "${GITHUB_TOKEN:-}" ]; then
             curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$_url"
         else
@@ -112,7 +128,9 @@ api_get() {
 download() {
     _url="$1"
     _out="$2"
-    if [ "$DL" = "curl" ]; then
+    if [ "$DL" = "external" ]; then
+        SCREENCOMP_DOWNLOAD_BEARER_TOKEN="" bash "$DOWNLOADER" "$_url" "$_out"
+    elif [ "$DL" = "curl" ]; then
         curl -fsSL -o "$_out" "$_url"
     else
         wget -qO "$_out" "$_url"
@@ -121,7 +139,7 @@ download() {
 
 # Resolve the latest release tag by reading "tag_name" from the GitHub API.
 latest_tag() {
-    _body="$(api_get "https://api.github.com/repos/$REPO/releases/latest")" \
+    _body="$(api_get "$GITHUB_API_URL/repos/$REPO/releases/latest")" \
         || err "could not query the latest release. The unauthenticated GitHub API
        rate-limits per IP and 403s on shared/proxied egress (CI, Codespaces,
        corporate networks). Set GITHUB_TOKEN, or skip the lookup entirely by
@@ -177,7 +195,9 @@ main() {
 
     [ -n "$bindir" ] || bindir="${HOME}/.local/bin"
 
-    if have curl; then
+    if [ -n "$DOWNLOADER" ]; then
+        DL="external"
+    elif have curl; then
         DL="curl"
     elif have wget; then
         DL="wget"
@@ -196,7 +216,7 @@ main() {
     # The release action names the checksum asset by replacing the archive
     # extension with `.sha256` (not appending), e.g. screencomp-v0.1.0-<t>.sha256.
     sumfile="${BIN}-${version}-${TARGET}.sha256"
-    base_url="https://github.com/$REPO/releases/download/${version}"
+    base_url="$GITHUB_URL/$REPO/releases/download/${version}"
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t screencomp)" \
         || err "could not create a temporary directory"

@@ -229,7 +229,7 @@ bench-tools:
     if [ "${#missing[@]}" -eq 0 ]; then
         echo "performance tools already installed"
     elif command -v cargo-binstall >/dev/null 2>&1; then
-        bash scripts/retry.sh "cargo binstall" cargo binstall --no-confirm "${missing[@]}"
+        bash scripts/binstall.sh --no-confirm "${missing[@]}"
     else
         cargo install --locked "${missing[@]}"
     fi
@@ -435,7 +435,7 @@ _actions-test:
 _lint-visual-docs: _ensure-actionlint
     actionlint .github/workflows/visual-docs-reusable.yml .github/workflows/test-visual-docs.yml .github/workflows/test-gh-pages-maintenance.yml examples/*.yml
     @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
-    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/retry.sh
+    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh
 
 # The definition linters read platform-independent files, so one verdict per tree
 # suffices, and their pinned binaries are Linux-only in practice (none for
@@ -492,23 +492,24 @@ _ensure-tools:
     for t in cargo-nextest cargo-llvm-cov cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
-    if [ "${#missing[@]}" -eq 0 ]; then
-        exit 0
-    fi
+    # Installed even when no tool is missing: the action suite drives the real binary.
     if ! command -v cargo-binstall >/dev/null 2>&1; then
         echo "installing cargo-binstall (prebuilt-binary installer)"
         installer="$(mktemp)"
         bash scripts/download.sh https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh "$installer"
-        bash scripts/retry.sh "cargo-binstall installer" bash "$installer"
+        bash "$installer"
         rm -f "$installer"
         export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    fi
+    if [ "${#missing[@]}" -eq 0 ]; then
+        exit 0
     fi
     # Only ever install the published prebuilt binaries. The `compile` fallback
     # would build the tool from source against the pinned toolchain, and the
     # latest releases carry a newer MSRV — so a failed/rate-limited download must
     # error loudly, not silently compile. Authenticated GitHub API calls
     # (GITHUB_TOKEN, set in CI) avoid the rate-limiting that triggers fallback.
-    bash scripts/retry.sh "cargo binstall" cargo binstall --no-confirm --disable-strategies compile "${missing[@]}"
+    bash scripts/binstall.sh --no-confirm --disable-strategies compile "${missing[@]}"
 
 # Install the pinned cargo-prune-superseded unless that version is already on PATH.
 _ensure-prune-superseded:
