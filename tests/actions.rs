@@ -2426,6 +2426,9 @@ mod install_action {
 
     fn install(plan: Plan, version: &str, timing: Timing) -> Install {
         let server = start_server(plan);
+        // Built before the installer starts: building it inside the first request
+        // would count against that request's short client timeout.
+        archive();
         let work = TempDir::new().unwrap();
         let runner_temp = work.path().join("runner");
         std::fs::create_dir(&runner_temp).unwrap();
@@ -2451,7 +2454,7 @@ mod install_action {
         let sleep_log = work.path().join("sleeps");
         match timing {
             Timing::Scaled => {
-                cmd.env("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT", "1")
+                cmd.env("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT", "2")
                     .env("SCREENCOMP_INSTALL_RETRY_BASE_MS", "20")
                     .env("SCREENCOMP_INSTALL_RETRY_CAP_MS", "80");
             }
