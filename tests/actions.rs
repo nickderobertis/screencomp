@@ -2170,7 +2170,8 @@ mod install_action {
     use std::io::{Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
     use std::os::unix::process::CommandExt as _;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
@@ -2206,11 +2207,20 @@ mod install_action {
         /// Read the request, then close the connection without answering.
         Drop,
         WrongChecksum,
+        /// Promise more body than is sent, then close the connection.
+        Truncated,
         /// A 200 lookup response that carries no tag.
         NoTag,
+        /// A 200 lookup response that carries this tag.
+        Tag(&'static str),
     }
 
-    const TRANSIENT: [Reply; 3] = [Reply::Status(504), Reply::Hang, Reply::Drop];
+    const TRANSIENT: [Reply; 4] = [
+        Reply::Status(504),
+        Reply::Hang,
+        Reply::Drop,
+        Reply::Truncated,
+    ];
 
     #[derive(Clone, Debug)]
     struct Hit {
@@ -2341,7 +2351,16 @@ mod install_action {
                 let body = checksum_line(&"0".repeat(64), &path);
                 respond(&mut stream, 200, &body);
             }
+            Reply::Truncated => {
+                let head =
+                    "HTTP/1.1 200 X\r\nContent-Length: 1024\r\nConnection: close\r\n\r\npartial";
+                let _ = stream.write_all(head.as_bytes());
+            }
             Reply::NoTag => respond(&mut stream, 200, b"{}"),
+            Reply::Tag(tag) => {
+                let body = format!(r#"{{"tag_name":"{tag}"}}"#);
+                respond(&mut stream, 200, body.as_bytes());
+            }
         }
     }
 
@@ -2418,13 +2437,23 @@ mod install_action {
 
     #[derive(Clone, Copy)]
     enum Timing {
-        /// Millisecond backoff and a one-second attempt timeout.
+        /// Millisecond backoff and a two-second attempt timeout.
         Scaled,
         /// The shipped schedule, with `sleep` recording instead of waiting.
         ShippedWithRecordedSleep,
     }
 
     fn install(plan: Plan, version: &str, timing: Timing) -> Install {
+        install_with(plan, version, timing, |_| {})
+    }
+
+    /// `install`, with `adjust` applied last to the installer's command.
+    fn install_with(
+        plan: Plan,
+        version: &str,
+        timing: Timing,
+        adjust: impl FnOnce(&mut Command),
+    ) -> Install {
         let server = start_server(plan);
         // Built before the installer starts: building it inside the first request
         // would count against that request's short client timeout.
@@ -2474,6 +2503,8 @@ mod install_action {
             }
         }
 
+        adjust(&mut cmd);
+
         // Output goes to files, not pipes: a surviving curl would otherwise hold
         // the pipes open past the deadline.
         let stdout_path = work.path().join("stdout");
@@ -2521,6 +2552,47 @@ mod install_action {
 
     fn plan_for(op: Op, replies: Vec<Reply>) -> Plan {
         HashMap::from([(op, replies)])
+    }
+
+    /// A `curl` on the PATH that always exits with one code and logs each call,
+    /// for transport failures a local server cannot provoke (DNS, TLS, proxy).
+    struct CurlStub {
+        dir: TempDir,
+        log: PathBuf,
+    }
+
+    impl CurlStub {
+        fn exiting_with(code: u8) -> Self {
+            let dir = TempDir::new().unwrap();
+            let log = dir.path().join("calls");
+            let stub = dir.path().join("curl");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\necho call >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            let made_executable = command("chmod").arg("+x").arg(&stub).status().unwrap();
+            assert!(made_executable.success());
+            Self { dir, log }
+        }
+
+        fn install(&self) -> Install {
+            let path = std::env::var("PATH").unwrap();
+            let path = format!("{}:{path}", path_str(self.dir.path()));
+            install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+                cmd.env("PATH", path);
+            })
+        }
+
+        fn calls(&self) -> usize {
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        }
     }
 
     /// Run `check` for every operation and reply on its own thread: the
@@ -2692,5 +2764,128 @@ mod install_action {
         assert!(!run.success, "{}", run.output());
         assert!(run.stderr.contains("has no tag_name"), "{}", run.stderr);
         assert!(run.attempts(Op::Archive).is_empty());
+    }
+
+    #[test]
+    fn a_lookup_with_an_unsafe_tag_is_refused_before_any_download() {
+        for tag in ["../../evil", "v1/x", "-v1", "v1 x"] {
+            let run = install(
+                plan_for(Op::Lookup, vec![Reply::Tag(tag)]),
+                "latest",
+                Timing::Scaled,
+            );
+            assert!(!run.success, "{tag}: {}", run.output());
+            assert!(
+                run.stderr.contains(&format!("invalid tag '{tag}'")),
+                "{tag}: {}",
+                run.stderr
+            );
+            assert!(run.attempts(Op::Archive).is_empty(), "{tag}");
+            run.assert_nothing_installed();
+        }
+    }
+
+    #[test]
+    fn every_retryable_http_status_is_retried() {
+        let statuses = [408, 429, 500, 502].map(Reply::Status);
+        for_each_case(&statuses, |op, reply| {
+            let run = install(
+                plan_for(op, vec![reply, Reply::Valid]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(run.success, "{op:?}/{reply:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), 2, "{op:?}/{reply:?}");
+        });
+    }
+
+    #[test]
+    fn a_refused_connection_is_retried_until_the_attempts_run_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+            cmd.env("SCREENCOMP_INSTALL_GITHUB_URL", &closed);
+        });
+        assert!(!run.success, "{}", run.output());
+        run.assert_nothing_installed();
+        let expected = format!("failed after {MAX_ATTEMPTS} attempts (last error: curl exit 7)");
+        assert!(run.stderr.contains(&expected), "{}", run.stderr);
+    }
+
+    #[test]
+    fn transport_failures_only_a_stub_can_provoke_are_retried() {
+        // Proxy and DNS resolution, HTTP/2 framing and stream, TLS handshake, send.
+        for code in [5, 6, 16, 35, 55, 56, 92] {
+            let stub = CurlStub::exiting_with(code);
+            let run = stub.install();
+            assert!(!run.success, "exit {code}: {}", run.output());
+            assert_eq!(stub.calls(), MAX_ATTEMPTS, "exit {code}");
+            let expected =
+                format!("failed after {MAX_ATTEMPTS} attempts (last error: curl exit {code})");
+            assert!(run.stderr.contains(&expected), "{}", run.stderr);
+        }
+    }
+
+    #[test]
+    fn an_untrusted_certificate_is_not_retried() {
+        let stub = CurlStub::exiting_with(60);
+        let run = stub.install();
+        assert!(!run.success, "{}", run.output());
+        assert_eq!(stub.calls(), 1);
+        assert!(
+            run.stderr.contains("failed (curl exit 60)"),
+            "{}",
+            run.stderr
+        );
+        assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_permanent_curl_failure_stops_at_once_and_names_the_exit_code() {
+        let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+            cmd.env("SCREENCOMP_INSTALL_GITHUB_URL", "unsupported://host");
+        });
+        assert!(!run.success, "{}", run.output());
+        run.assert_nothing_installed();
+        let failure = run.stderr.lines().last().unwrap();
+        assert!(
+            failure.contains("failed (curl exit 1)") && failure.contains("unsupported://host"),
+            "{failure}"
+        );
+        assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_lookup_without_a_token_goes_unauthenticated() {
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env_remove("GH_TOKEN");
+        });
+        assert!(run.success, "{}", run.output());
+        assert!(!run.attempts(Op::Lookup).is_empty());
+        assert!(run.hits.iter().all(|hit| hit.authorization.is_none()));
+    }
+
+    #[test]
+    fn a_malformed_timing_setting_stops_before_any_request() {
+        for name in [
+            "SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT",
+            "SCREENCOMP_INSTALL_RETRY_BASE_MS",
+            "SCREENCOMP_INSTALL_RETRY_CAP_MS",
+        ] {
+            for value in ["0", "-1", "soon", "1.5", "99999999999"] {
+                let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+                    cmd.env(name, value);
+                });
+                assert!(!run.success, "{name}={value}: {}", run.output());
+                assert!(
+                    run.stderr.contains(name) && run.stderr.contains(&format!("got '{value}'")),
+                    "{name}={value}: {}",
+                    run.stderr
+                );
+                assert!(run.hits.is_empty(), "{name}={value}");
+                run.assert_nothing_installed();
+            }
+        }
     }
 }

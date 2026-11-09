@@ -47,6 +47,17 @@ runs:
         retry_base_ms="${SCREENCOMP_INSTALL_RETRY_BASE_MS:-2000}"
         retry_cap_ms="${SCREENCOMP_INSTALL_RETRY_CAP_MS:-30000}"
 
+        require_positive_integer() {
+          # Nine digits at most keeps the backoff doubling inside shell arithmetic.
+          if ! [[ "$2" =~ ^[1-9][0-9]{0,8}$ ]]; then
+            echo "$1 must be a positive integer of at most 9 digits, got '$2'" >&2
+            exit 1
+          fi
+        }
+        require_positive_integer SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT "${attempt_timeout}"
+        require_positive_integer SCREENCOMP_INSTALL_RETRY_BASE_MS "${retry_base_ms}"
+        require_positive_integer SCREENCOMP_INSTALL_RETRY_CAP_MS "${retry_cap_ms}"
+
         fetch() {
           # fetch <description> <url> <destination> [bearer-token]
           # Retries transient failures (5xx, 408, 429, timeouts, dropped
@@ -114,6 +125,11 @@ runs:
           tag_value="$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "${response}" | head -n 1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
           if [ -z "${tag_value}" ]; then
             echo "latest release of ${SCREENCOMP_REPO} has no tag_name: ${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" >&2
+            return 1
+          fi
+          # The tag becomes a URL path segment and a local filename.
+          if ! [[ "${tag_value}" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+            echo "latest release of ${SCREENCOMP_REPO} has an invalid tag '${tag_value}': ${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" >&2
             return 1
           fi
           printf '%s\n' "${tag_value}"
