@@ -15,7 +15,6 @@ use clap::Parser as _;
 use screencomp::{AppError, Cli, run};
 use tempfile::TempDir;
 
-// The subprocess helpers serve the tests that run the shipped shell scripts.
 mod common;
 use common::command;
 
