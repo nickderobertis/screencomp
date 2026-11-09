@@ -4344,6 +4344,140 @@ mod install_action {
             }
         }
 
+        /// `Provisioning`'s PATH plus a `cargo-binstall` logging its arguments
+        /// and exiting `code`, and stubs for `extra` tools.
+        fn with_binstall_stub(setup: &Provisioning, code: u8, extra: &[&str]) -> PathBuf {
+            let log = setup.work.path().join("binstall-args");
+            let stub = setup.bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\necho \"$*\" >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            for tool in extra {
+                let path = setup.bin.join(tool);
+                std::fs::write(&path, "#!/bin/sh\n").unwrap();
+                make_executable(&path);
+            }
+            log
+        }
+
+        #[test]
+        fn ensure_tools_installs_only_the_missing_tool_without_a_source_fallback() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(
+                &setup,
+                0,
+                &["cargo-nextest", "cargo-llvm-cov", "cargo-deny"],
+            );
+            let (success, stderr) = setup.run_recipe("_ensure-tools");
+            assert!(success, "{stderr}");
+            assert_eq!(
+                read_lines(&log),
+                ["--no-confirm --disable-strategies compile cargo-machete"],
+                "{stderr}"
+            );
+        }
+
+        #[test]
+        fn ensure_tools_fails_once_on_a_permanent_binstall_failure() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(
+                &setup,
+                94,
+                &["cargo-nextest", "cargo-llvm-cov", "cargo-deny"],
+            );
+            let (success, stderr) = setup.run_recipe("_ensure-tools");
+            assert!(!success, "{stderr}");
+            assert_eq!(read_lines(&log).len(), 1, "{stderr}");
+            assert!(stderr.contains("permanent error (exit 94)"), "{stderr}");
+        }
+
+        #[test]
+        fn bench_tools_installs_the_pinned_tools_through_the_retrying_wrapper() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(&setup, 0, &[]);
+            let (success, stderr) = setup.run_recipe("bench-tools");
+            assert!(success, "{stderr}");
+            let calls = read_lines(&log);
+            assert_eq!(calls.len(), 1, "{stderr}");
+            for tool in ["hyperfine@", "critcmp@", "samply@"] {
+                assert!(calls[0].contains(tool), "{tool}: {calls:?}");
+            }
+            assert!(calls[0].starts_with("--no-confirm "), "{calls:?}");
+        }
+
+        /// Runs `setup.sh`'s real `ensure_rust` on a machine without rustup; the
+        /// served rustup-init records its arguments and puts a `rustup` on PATH.
+        fn ensure_rust(replies: Vec<Reply>, setup: &Provisioning) -> (bool, Vec<Instant>, String) {
+            let log = setup.work.path().join("rustup-init-args");
+            let rustup = setup.bin.join("rustup");
+            let body = format!(
+                "#!/bin/sh\necho \"$*\" >'{}'\nprintf '#!/bin/sh\\n' >'{rustup}'\nchmod +x '{rustup}'\n",
+                path_str(&log),
+                rustup = path_str(&rustup)
+            );
+            let (url, hits) = start_asset_server(replies, body.into_bytes());
+            // setup.sh finds its siblings from its own path, so it runs from a copy
+            // of them with only the trailing `main "$@"` removed.
+            let root = setup.work.path().join("clone");
+            let scripts = root.join("scripts");
+            std::fs::create_dir_all(&scripts).unwrap();
+            for sibling in ["setup-lib.sh", "download.sh", "install-rustup.sh"] {
+                let shipped = repo_file(&format!("scripts/{sibling}"));
+                std::fs::write(scripts.join(sibling), shipped).unwrap();
+            }
+            let shipped = repo_file("scripts/setup.sh");
+            let without_main = shipped.strip_suffix("main \"$@\"\n").unwrap();
+            let copy = scripts.join("setup.sh");
+            std::fs::write(&copy, without_main).unwrap();
+            let script = format!("source '{}'; ensure_rust", path_str(&copy));
+            let output = command("bash")
+                .args(["-c", &script])
+                .current_dir(&root)
+                .env("PATH", setup.path())
+                .env("HOME", setup.work.path())
+                .env("RUSTUP_UPDATE_ROOT", &url)
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2")
+                .output()
+                .unwrap();
+            let recorded = hits.lock().unwrap().clone();
+            (
+                output.status.success(),
+                recorded,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn setup_installs_rustup_through_the_retrying_download() {
+            let setup = Provisioning::new(None);
+            std::fs::remove_file(setup.bin.join("curl")).unwrap();
+            let (success, hits, stderr) =
+                ensure_rust(vec![Reply::Status(503), Reply::Valid], &setup);
+            assert!(success, "{stderr}");
+            assert_eq!(hits.len(), 2, "{stderr}");
+            assert_eq!(
+                read_lines(&setup.work.path().join("rustup-init-args")),
+                ["-y --profile minimal --no-modify-path"]
+            );
+        }
+
+        #[test]
+        fn setup_stops_at_once_when_rustup_init_is_missing() {
+            let setup = Provisioning::new(None);
+            std::fs::remove_file(setup.bin.join("curl")).unwrap();
+            let (success, hits, stderr) = ensure_rust(vec![Reply::Status(404)], &setup);
+            assert!(!success, "{stderr}");
+            assert_eq!(hits.len(), 1, "{stderr}");
+            assert!(stderr.contains("download not found (HTTP 404)"), "{stderr}");
+        }
+
         /// The `Install release-plz` step's shell, installing into `bin`.
         fn release_plz_step(bin: &Path) -> String {
             let workflow = repo_file(".github/workflows/release-plz.yml");
