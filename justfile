@@ -221,15 +221,14 @@ profile *args:
 bench-tools:
     #!/usr/bin/env bash
     set -euo pipefail
-    declare -A want=([hyperfine]={{hyperfine_version}} [critcmp]={{critcmp_version}} [samply]={{samply_version}})
     missing=()
-    for t in "${!want[@]}"; do
-        command -v "$t" >/dev/null 2>&1 || missing+=("${t}@${want[$t]}")
+    for spec in hyperfine@{{hyperfine_version}} critcmp@{{critcmp_version}} samply@{{samply_version}}; do
+        command -v "${spec%@*}" >/dev/null 2>&1 || missing+=("$spec")
     done
     if [ "${#missing[@]}" -eq 0 ]; then
         echo "performance tools already installed"
     elif command -v cargo-binstall >/dev/null 2>&1; then
-        cargo binstall --no-confirm "${missing[@]}"
+        bash scripts/binstall.sh --no-confirm "${missing[@]}"
     else
         cargo install --locked "${missing[@]}"
     fi
@@ -435,7 +434,7 @@ _actions-test:
 _lint-visual-docs: _ensure-actionlint
     actionlint .github/workflows/visual-docs-reusable.yml .github/workflows/test-visual-docs.yml .github/workflows/test-gh-pages-maintenance.yml examples/*.yml
     @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
-    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh
+    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh scripts/install-cargo-binstall.sh scripts/install-rustup.sh
 
 # The definition linters read platform-independent files, so one verdict per tree
 # suffices, and their pinned binaries are Linux-only in practice (none for
@@ -492,20 +491,21 @@ _ensure-tools:
     for t in cargo-nextest cargo-llvm-cov cargo-deny cargo-machete; do
         command -v "$t" >/dev/null 2>&1 || missing+=("$t")
     done
-    if [ "${#missing[@]}" -eq 0 ]; then
-        exit 0
-    fi
+    # Installed even when no tool is missing: the action suite drives the real binary.
     if ! command -v cargo-binstall >/dev/null 2>&1; then
         echo "installing cargo-binstall (prebuilt-binary installer)"
-        curl -fsSL https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+        bash scripts/install-cargo-binstall.sh
         export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+    fi
+    if [ "${#missing[@]}" -eq 0 ]; then
+        exit 0
     fi
     # Only ever install the published prebuilt binaries. The `compile` fallback
     # would build the tool from source against the pinned toolchain, and the
     # latest releases carry a newer MSRV — so a failed/rate-limited download must
     # error loudly, not silently compile. Authenticated GitHub API calls
     # (GITHUB_TOKEN, set in CI) avoid the rate-limiting that triggers fallback.
-    cargo binstall --no-confirm --disable-strategies compile "${missing[@]}"
+    bash scripts/binstall.sh --no-confirm --disable-strategies compile "${missing[@]}"
 
 # Install the pinned cargo-prune-superseded unless that version is already on PATH.
 _ensure-prune-superseded:
@@ -548,7 +548,7 @@ _ensure-lefthook:
     mkdir -p "$dest"
     url="https://github.com/evilmartians/lefthook/releases/download/v{{lefthook_version}}/lefthook_{{lefthook_version}}_${os}_${arch}${ext}"
     echo "installing lefthook {{lefthook_version}}"
-    curl -fsSL "$url" -o "$dest/lefthook${ext}"
+    bash scripts/download.sh "$url" "$dest/lefthook${ext}"
     chmod +x "$dest/lefthook${ext}"
 
 # Install the pinned actionlint binary onto PATH if it is missing.
@@ -570,7 +570,10 @@ _ensure-actionlint:
     mkdir -p "$dest"
     url="https://github.com/rhysd/actionlint/releases/download/v{{actionlint_version}}/actionlint_{{actionlint_version}}_${os}_${arch}.tar.gz"
     echo "installing actionlint {{actionlint_version}}"
-    curl -fsSL "$url" | tar -xz -C "$dest" actionlint
+    archive="$(mktemp)"
+    bash scripts/download.sh "$url" "$archive"
+    tar -xzf "$archive" -C "$dest" actionlint || { echo "could not extract actionlint from $url; ACTION: fix the tar error above, then rerun" >&2; exit 1; }
+    rm -f "$archive"
 
 # Install the pinned hadolint binary onto PATH if it is missing.
 _ensure-hadolint:
@@ -596,7 +599,7 @@ _ensure-hadolint:
     mkdir -p "$dest"
     url="https://github.com/hadolint/hadolint/releases/download/v{{hadolint_version}}/hadolint-${os}-${arch}"
     echo "installing hadolint {{hadolint_version}}"
-    curl -fsSL "$url" -o "$dest/hadolint"
+    bash scripts/download.sh "$url" "$dest/hadolint"
     chmod +x "$dest/hadolint"
 
 # The LLM-judge tier (llmlint) is never part of `check`: it is non-deterministic

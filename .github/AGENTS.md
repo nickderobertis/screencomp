@@ -21,6 +21,13 @@
 - The release workflow runs tests before building any artifact and never
   publishes untested binaries or images. crates.io publish stays gated behind a
   repo variable and a token secret.
+- Downloads in workflows and recipes go through `scripts/download.sh`, and
+  cargo-binstall through `scripts/binstall.sh`; never a bare `curl`. Upstream's
+  installer scripts are not run: `scripts/install-cargo-binstall.sh` and
+  `scripts/install-rustup.sh` fetch their binaries through download.sh.
+  `action.yml` keeps its own copy of the policy for consumers, and
+  `scripts/install.sh` stays standalone, using download.sh only when
+  `SCREENCOMP_INSTALL_DOWNLOADER` names it.
 - Provision the toolchain with `rustup show` so `rust-toolchain.toml` stays the
   single source of truth.
 - The reusable action, Dockerfile, and example workflow are part of the gate:
@@ -157,7 +164,7 @@
   `push: main`). This is what keeps the deployed demo gallery auto-updating to the
   latest screencomp state, not just to managed-file changes. On `release` this
   workflow RACES `release.yml`: it fires on `release: published` but the assets
-  `install.sh` pulls are uploaded a minute or two later, so the install step
-  retries with backoff and is non-fatal (the reseed skips without the CLI) — never
+  `install.sh` pulls are uploaded a minute or two later, so `scripts/sync-demo-install.sh`
+  polls the release's asset list before installing and is non-fatal (the reseed skips without the CLI) — never
   let it `set -e`-abort before the refresh push, or the demo silently never
   updates on release.

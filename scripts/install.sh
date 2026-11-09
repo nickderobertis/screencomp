@@ -19,12 +19,25 @@
 # under a POSIX shell (Git Bash / MSYS / WSL). Intel macOS is no longer supported. For native Windows PowerShell or unpublished targets,
 # build from source: cargo install --git https://github.com/nickderobertis/screencomp --locked screencomp.
 #
+# SCREENCOMP_INSTALL_DOWNLOADER names a script taking `<url> <destination>` that
+# replaces curl/wget; this repository's own workflows pass scripts/download.sh.
+# The script itself stays standalone, because it is usually piped from the web.
+#
 # Like the tool it installs, this script never proceeds silently: it aborts
 # rather than install a binary it cannot checksum-verify.
 
 set -eu
 
 REPO="nickderobertis/screencomp"
+GITHUB_URL="${SCREENCOMP_INSTALL_GITHUB_URL:-https://github.com}"
+GITHUB_API_URL="${SCREENCOMP_INSTALL_GITHUB_API_URL:-https://api.github.com}"
+DOWNLOADER="${SCREENCOMP_INSTALL_DOWNLOADER:-}"
+for _base_url in "$GITHUB_URL" "$GITHUB_API_URL"; do
+    case "$_base_url" in
+        http://* | https://*) ;;
+        *) printf 'error: expected an http(s) base URL, got: %s; correct or unset SCREENCOMP_INSTALL_GITHUB_URL and SCREENCOMP_INSTALL_GITHUB_API_URL\n' "$_base_url" >&2; exit 1 ;;
+    esac
+done
 BIN="screencomp"
 # Overridden to `screencomp.exe` on Windows targets by detect_target.
 BIN_FILE="$BIN"
@@ -41,6 +54,7 @@ Usage: install.sh [--version <tag>] [--to <dir>]
 
   --version <tag>   Release tag to install, e.g. v0.1.0 (default: latest).
   --to <dir>        Install directory (default: ~/.local/bin).
+  --list-assets     Print this host's release asset names for --version, one per line.
   -h, --help        Show this help.
 
 Environment: SCREENCOMP_VERSION, SCREENCOMP_INSTALL_DIR, GITHUB_TOKEN.
@@ -93,7 +107,16 @@ detect_target() {
 # Authorization header to the redirected (signed) asset URL.
 api_get() {
     _url="$1"
-    if [ "$DL" = "curl" ]; then
+    if [ "$DL" = "external" ]; then
+        _body_file="$(mktemp)" || return 1
+        if SCREENCOMP_DOWNLOAD_BEARER_TOKEN="${GITHUB_TOKEN:-}" bash "$DOWNLOADER" "$_url" "$_body_file"; then
+            cat "$_body_file"
+            rm -f "$_body_file"
+        else
+            rm -f "$_body_file"
+            return 1
+        fi
+    elif [ "$DL" = "curl" ]; then
         if [ -n "${GITHUB_TOKEN:-}" ]; then
             curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" "$_url"
         else
@@ -112,7 +135,9 @@ api_get() {
 download() {
     _url="$1"
     _out="$2"
-    if [ "$DL" = "curl" ]; then
+    if [ "$DL" = "external" ]; then
+        SCREENCOMP_DOWNLOAD_BEARER_TOKEN="" bash "$DOWNLOADER" "$_url" "$_out"
+    elif [ "$DL" = "curl" ]; then
         curl -fsSL -o "$_out" "$_url"
     else
         wget -qO "$_out" "$_url"
@@ -121,7 +146,7 @@ download() {
 
 # Resolve the latest release tag by reading "tag_name" from the GitHub API.
 latest_tag() {
-    _body="$(api_get "https://api.github.com/repos/$REPO/releases/latest")" \
+    _body="$(api_get "$GITHUB_API_URL/repos/$REPO/releases/latest")" \
         || err "could not query the latest release. The unauthenticated GitHub API
        rate-limits per IP and 403s on shared/proxied egress (CI, Codespaces,
        corporate networks). Set GITHUB_TOKEN, or skip the lookup entirely by
@@ -163,6 +188,7 @@ extract() {
 main() {
     version="${SCREENCOMP_VERSION:-}"
     bindir="${SCREENCOMP_INSTALL_DIR:-}"
+    list_assets=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -170,6 +196,7 @@ main() {
             --version=*) version="${1#*=}"; shift ;;
             --to | --bin-dir) bindir="${2:?--to needs a value}"; shift 2 ;;
             --to=* | --bin-dir=*) bindir="${1#*=}"; shift ;;
+            --list-assets) list_assets=1; shift ;;
             -h | --help) usage; exit 0 ;;
             *) err "unknown option: $1 (try --help)" ;;
         esac
@@ -177,15 +204,26 @@ main() {
 
     [ -n "$bindir" ] || bindir="${HOME}/.local/bin"
 
-    if have curl; then
+    detect_target
+
+    if [ -n "$list_assets" ]; then
+        [ -n "$version" ] || err "--list-assets needs --version <tag>; rerun with the release tag, e.g. --version v0.1.0"
+        case "$version" in
+            *[!A-Za-z0-9._+-]*) err "invalid release tag for --list-assets: $version; pass a tag such as v0.1.0" ;;
+        esac
+        printf '%s\n' "${BIN}-${version}-${TARGET}.${EXT}" "${BIN}-${version}-${TARGET}.sha256"
+        exit 0
+    fi
+
+    if [ -n "$DOWNLOADER" ]; then
+        DL="external"
+    elif have curl; then
         DL="curl"
     elif have wget; then
         DL="wget"
     else
         err "need curl or wget to download"
     fi
-
-    detect_target
 
     if [ -z "$version" ]; then
         say "resolving latest release..."
@@ -196,7 +234,7 @@ main() {
     # The release action names the checksum asset by replacing the archive
     # extension with `.sha256` (not appending), e.g. screencomp-v0.1.0-<t>.sha256.
     sumfile="${BIN}-${version}-${TARGET}.sha256"
-    base_url="https://github.com/$REPO/releases/download/${version}"
+    base_url="$GITHUB_URL/$REPO/releases/download/${version}"
 
     tmp="$(mktemp -d 2>/dev/null || mktemp -d -t screencomp)" \
         || err "could not create a temporary directory"
