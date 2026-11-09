@@ -187,7 +187,7 @@ push_empty_commit() (
     return 1
   }
   # shellcheck disable=SC2064 # expand now: the local is gone when EXIT fires.
-  trap "rm -rf '${work}'" EXIT
+  trap "rm -rf -- $(printf '%q' "$work")" EXIT
   branch="$(recovery_step "reading the Pages source branch" "$GH_BIN" api "repos/${REPO}/pages" --jq '.source.branch')" || return 1
   # The value becomes a git ref. `gh --jq` can render a JSON null as the text
   # `null`, and a Pages source that is not a branch has no usable value at all.

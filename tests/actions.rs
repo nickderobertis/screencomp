@@ -2048,6 +2048,36 @@ fn pages_build_gate_names_the_recovery_step_that_failed() {
     );
 }
 
+/// The recovery's scratch directory lives under `TMPDIR`, whose value reaches the
+/// cleanup trap's shell source; a quote in it must not break out of that.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_cleans_up_under_a_tmpdir_with_a_quote() {
+    let dir = TempDir::new().unwrap();
+    let work = dir.path().join("quoted");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    write_gallery_remote(&work);
+    let tmp = work.join("tmp'; touch injected; '");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let (failed, _) = run_pages_build_gate_with_env(
+        dir.path(),
+        "quoted",
+        &["101 errored"],
+        "100",
+        "verify",
+        &[("TMPDIR", tmp.display().to_string())],
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("started no Pages build"), "{stderr}");
+    assert_eq!(
+        std::fs::read_dir(&tmp).unwrap().count(),
+        0,
+        "the scratch directory must be removed"
+    );
+    assert_eq!(gh_stub_pushes(&work), 1);
+}
+
 /// The Pages API can stop answering at any point in recovery. That is never a
 /// pass on its own, and each failure keeps the facts it can still vouch for.
 #[cfg(unix)]
