@@ -208,8 +208,13 @@ jobs:
   # project's Nx target, which builds the CLI from THIS checkout, renders a
   # gallery from a two-dimension fixture, and drives the real script in chromium,
   # the one place the gallery's client-side behavior is exercised pre-release.
+  #
+  # Pinned to Noble rather than ubuntu-latest: the Playwright locked in
+  # browser-tests (1.60.0, the release of the capture container) refuses to install
+  # chromium on ubuntu 26.04. Move this only with a Playwright that supports the
+  # newer image.
   gallery-browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
