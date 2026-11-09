@@ -65,7 +65,14 @@ runs:
           # permanent one. The token travels on stdin so it stays out of `ps`.
           local description="$1" url="$2" dest="$3" token="${4:-}"
           local attempt=1 delay_ms="${retry_base_ms}" config="" status exit_code failure transient
+          if [[ "${token}" == *[[:cntrl:]]* ]]; then
+            echo "${description} needs a token without control characters: ${url}" >&2
+            return 1
+          fi
           if [ -n "${token}" ]; then
+            # Backslash and double quote are curl config's quoted-value escapes.
+            token="${token//\\/\\\\}"
+            token="${token//\"/\\\"}"
             config="header = \"Authorization: Bearer ${token}\""
           fi
           while :; do
@@ -122,7 +129,9 @@ runs:
           local response="$1/latest-release.json" tag_value
           fetch "latest release of ${SCREENCOMP_REPO}" \
             "${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" "${response}" "${GH_TOKEN:-}" || return 1
+          # llmlint: ignore-block[boundary_inputs_validated] No JSON parser is guaranteed on the runner, and GitHub's release object has no nested tag_name; the value is constrained below and the archive it selects is checksum-verified.
           tag_value="$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "${response}" | head -n 1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+          # llmlint: ignore-end[boundary_inputs_validated]
           if [ -z "${tag_value}" ]; then
             echo "latest release of ${SCREENCOMP_REPO} has no tag_name: ${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" >&2
             return 1

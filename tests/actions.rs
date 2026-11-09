@@ -2888,4 +2888,33 @@ mod install_action {
             }
         }
     }
+
+    #[test]
+    fn a_token_with_config_metacharacters_reaches_the_server_verbatim() {
+        let token = r#"a"b\c"#;
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("GH_TOKEN", token);
+        });
+        assert!(run.success, "{}", run.output());
+        let lookup = run.hits.iter().find(|hit| hit.op == Op::Lookup).unwrap();
+        assert_eq!(
+            lookup.authorization.as_deref().map(str::trim_end),
+            Some(format!("Bearer {token}").as_str())
+        );
+    }
+
+    #[test]
+    fn a_token_with_a_newline_is_refused_before_any_request() {
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("GH_TOKEN", "abc\nurl = \"http://elsewhere\"");
+        });
+        assert!(!run.success, "{}", run.output());
+        assert!(run.hits.is_empty());
+        assert!(
+            run.stderr.contains("without control characters"),
+            "{}",
+            run.stderr
+        );
+        run.assert_nothing_installed();
+    }
 }
