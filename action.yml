@@ -37,6 +37,88 @@ runs:
       run: |
         set -euo pipefail
 
+        # Environment-only knobs below exist so tests can point the install at a
+        # local server and shrink its waits; they are not part of the action's
+        # interface and are unset in real runs.
+        github_url="${SCREENCOMP_INSTALL_GITHUB_URL:-https://github.com}"
+        github_api_url="${SCREENCOMP_INSTALL_GITHUB_API_URL:-https://api.github.com}"
+        max_attempts=6
+        attempt_timeout="${SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT:-60}"
+        retry_base_ms="${SCREENCOMP_INSTALL_RETRY_BASE_MS:-2000}"
+        retry_cap_ms="${SCREENCOMP_INSTALL_RETRY_CAP_MS:-15000}"
+
+        fetch() {
+          # fetch <description> <url> <destination> [bearer-token]
+          # Retries transient failures (5xx, 408, 429, timeouts, dropped
+          # connections) with capped exponential backoff, and stops at the first
+          # permanent one. The token travels on stdin so it stays out of `ps`.
+          local description="$1" url="$2" dest="$3" token="${4:-}"
+          local attempt=1 delay_ms="${retry_base_ms}" config="" status exit_code failure transient
+          if [ -n "${token}" ]; then
+            config="header = \"Authorization: Bearer ${token}\""
+          fi
+          while :; do
+            exit_code=0
+            status="$(curl -fsSL -o "${dest}" "${url}" \
+              --config - --connect-timeout 10 --max-time "${attempt_timeout}" \
+              --write-out '%{http_code}' <<<"${config}")" || exit_code=$?
+            if [ "${exit_code}" -eq 0 ]; then
+              return 0
+            fi
+            rm -f "${dest}"
+            transient=false
+            if [ "${exit_code}" -eq 22 ]; then
+              failure="HTTP ${status}"
+              case "${status}" in
+                408 | 429 | 5??) transient=true ;;
+                404)
+                  echo "${description} not found (HTTP 404): ${url}" >&2
+                  return 1
+                  ;;
+              esac
+            else
+              failure="curl exit ${exit_code}"
+              case "${exit_code}" in
+                # DNS, connect, HTTP/2, partial body, timeout, TLS handshake,
+                # empty reply, send/receive errors, HTTP/2 stream errors.
+                5 | 6 | 7 | 16 | 18 | 28 | 35 | 52 | 55 | 56 | 92) transient=true ;;
+              esac
+            fi
+            if [ "${transient}" != true ]; then
+              echo "${description} failed (${failure}): ${url}" >&2
+              return 1
+            fi
+            if [ "${attempt}" -ge "${max_attempts}" ]; then
+              echo "${description} failed after ${attempt} attempts (last error: ${failure}): ${url}" >&2
+              return 1
+            fi
+            if [ "${delay_ms}" -gt "${retry_cap_ms}" ]; then
+              delay_ms="${retry_cap_ms}"
+            fi
+            local delay
+            delay="$(printf '%d.%03d' "$((delay_ms / 1000))" "$((delay_ms % 1000))")"
+            echo "${description} failed (${failure}) on attempt ${attempt}/${max_attempts}; retrying in ${delay}s: ${url}" >&2
+            sleep "${delay}"
+            delay_ms=$((delay_ms * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        latest_tag() {
+          # $1 is a scratch directory. Parsed with grep because neither gh nor
+          # jq is guaranteed on a self-hosted runner or job container; an escaped
+          # "tag_name" inside a release body cannot match the quoted key.
+          local response="$1/latest-release.json" tag_value
+          fetch "latest release of ${SCREENCOMP_REPO}" \
+            "${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" "${response}" "${GH_TOKEN:-}" || return 1
+          tag_value="$(grep -Eo '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' "${response}" | head -n 1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+          if [ -z "${tag_value}" ]; then
+            echo "latest release of ${SCREENCOMP_REPO} has no tag_name: ${github_api_url}/repos/${SCREENCOMP_REPO}/releases/latest" >&2
+            return 1
+          fi
+          printf '%s\n' "${tag_value}"
+        }
+
         verify_checksum() {
           # $1 is a sha256sum-format file; the archive it names must be in the
           # current directory. Refuse to install a binary that does not match.
@@ -96,9 +178,10 @@ runs:
           fi
           local target="${arch_part}-${os_part}"
 
+          local work; work="$(mktemp -d)"
           local tag="${SCREENCOMP_VERSION}"
           if [ "${tag}" = "latest" ]; then
-            tag="$(gh release view --repo "${SCREENCOMP_REPO}" --json tagName --jq .tagName)"
+            tag="$(latest_tag "${work}")"
           fi
 
           # taiki-e/upload-rust-binary-action names the checksum after the
@@ -106,12 +189,14 @@ runs:
           local stem="screencomp-${tag}-${target}"
           local asset="${stem}.${ext}"
           local sums="${stem}.sha256"
-          local base="https://github.com/${SCREENCOMP_REPO}/releases/download/${tag}"
-          local work; work="$(mktemp -d)"
+          local base="${github_url}/${SCREENCOMP_REPO}/releases/download/${tag}"
           echo "Installing screencomp ${tag} (${target})"
-          curl -fsSL -o "${work}/${asset}" "${base}/${asset}"
-          curl -fsSL -o "${work}/${sums}" "${base}/${sums}"
-          (cd "${work}" && verify_checksum "${sums}")
+          fetch "release archive ${asset}" "${base}/${asset}" "${work}/${asset}"
+          fetch "release checksum ${sums}" "${base}/${sums}" "${work}/${sums}"
+          if ! (cd "${work}" && verify_checksum "${sums}"); then
+            echo "refusing to install: ${asset} does not match its published checksum ${sums}" >&2
+            return 1
+          fi
 
           local bindir="${RUNNER_TEMP:-${work}}/screencomp-bin"
           mkdir -p "${bindir}"

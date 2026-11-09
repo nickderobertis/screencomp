@@ -2161,3 +2161,503 @@ fn the_in_container_capture_script_needs_no_root() {
         );
     }
 }
+
+/// Drives the root action's real "Install screencomp" step against a local
+/// server standing in for GitHub's release downloads and REST API.
+#[cfg(unix)]
+mod install_action {
+    use std::collections::HashMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    use sha2::{Digest as _, Sha256};
+    use tempfile::TempDir;
+
+    use super::{action_step_script, command, path_str, repo_file};
+
+    const TAG: &str = "v9.9.9";
+    /// The attempt limit the action ships with.
+    const MAX_ATTEMPTS: usize = 6;
+    /// The test backoff, in milliseconds: base 20 doubling to a cap of 80.
+    const SCALED_DELAYS_MS: [u64; 5] = [20, 40, 80, 80, 80];
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    enum Op {
+        Lookup,
+        Archive,
+        Checksum,
+    }
+
+    const OPS: [Op; 3] = [Op::Lookup, Op::Archive, Op::Checksum];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Reply {
+        Valid,
+        Status(u16),
+        /// Accept the request and never answer it, so the client times out.
+        Hang,
+        /// Read the request, then close the connection without answering.
+        Drop,
+        WrongChecksum,
+        /// A 200 lookup response that carries no tag.
+        NoTag,
+    }
+
+    const TRANSIENT: [Reply; 3] = [Reply::Status(504), Reply::Hang, Reply::Drop];
+
+    #[derive(Clone, Debug)]
+    struct Hit {
+        op: Op,
+        at: Instant,
+        authorization: Option<String>,
+    }
+
+    type Plan = HashMap<Op, Vec<Reply>>;
+
+    struct Server {
+        url: String,
+        hits: Arc<Mutex<Vec<Hit>>>,
+    }
+
+    /// A tar.gz of the real binary, built once per test process.
+    fn archive() -> &'static [u8] {
+        static ARCHIVE: OnceLock<Vec<u8>> = OnceLock::new();
+        ARCHIVE.get_or_init(|| {
+            let dir = TempDir::new().unwrap();
+            std::fs::copy(
+                env!("CARGO_BIN_EXE_screencomp"),
+                dir.path().join("screencomp"),
+            )
+            .unwrap();
+            let tar = dir.path().join("out.tar.gz");
+            let status = command("tar")
+                .arg("-czf")
+                .arg(&tar)
+                .arg("-C")
+                .arg(dir.path())
+                .arg("screencomp")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::read(tar).unwrap()
+        })
+    }
+
+    fn read_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+        }
+        String::from_utf8_lossy(&request).into_owned()
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &[u8]) {
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        // A client that gave up mid-response is not a server failure.
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+    }
+
+    fn classify(path: &str) -> Option<Op> {
+        if path.ends_with("/releases/latest") {
+            Some(Op::Lookup)
+        } else if path.ends_with(".tar.gz") {
+            Some(Op::Archive)
+        } else if path.ends_with(".sha256") {
+            Some(Op::Checksum)
+        } else {
+            None
+        }
+    }
+
+    fn valid_body(op: Op, path: &str) -> Vec<u8> {
+        match op {
+            // The release body carries an escaped decoy that must not be read
+            // as the tag.
+            Op::Lookup => format!(
+                r#"{{"body":"see \"tag_name\": \"v0.0.1\"","tag_name":"{TAG}","draft":false}}"#
+            )
+            .into_bytes(),
+            Op::Archive => archive().to_vec(),
+            Op::Checksum => checksum_line(&format!("{:x}", Sha256::digest(archive())), path),
+        }
+    }
+
+    /// A `sha256sum` line naming the archive the requested checksum belongs to.
+    fn checksum_line(digest: &str, path: &str) -> Vec<u8> {
+        let file = path.rsplit('/').next().unwrap();
+        let stem = file.strip_suffix(".sha256").unwrap();
+        format!("{digest}  {stem}.tar.gz\n").into_bytes()
+    }
+
+    fn serve(mut stream: TcpStream, plan: &Plan, hits: &Mutex<Vec<Hit>>) {
+        let request = read_request(&mut stream);
+        let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let Some(op) = classify(&path) else {
+            respond(&mut stream, 400, b"unexpected path");
+            return;
+        };
+        let authorization = request
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("authorization: ")
+                    .or(line.strip_prefix("Authorization: "))
+            })
+            .map(str::to_owned);
+        let attempt = {
+            let mut hits = hits.lock().unwrap();
+            hits.push(Hit {
+                op,
+                at: Instant::now(),
+                authorization,
+            });
+            hits.iter().filter(|hit| hit.op == op).count() - 1
+        };
+        let replies = plan.get(&op).map_or(&[Reply::Valid][..], Vec::as_slice);
+        match replies[attempt.min(replies.len() - 1)] {
+            Reply::Valid => respond(&mut stream, 200, &valid_body(op, &path)),
+            Reply::Status(status) => respond(&mut stream, status, b"failure page"),
+            Reply::Hang => {
+                // Hold the connection until the client hits its timeout.
+                let mut sink = [0_u8; 64];
+                while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+            }
+            Reply::Drop => drop(stream),
+            Reply::WrongChecksum => {
+                let body = checksum_line(&"0".repeat(64), &path);
+                respond(&mut stream, 200, &body);
+            }
+            Reply::NoTag => respond(&mut stream, 200, b"{}"),
+        }
+    }
+
+    fn start_server(plan: Plan) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let plan = Arc::new(plan);
+        let thread_hits = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let plan = Arc::clone(&plan);
+                let hits = Arc::clone(&thread_hits);
+                std::thread::spawn(move || serve(stream, &plan, &hits));
+            }
+        });
+        Server { url, hits }
+    }
+
+    struct Install {
+        _work: TempDir,
+        server_url: String,
+        hits: Vec<Hit>,
+        success: bool,
+        stdout: String,
+        stderr: String,
+        elapsed: Duration,
+        path_file: std::path::PathBuf,
+        runner_temp: std::path::PathBuf,
+        sleeps: Option<String>,
+    }
+
+    impl Install {
+        fn attempts(&self, op: Op) -> Vec<Instant> {
+            self.hits
+                .iter()
+                .filter(|hit| hit.op == op)
+                .map(|hit| hit.at)
+                .collect()
+        }
+
+        fn output(&self) -> String {
+            format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
+        }
+
+        fn assert_nothing_installed(&self) {
+            assert!(!self.path_file.exists(), "{}", self.output());
+            assert!(
+                !self.runner_temp.join("screencomp-bin/screencomp").exists(),
+                "{}",
+                self.output()
+            );
+        }
+
+        /// What the failure message must name for `op`.
+        fn expected_name_and_url(&self, op: Op) -> (String, String) {
+            let url = &self.server_url;
+            match op {
+                Op::Lookup => (
+                    "latest release of owner/repo".to_owned(),
+                    format!("{url}/api/repos/owner/repo/releases/latest"),
+                ),
+                Op::Archive => (
+                    format!("release archive screencomp-{TAG}-"),
+                    format!("{url}/owner/repo/releases/download/{TAG}/screencomp-{TAG}-"),
+                ),
+                Op::Checksum => (
+                    format!("release checksum screencomp-{TAG}-"),
+                    format!("{url}/owner/repo/releases/download/{TAG}/screencomp-{TAG}-"),
+                ),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Timing {
+        /// Millisecond backoff and a one-second attempt timeout.
+        Scaled,
+        /// The shipped schedule, with `sleep` recording instead of waiting.
+        ShippedWithRecordedSleep,
+    }
+
+    fn install(plan: Plan, version: &str, timing: Timing) -> Install {
+        let server = start_server(plan);
+        let work = TempDir::new().unwrap();
+        let runner_temp = work.path().join("runner");
+        std::fs::create_dir(&runner_temp).unwrap();
+        let path_file = work.path().join("github-path");
+        let script = action_step_script(&repo_file("action.yml"), "Install screencomp");
+
+        let mut cmd = command("bash");
+        cmd.arg("-c")
+            .arg(script)
+            .current_dir(work.path())
+            .env("SCREENCOMP_VERSION", version)
+            .env("SCREENCOMP_METHOD", "download")
+            .env("SCREENCOMP_REPO", "owner/repo")
+            .env("SCREENCOMP_ACTION_PATH", work.path())
+            .env("GH_TOKEN", "test-token")
+            .env("RUNNER_TEMP", &runner_temp)
+            .env("GITHUB_PATH", &path_file)
+            .env("SCREENCOMP_INSTALL_GITHUB_URL", &server.url)
+            .env(
+                "SCREENCOMP_INSTALL_GITHUB_API_URL",
+                format!("{}/api", server.url),
+            );
+        let sleep_log = work.path().join("sleeps");
+        match timing {
+            Timing::Scaled => {
+                cmd.env("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT", "1")
+                    .env("SCREENCOMP_INSTALL_RETRY_BASE_MS", "20")
+                    .env("SCREENCOMP_INSTALL_RETRY_CAP_MS", "80");
+            }
+            Timing::ShippedWithRecordedSleep => {
+                let bin = work.path().join("bin");
+                std::fs::create_dir(&bin).unwrap();
+                let stub = bin.join("sleep");
+                std::fs::write(
+                    &stub,
+                    format!("#!/bin/sh\necho \"$1\" >>'{}'\n", path_str(&sleep_log)),
+                )
+                .unwrap();
+                let made_executable = command("chmod").arg("+x").arg(&stub).status().unwrap();
+                assert!(made_executable.success());
+                let path = std::env::var("PATH").unwrap();
+                cmd.env("PATH", format!("{}:{path}", path_str(&bin)));
+            }
+        }
+
+        let started = Instant::now();
+        let output = cmd.output().unwrap();
+        let elapsed = started.elapsed();
+        let hits = server.hits.lock().unwrap().clone();
+        Install {
+            sleeps: std::fs::read_to_string(&sleep_log).ok(),
+            server_url: server.url,
+            hits,
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            elapsed,
+            path_file,
+            runner_temp,
+            _work: work,
+        }
+    }
+
+    /// The tag-lookup path only runs for `latest`, so only it installs `latest`.
+    fn version_for(op: Op) -> &'static str {
+        if op == Op::Lookup { "latest" } else { TAG }
+    }
+
+    fn plan_for(op: Op, replies: Vec<Reply>) -> Plan {
+        HashMap::from([(op, replies)])
+    }
+
+    /// Run `check` for every operation and reply on its own thread: the
+    /// timeout cases each spend whole seconds waiting.
+    fn for_each_case(replies: &[Reply], check: impl Fn(Op, Reply) + Sync) {
+        std::thread::scope(|scope| {
+            for op in OPS {
+                for &reply in replies {
+                    let check = &check;
+                    scope.spawn(move || check(op, reply));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn transient_failures_are_retried_until_a_valid_answer_installs_a_working_binary() {
+        for_each_case(&TRANSIENT, |op, reply| {
+            let run = install(
+                plan_for(op, vec![reply, reply, Reply::Valid]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(run.success, "{op:?}/{reply:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), 3, "{op:?}/{reply:?}");
+
+            let bindir = std::fs::read_to_string(&run.path_file).unwrap();
+            let binary = Path::new(bindir.trim()).join("screencomp");
+            let version = command(&binary).arg("--version").output().unwrap();
+            assert!(version.status.success(), "{op:?}/{reply:?}");
+            assert!(
+                String::from_utf8_lossy(&version.stdout).starts_with("screencomp "),
+                "{op:?}/{reply:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn the_lookup_alone_carries_the_token() {
+        let run = install(Plan::new(), "latest", Timing::Scaled);
+        assert!(run.success, "{}", run.output());
+        for hit in &run.hits {
+            let expected = (hit.op == Op::Lookup).then(|| "Bearer test-token".to_owned());
+            assert_eq!(hit.authorization, expected, "{:?}", hit.op);
+        }
+        assert!(!run.output().contains("test-token"), "{}", run.output());
+    }
+
+    #[test]
+    fn persistent_transient_failure_stops_after_bounded_growing_attempts() {
+        for_each_case(&TRANSIENT, |op, reply| {
+            let run = install(plan_for(op, vec![reply]), version_for(op), Timing::Scaled);
+            assert!(!run.success, "{op:?}/{reply:?}: {}", run.output());
+            run.assert_nothing_installed();
+
+            let attempts = run.attempts(op);
+            assert_eq!(attempts.len(), MAX_ATTEMPTS, "{op:?}/{reply:?}");
+            let backoff: u64 = SCALED_DELAYS_MS.iter().sum();
+            let limit =
+                Duration::from_millis(backoff) + Duration::from_secs(MAX_ATTEMPTS as u64 + 30);
+            assert!(run.elapsed < limit, "{op:?}/{reply:?}: {:?}", run.elapsed);
+
+            let (name, url) = run.expected_name_and_url(op);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                    && failure.contains(&name)
+                    && failure.contains(&url),
+                "{op:?}/{reply:?}: {failure}"
+            );
+
+            for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                let gap = attempts[index + 1] - attempts[index];
+                assert!(
+                    gap >= Duration::from_millis(*delay_ms),
+                    "{op:?}/{reply:?}: attempt gap {index} was {gap:?}"
+                );
+            }
+            let announced: Vec<&str> = run
+                .stderr
+                .lines()
+                .filter_map(|line| line.split_once("retrying in ")?.1.split_once('s'))
+                .map(|(delay, _)| delay)
+                .collect();
+            assert_eq!(
+                announced,
+                ["0.020", "0.040", "0.080", "0.080", "0.080"],
+                "{op:?}/{reply:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn the_shipped_schedule_doubles_to_its_cap_for_every_operation() {
+        for op in OPS {
+            let run = install(
+                plan_for(op, vec![Reply::Status(503)]),
+                version_for(op),
+                Timing::ShippedWithRecordedSleep,
+            );
+            assert!(!run.success, "{op:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), MAX_ATTEMPTS, "{op:?}");
+            let sleeps = run.sleeps.clone().unwrap_or_default();
+            assert_eq!(
+                sleeps.lines().collect::<Vec<_>>(),
+                ["2.000", "4.000", "8.000", "15.000", "15.000"],
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permanent_failure_stops_after_one_attempt_and_names_what_is_missing() {
+        for op in OPS {
+            let run = install(
+                plan_for(op, vec![Reply::Status(404)]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(!run.success, "{op:?}: {}", run.output());
+            run.assert_nothing_installed();
+            assert_eq!(run.attempts(op).len(), 1, "{op:?}");
+            let (name, url) = run.expected_name_and_url(op);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.contains(&name) && failure.contains(&url) && failure.contains("not found"),
+                "{op:?}: {failure}"
+            );
+            assert!(!run.stderr.contains("retrying"), "{op:?}: {}", run.stderr);
+        }
+    }
+
+    #[test]
+    fn a_forbidden_response_is_not_retried() {
+        let run = install(
+            plan_for(Op::Archive, vec![Reply::Status(403)]),
+            TAG,
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert_eq!(run.attempts(Op::Archive).len(), 1);
+        assert!(run.stderr.contains("failed (HTTP 403)"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn an_archive_with_a_mismatched_checksum_is_refused() {
+        let run = install(
+            plan_for(Op::Checksum, vec![Reply::WrongChecksum]),
+            TAG,
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert!(run.stderr.contains("refusing to install"), "{}", run.stderr);
+        assert_eq!(run.attempts(Op::Checksum).len(), 1);
+        run.assert_nothing_installed();
+    }
+
+    #[test]
+    fn a_lookup_without_a_tag_fails_with_a_clear_message() {
+        let run = install(
+            plan_for(Op::Lookup, vec![Reply::NoTag]),
+            "latest",
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert!(run.stderr.contains("has no tag_name"), "{}", run.stderr);
+        assert!(run.attempts(Op::Archive).is_empty());
+    }
+}
