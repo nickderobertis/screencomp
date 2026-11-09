@@ -237,10 +237,45 @@ the exact subpath it would have deployed to, and a run-wide `deploy-pages` job
 merges them and publishes **one** commit — the same tree N pushes into N
 `destination_dir`s produced, with one commit and one Pages build instead of N.
 That also stops the branch accreting a run's worth of PNG blobs per project. It
-then waits for that build and **fails the run if it errored**, retrying once
-first, since a superseded build is transient and the identical commit builds
-cleanly unraced. A single-project run is unaffected: one artifact, one commit,
-one build, exactly as before.
+then waits for that build. A single-project run is unaffected: one artifact, one
+commit, one build, exactly as before.
+
+When that build ends `errored`, the gate recovers in this order, and each path
+needs only the permission named:
+
+1. **A newer build (`pages: read`).** The gate waits for up to the same bound it
+   gives a deploy's own build to appear (`APPEAR_ATTEMPTS` polls, ~2 minutes). If
+   another deploy superseded this one and that newer build settles `built`, the
+   gate passes without requesting anything: the branch content converges, so the
+   newer build publishes this gallery too. A newer build still running at the
+   settle bound fails the run.
+2. **One rebuild request (`pages: write`).** With no newer build, or one that also
+   errored, the gate asks for one fresh build of the same commit.
+3. **One empty commit (`contents: write`, best effort on the default token).** If
+   the rebuild request is refused, the gate `git push`es one empty commit, never
+   forced, to the branch Pages builds from. GitHub's documentation says a push made
+   with `GITHUB_TOKEN` does not trigger a Pages build. In practice this action's own
+   `git push` deploys with `github_token` do start them, and the recovery push uses
+   that same token, transport and branch, which is what this step relies on. GitHub
+   does not promise it, and the recovery push itself is proven against real GitHub
+   only once a consumer's CI meets this race. A push with a personal access token,
+   which is what an external `pages-repository` uses via `pages-token`, is the
+   documented trigger. **Only `pages: write` gives a supported
+   recovery on the default token.**
+
+Neither recovery is attempted twice, and they differ in how they finish:
+
+- After an accepted rebuild request (step 2), the rebuild must settle `built`. Any
+  other result fails the run at once with a stale-gallery error that gives the
+  status but not a build ID.
+- After the empty commit (step 3), a build that ends `errored` gets one more look
+  for a newer build. If a newer build settles `built`, the run passes. If none
+  does, the run fails naming the last errored build. A build still running at the
+  settle bound fails with the still-running message, which names no build.
+- If the empty commit is refused or starts no build, the run fails naming the
+  errored build and the `pages:write` remedy. A step of the push that fails first
+  warns with git's own error, token redacted, so a refused credential and a push
+  rejected by a concurrent deploy read differently.
 
 Coalescing removes the race a run creates for itself, not one created from
 outside it (a scheduled prune, a second repository deploying into a shared
