@@ -435,7 +435,7 @@ _actions-test:
 _lint-visual-docs: _ensure-actionlint
     actionlint .github/workflows/visual-docs-reusable.yml .github/workflows/test-visual-docs.yml .github/workflows/test-gh-pages-maintenance.yml examples/*.yml
     @command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is not installed: https://github.com/koalaman/shellcheck#installing" >&2; exit 1; }
-    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh
+    shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh scripts/install-cargo-binstall.sh scripts/install-rustup.sh
 
 # The definition linters read platform-independent files, so one verdict per tree
 # suffices, and their pinned binaries are Linux-only in practice (none for
@@ -495,10 +495,7 @@ _ensure-tools:
     # Installed even when no tool is missing: the action suite drives the real binary.
     if ! command -v cargo-binstall >/dev/null 2>&1; then
         echo "installing cargo-binstall (prebuilt-binary installer)"
-        installer="$(mktemp)"
-        bash scripts/download.sh https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh "$installer"
-        bash "$installer"
-        rm -f "$installer"
+        bash scripts/install-cargo-binstall.sh
         export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
     fi
     if [ "${#missing[@]}" -eq 0 ]; then

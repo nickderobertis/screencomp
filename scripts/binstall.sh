@@ -12,7 +12,8 @@ max_attempts=4
 attempt_timeout="${SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT:-300}"
 retry_base_ms="${SCREENCOMP_BINSTALL_RETRY_BASE_MS:-5000}"
 retry_cap_ms="${SCREENCOMP_BINSTALL_RETRY_CAP_MS:-20000}"
-for setting in attempt_timeout retry_base_ms retry_cap_ms; do
+kill_grace="${SCREENCOMP_BINSTALL_KILL_GRACE:-5}"
+for setting in attempt_timeout retry_base_ms retry_cap_ms kill_grace; do
   # Nine digits at most keeps the backoff doubling inside shell arithmetic.
   if ! [[ "${!setting}" =~ ^[1-9][0-9]{0,8}$ ]]; then
     echo "binstall.sh: ${setting} must be a positive integer of at most 9 digits, got '${!setting}'" >&2
@@ -32,7 +33,23 @@ expired="${work}/expired"
 set -m
 
 kill_group() {
+  # MSYS signals do not reach a native Windows process tree.
+  local winpid
+  winpid="$(cat "/proc/$1/winpid" 2>/dev/null || true)"
+  if [ -n "${winpid}" ]; then
+    taskkill //T //F //PID "${winpid}" >/dev/null 2>&1 || true
+  fi
   kill "-$2" -- "-$1" 2>/dev/null || kill "-$2" "$1" 2>/dev/null || true
+}
+
+# Whole-second sleeps until the group is gone or the grace period ends.
+group_outlives_grace() {
+  local waited=0
+  while [ "${waited}" -lt "${kill_grace}" ]; do
+    sleep 1
+    kill -0 -- "-$1" 2>/dev/null || return 1
+    waited=$((waited + 1))
+  done
 }
 
 attempt=1
@@ -45,14 +62,19 @@ while :; do
     sleep "${attempt_timeout}"
     : >"${expired}"
     kill_group "${installer}" TERM
-    sleep 5
-    kill_group "${installer}" KILL
+    if group_outlives_grace "${installer}"; then
+      kill_group "${installer}" KILL
+    fi
   ) >/dev/null 2>&1 &
   watchdog=$!
 
   exit_code=0
   wait "${installer}" || exit_code=$?
-  kill_group "${watchdog}" KILL
+  # Once expired the watchdog must finish: the leader can exit on TERM while
+  # descendants that ignored it still await the KILL.
+  if [ ! -e "${expired}" ]; then
+    kill_group "${watchdog}" KILL
+  fi
   wait "${watchdog}" 2>/dev/null || true
   cat "${log}"
 

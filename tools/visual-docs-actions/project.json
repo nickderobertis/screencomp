@@ -18,6 +18,8 @@
       "{workspaceRoot}/scripts/visual-docs-*.sh",
       "{workspaceRoot}/scripts/download.sh",
       "{workspaceRoot}/scripts/binstall.sh",
+      "{workspaceRoot}/scripts/install-cargo-binstall.sh",
+      "{workspaceRoot}/scripts/install-rustup.sh",
       "{workspaceRoot}/scripts/sync-demo-install.sh",
       "{workspaceRoot}/scripts/install.sh",
       "{workspaceRoot}/scripts/setup.sh",

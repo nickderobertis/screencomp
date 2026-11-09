@@ -22,7 +22,9 @@
   publishes untested binaries or images. crates.io publish stays gated behind a
   repo variable and a token secret.
 - Downloads in workflows and recipes go through `scripts/download.sh`, and
-  cargo-binstall through `scripts/binstall.sh`; never a bare `curl`.
+  cargo-binstall through `scripts/binstall.sh`; never a bare `curl`. Upstream's
+  installer scripts are not run: `scripts/install-cargo-binstall.sh` and
+  `scripts/install-rustup.sh` fetch their binaries through download.sh.
   `workflows_and_recipes_only_download_through_the_retrying_mechanism` holds
   this. `action.yml` keeps its own copy of the policy for consumers, and
   `scripts/install.sh` stays standalone, using download.sh only when

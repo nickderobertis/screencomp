@@ -214,7 +214,7 @@ jobs:
       # workflows, so lint the extracted scripts here (shellcheck ships on the
       # runner image).
       - name: shellcheck
-        run: shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh
+        run: shellcheck scripts/visual-docs-gh-pages.sh scripts/visual-docs-pages-build.sh scripts/download.sh scripts/binstall.sh scripts/sync-demo-install.sh scripts/install-cargo-binstall.sh scripts/install-rustup.sh
 
   # Prove the end-user install path, separate from the dev gate: exercise the
   # composite action end to end — install from source, then use the binary it
