@@ -2569,7 +2569,7 @@ mod install_action {
             std::fs::write(
                 &stub,
                 format!(
-                    "#!/bin/sh\ncat >/dev/null\necho call >>'{}'\nexit {code}\n",
+                    "#!/bin/sh\ncat >/dev/null\necho \"$*\" >>'{}'\nexit {code}\n",
                     path_str(&log)
                 ),
             )
@@ -2587,11 +2587,13 @@ mod install_action {
             })
         }
 
-        fn calls(&self) -> usize {
+        /// The argument list of each call, oldest first.
+        fn calls(&self) -> Vec<String> {
             std::fs::read_to_string(&self.log)
                 .unwrap_or_default()
                 .lines()
-                .count()
+                .map(str::to_owned)
+                .collect()
         }
     }
 
@@ -2786,7 +2788,7 @@ mod install_action {
     }
 
     #[test]
-    fn every_retryable_http_status_is_retried() {
+    fn sampled_408_429_and_5xx_statuses_are_retried() {
         let statuses = [408, 429, 500, 502].map(Reply::Status);
         for_each_case(&statuses, |op, reply| {
             let run = install(
@@ -2820,7 +2822,7 @@ mod install_action {
             let stub = CurlStub::exiting_with(code);
             let run = stub.install();
             assert!(!run.success, "exit {code}: {}", run.output());
-            assert_eq!(stub.calls(), MAX_ATTEMPTS, "exit {code}");
+            assert_eq!(stub.calls().len(), MAX_ATTEMPTS, "exit {code}");
             let expected =
                 format!("failed after {MAX_ATTEMPTS} attempts (last error: curl exit {code})");
             assert!(run.stderr.contains(&expected), "{}", run.stderr);
@@ -2832,7 +2834,7 @@ mod install_action {
         let stub = CurlStub::exiting_with(60);
         let run = stub.install();
         assert!(!run.success, "{}", run.output());
-        assert_eq!(stub.calls(), 1);
+        assert_eq!(stub.calls().len(), 1);
         assert!(
             run.stderr.contains("failed (curl exit 60)"),
             "{}",
@@ -2916,5 +2918,22 @@ mod install_action {
             run.stderr
         );
         run.assert_nothing_installed();
+    }
+
+    /// Asserted on curl's arguments: a connection that never completes needs an
+    /// unroutable address, which an offline suite cannot rely on.
+    #[test]
+    fn every_attempt_bounds_its_connection_and_total_time() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install();
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        for call in calls {
+            assert!(
+                call.contains("--connect-timeout 10") && call.contains("--max-time 2"),
+                "{call}"
+            );
+        }
     }
 }
