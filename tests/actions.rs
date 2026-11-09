@@ -4147,6 +4147,202 @@ mod install_action {
             assert!(stderr.contains("--list-assets needs --version"), "{stderr}");
         }
 
+        /// A scratch PATH holding `just` and a `curl` that delivers `fixture`
+        /// (or a 404 when absent), so a recipe's own composition really runs.
+        struct Provisioning {
+            work: TempDir,
+            bin: PathBuf,
+            urls: PathBuf,
+        }
+
+        impl Provisioning {
+            fn new(fixture: Option<&[u8]>) -> Self {
+                let work = TempDir::new().unwrap();
+                let bin = work.path().join("path-bin");
+                std::fs::create_dir(&bin).unwrap();
+                std::os::unix::fs::symlink(command_path("just"), bin.join("just")).unwrap();
+                let urls = work.path().join("urls");
+                let delivery = match fixture {
+                    Some(bytes) => {
+                        let file = work.path().join("fixture");
+                        std::fs::write(&file, bytes).unwrap();
+                        format!("cp '{}' \"$out\"\nprintf 200\n", path_str(&file))
+                    }
+                    None => "printf 404\nexit 22\n".to_owned(),
+                };
+                let stub = bin.join("curl");
+                std::fs::write(
+                    &stub,
+                    format!(
+                        "#!/bin/bash\ncat >/dev/null\nprev=\nfor arg; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\necho \"$prev\" >>'{}'\n{delivery}",
+                        path_str(&urls)
+                    ),
+                )
+                .unwrap();
+                make_executable(&stub);
+                Self { work, bin, urls }
+            }
+
+            fn path(&self) -> String {
+                format!("{}:/usr/bin:/bin", path_str(&self.bin))
+            }
+
+            fn run_recipe(&self, recipe: &str) -> (bool, String) {
+                let output = command("just")
+                    .arg(recipe)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .env("PATH", self.path())
+                    .env("CARGO_HOME", self.work.path().join("cargo-home"))
+                    .env("HOME", self.work.path())
+                    .output()
+                    .unwrap();
+                (
+                    output.status.success(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )
+            }
+
+            fn installed(&self, tool: &str) -> PathBuf {
+                self.work.path().join("cargo-home/bin").join(tool)
+            }
+        }
+
+        /// A tar.gz holding one executable named `tool`.
+        fn tool_archive(tool: &str) -> Vec<u8> {
+            let dir = TempDir::new().unwrap();
+            let binary = dir.path().join(tool);
+            std::fs::write(&binary, "#!/bin/sh\necho provisioned\n").unwrap();
+            make_executable(&binary);
+            let packed = dir.path().join("packed.tgz");
+            let status = command("tar")
+                .arg("-czf")
+                .arg(&packed)
+                .arg("-C")
+                .arg(dir.path())
+                .arg(tool)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::read(packed).unwrap()
+        }
+
+        fn assert_provisioned(tool: &str, setup: &Provisioning, stderr: &str) {
+            let output = command(setup.installed(tool)).output().unwrap();
+            assert!(output.status.success(), "{tool}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "provisioned",
+                "{tool}"
+            );
+        }
+
+        #[test]
+        fn the_actionlint_recipe_extracts_what_it_downloaded() {
+            let setup = Provisioning::new(Some(&tool_archive("actionlint")));
+            let (success, stderr) = setup.run_recipe("_ensure-actionlint");
+            assert!(success, "{stderr}");
+            assert_provisioned("actionlint", &setup, &stderr);
+            let urls = read_lines(&setup.urls);
+            assert_eq!(urls.len(), 1, "{urls:?}");
+            assert!(
+                urls[0].contains("/rhysd/actionlint/releases/download/v"),
+                "{urls:?}"
+            );
+        }
+
+        #[test]
+        fn the_actionlint_recipe_names_a_corrupt_archive() {
+            let setup = Provisioning::new(Some(b"not an archive"));
+            let (success, stderr) = setup.run_recipe("_ensure-actionlint");
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not extract actionlint"), "{stderr}");
+            assert!(!setup.installed("actionlint").exists());
+        }
+
+        #[test]
+        fn the_single_binary_recipes_install_an_executable() {
+            for (recipe, tool, repository) in [
+                ("_ensure-lefthook", "lefthook", "/evilmartians/lefthook/"),
+                ("_ensure-hadolint", "hadolint", "/hadolint/hadolint/"),
+            ] {
+                let setup = Provisioning::new(Some(b"#!/bin/sh\necho provisioned\n"));
+                let (success, stderr) = setup.run_recipe(recipe);
+                assert!(success, "{recipe}: {stderr}");
+                assert_provisioned(tool, &setup, &stderr);
+                let urls = read_lines(&setup.urls);
+                assert!(urls[0].contains(repository), "{recipe}: {urls:?}");
+            }
+        }
+
+        #[test]
+        fn every_tool_recipe_stops_at_once_on_a_404() {
+            for (recipe, tool) in [
+                ("_ensure-actionlint", "actionlint"),
+                ("_ensure-lefthook", "lefthook"),
+                ("_ensure-hadolint", "hadolint"),
+            ] {
+                let setup = Provisioning::new(None);
+                let (success, stderr) = setup.run_recipe(recipe);
+                assert!(!success, "{recipe}: {stderr}");
+                assert_eq!(read_lines(&setup.urls).len(), 1, "{recipe}: {stderr}");
+                assert!(
+                    stderr.contains("download not found (HTTP 404)"),
+                    "{recipe}: {stderr}"
+                );
+                assert!(!setup.installed(tool).exists(), "{recipe}");
+            }
+        }
+
+        /// The `Install release-plz` step's shell, installing into `bin`.
+        fn release_plz_step(bin: &Path) -> String {
+            let workflow = repo_file(".github/workflows/release-plz.yml");
+            let start = workflow.find("- name: Install release-plz").unwrap();
+            let body = workflow[start..].split_once("run: |\n").unwrap().1;
+            let lines: Vec<&str> = body
+                .lines()
+                .take_while(|line| line.starts_with("          "))
+                .map(|line| &line[10..])
+                .collect();
+            lines.join("\n").replace("/usr/local/bin", &path_str(bin))
+        }
+
+        fn run_release_plz_step(setup: &Provisioning) -> (bool, String) {
+            let output = command("bash")
+                .args(["-eo", "pipefail", "-c", &release_plz_step(&setup.bin)])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", setup.path())
+                .env("RELEASE_PLZ_VERSION", "1.2.3")
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
+        }
+
+        #[test]
+        fn the_release_plz_step_runs_the_binary_it_downloaded() {
+            let setup = Provisioning::new(Some(&tool_archive("release-plz")));
+            let (success, output) = run_release_plz_step(&setup);
+            assert!(success, "{output}");
+            assert!(output.contains("provisioned"), "{output}");
+            let urls = read_lines(&setup.urls);
+            assert!(urls[0].contains("release-plz-v1.2.3/"), "{urls:?}");
+        }
+
+        #[test]
+        fn the_release_plz_step_stops_at_once_on_a_404() {
+            let setup = Provisioning::new(None);
+            let (success, output) = run_release_plz_step(&setup);
+            assert!(!success, "{output}");
+            assert_eq!(read_lines(&setup.urls).len(), 1, "{output}");
+            assert!(!setup.bin.join("release-plz").exists());
+        }
+
         /// `scripts/download.sh` onto an existing file, with `env` applied.
         fn download_over_existing(
             reply: Reply,
@@ -4440,7 +4636,7 @@ mod install_action {
                 format!(
                     "#!/bin/sh\necho \"$*\" >>'{log}'\ncalls=$(wc -l <'{log}')\n\
                      [ \"$calls\" -gt 1 ] || exit 1\n\
-                     case \"$*\" in *'select(.state == \"uploaded\")'*) ;; *) echo incomplete-asset; ;; esac\n\
+                     case \"$*\" in *'select(.state == \"uploaded\")'*) ;; *) scripts/install.sh --list-assets --version {TAG}; exit 0 ;; esac\n\
                      [ \"$calls\" -ge {ready_at} ] || {{ echo uploading.tmp; exit 0; }}\n\
                      scripts/install.sh --list-assets --version {TAG}\n",
                     log = path_str(&log)
