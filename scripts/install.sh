@@ -207,9 +207,9 @@ main() {
     detect_target
 
     if [ -n "$list_assets" ]; then
-        [ -n "$version" ] || err "--list-assets needs --version <tag>"
+        [ -n "$version" ] || err "--list-assets needs --version <tag>; rerun with the release tag, e.g. --version v0.1.0"
         case "$version" in
-            *[!A-Za-z0-9._+-]*) err "invalid release tag for --list-assets: $version" ;;
+            *[!A-Za-z0-9._+-]*) err "invalid release tag for --list-assets: $version; pass a tag such as v0.1.0" ;;
         esac
         printf '%s\n' "${BIN}-${version}-${TARGET}.${EXT}" "${BIN}-${version}-${TARGET}.sha256"
         exit 0

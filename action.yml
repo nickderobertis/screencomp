@@ -82,9 +82,14 @@ runs:
             token="${token//\"/\\\"}"
             config="header = \"Authorization: Bearer ${token}\""
           fi
+          # An https URL must not be redirected to anything weaker.
+          local redirect_args=()
+          case "${url}" in
+            https://*) redirect_args=(--proto-redir "=https") ;;
+          esac
           while :; do
             exit_code=0
-            status="$(curl -fsSL -o "${dest}" "${url}" \
+            status="$(curl -fsSL -o "${dest}" "${url}" --tlsv1.2 ${redirect_args[@]+"${redirect_args[@]}"} \
               --config - --connect-timeout 10 --max-time "${attempt_timeout}" \
               --write-out '%{http_code}' <<<"${config}")" || exit_code=$?
             if [ "${exit_code}" -eq 0 ]; then

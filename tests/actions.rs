@@ -4153,6 +4153,45 @@ mod install_action {
             }
         }
 
+        /// The lines of a downloader that state its retry policy.
+        fn retry_policy(script: &str) -> Vec<String> {
+            let mut lines: Vec<String> = script
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.starts_with("max_attempts=")
+                        || line.starts_with("408 | 429 | 5??)")
+                        || line.starts_with("5 | 6 | 7 |")
+                        || line.contains("--proto-redir")
+                        || line.contains("--connect-timeout")
+                        || line.contains("--tlsv1.2")
+                        || line.ends_with(":-60}\"")
+                        || line.ends_with(":-2000}\"")
+                        || line.ends_with(":-30000}\"")
+                })
+                .map(|line| {
+                    let line = line.replace("SCREENCOMP_INSTALL_", "SCREENCOMP_DOWNLOAD_");
+                    // Only the policy's flags: the two call sites order paths differently.
+                    if line.contains("curl -fsSL") {
+                        "curl --tlsv1.2 redirect-args".to_owned()
+                    } else {
+                        line.replace("--config - ", "")
+                    }
+                })
+                .collect();
+            lines.sort();
+            lines
+        }
+
+        #[test]
+        fn the_action_and_the_repository_downloader_share_one_retry_policy() {
+            let action = action_step_script(&repo_file("action.yml"), "Install screencomp");
+            let downloader = repo_file("scripts/download.sh");
+            let policy = retry_policy(&downloader);
+            assert_eq!(policy.len(), 9, "{policy:?}");
+            assert_eq!(retry_policy(&action), policy);
+        }
+
         #[test]
         fn listing_assets_needs_a_version() {
             let (status, stderr) = script_failure("scripts/install.sh", &["--list-assets"], &[]);
