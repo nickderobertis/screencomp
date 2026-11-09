@@ -35,7 +35,7 @@ DOWNLOADER="${SCREENCOMP_INSTALL_DOWNLOADER:-}"
 for _base_url in "$GITHUB_URL" "$GITHUB_API_URL"; do
     case "$_base_url" in
         http://* | https://*) ;;
-        *) printf 'error: expected an http(s) base URL, got: %s\n' "$_base_url" >&2; exit 1 ;;
+        *) printf 'error: expected an http(s) base URL, got: %s; correct or unset SCREENCOMP_INSTALL_GITHUB_URL and SCREENCOMP_INSTALL_GITHUB_API_URL\n' "$_base_url" >&2; exit 1 ;;
     esac
 done
 BIN="screencomp"

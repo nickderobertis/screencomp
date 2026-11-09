@@ -50,7 +50,7 @@ runs:
         for base_url in "${github_url}" "${github_api_url}"; do
           case "${base_url}" in
             http://* | https://*) ;;
-            *) echo "expected an http(s) base URL, got '${base_url}'" >&2; exit 1 ;;
+            *) echo "expected an http(s) base URL, got '${base_url}'; correct or unset SCREENCOMP_INSTALL_GITHUB_URL and SCREENCOMP_INSTALL_GITHUB_API_URL" >&2; exit 1 ;;
           esac
         done
 
