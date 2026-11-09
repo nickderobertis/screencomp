@@ -319,6 +319,8 @@ jobs:
   # ---- Capture: the ONLY job that runs inside your container ----------------
   # One lane per configured arch, each on a runner of that arch so the pixels
   # match the committed baseline's arch.
+  # A capture-command's `playwright install` runs inside inputs.container, so it is
+  # that image's OS (Noble by default) the Playwright must support, not the runner's.
   capture:
     needs: [pages-preflight, arches]
     if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}

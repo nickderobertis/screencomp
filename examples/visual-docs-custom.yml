@@ -45,6 +45,7 @@ jobs:
   capture:
     if: ${{ github.event_name != 'schedule' && github.event.action != 'closed' }}
     runs-on: ubuntu-latest
+    # `playwright install` below sees this container's OS (Noble), not the runner's.
     container: mcr.microsoft.com/playwright:v1.60.0-noble # pin to your Playwright version
     permissions:
       contents: read
