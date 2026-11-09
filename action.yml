@@ -42,10 +42,10 @@ runs:
         # interface and are unset in real runs.
         github_url="${SCREENCOMP_INSTALL_GITHUB_URL:-https://github.com}"
         github_api_url="${SCREENCOMP_INSTALL_GITHUB_API_URL:-https://api.github.com}"
-        max_attempts=6
+        max_attempts=8
         attempt_timeout="${SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT:-60}"
         retry_base_ms="${SCREENCOMP_INSTALL_RETRY_BASE_MS:-2000}"
-        retry_cap_ms="${SCREENCOMP_INSTALL_RETRY_CAP_MS:-15000}"
+        retry_cap_ms="${SCREENCOMP_INSTALL_RETRY_CAP_MS:-30000}"
 
         fetch() {
           # fetch <description> <url> <destination> [bearer-token]

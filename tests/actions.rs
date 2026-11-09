@@ -2169,6 +2169,7 @@ mod install_action {
     use std::collections::HashMap;
     use std::io::{Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
+    use std::os::unix::process::CommandExt as _;
     use std::path::Path;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
@@ -2179,10 +2180,13 @@ mod install_action {
     use super::{action_step_script, command, path_str, repo_file};
 
     const TAG: &str = "v9.9.9";
+    /// How long one install may run before its test fails, so an installer
+    /// without request timeouts fails rather than hangs the suite.
+    const INSTALL_DEADLINE: Duration = Duration::from_secs(60);
     /// The attempt limit the action ships with.
-    const MAX_ATTEMPTS: usize = 6;
+    const MAX_ATTEMPTS: usize = 8;
     /// The test backoff, in milliseconds: base 20 doubling to a cap of 80.
-    const SCALED_DELAYS_MS: [u64; 5] = [20, 40, 80, 80, 80];
+    const SCALED_DELAYS_MS: [u64; 7] = [20, 40, 80, 80, 80, 80, 80];
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     enum Op {
@@ -2467,17 +2471,39 @@ mod install_action {
             }
         }
 
+        // Output goes to files, not pipes: a surviving curl would otherwise hold
+        // the pipes open past the deadline.
+        let stdout_path = work.path().join("stdout");
+        let stderr_path = work.path().join("stderr");
+        cmd.stdout(std::fs::File::create(&stdout_path).unwrap())
+            .stderr(std::fs::File::create(&stderr_path).unwrap())
+            .process_group(0);
         let started = Instant::now();
-        let output = cmd.output().unwrap();
+        let mut child = cmd.spawn().unwrap();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > INSTALL_DEADLINE {
+                let group = format!("-{}", child.id());
+                let _ = command("kill").args(["-KILL", "--", &group]).status();
+                let _ = child.wait();
+                panic!(
+                    "install script had not exited by the {INSTALL_DEADLINE:?} install deadline; stderr so far:\n{}",
+                    std::fs::read_to_string(&stderr_path).unwrap_or_default()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         let elapsed = started.elapsed();
         let hits = server.hits.lock().unwrap().clone();
         Install {
             sleeps: std::fs::read_to_string(&sleep_log).ok(),
             server_url: server.url,
             hits,
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            success: status.success(),
+            stdout: std::fs::read_to_string(&stdout_path).unwrap(),
+            stderr: std::fs::read_to_string(&stderr_path).unwrap(),
             elapsed,
             path_file,
             runner_temp,
@@ -2578,7 +2604,9 @@ mod install_action {
                 .collect();
             assert_eq!(
                 announced,
-                ["0.020", "0.040", "0.080", "0.080", "0.080"],
+                [
+                    "0.020", "0.040", "0.080", "0.080", "0.080", "0.080", "0.080"
+                ],
                 "{op:?}/{reply:?}"
             );
         });
@@ -2597,7 +2625,9 @@ mod install_action {
             let sleeps = run.sleeps.clone().unwrap_or_default();
             assert_eq!(
                 sleeps.lines().collect::<Vec<_>>(),
-                ["2.000", "4.000", "8.000", "15.000", "15.000"],
+                [
+                    "2.000", "4.000", "8.000", "16.000", "30.000", "30.000", "30.000"
+                ],
                 "{op:?}"
             );
         }
