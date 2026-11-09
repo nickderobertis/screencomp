@@ -73,6 +73,7 @@ concurrency:
 jobs:
   visual-docs:
     runs-on: ubuntu-latest # amd64; the container therefore runs native amd64.
+    # `playwright install` below sees this container's OS (Noble), not the runner's.
     container: mcr.microsoft.com/playwright:v1.60.0-noble # pin to your Playwright version
     permissions:
       contents: read # nothing is pushed back to the branch under the strict gate
