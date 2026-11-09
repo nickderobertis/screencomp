@@ -221,10 +221,9 @@ profile *args:
 bench-tools:
     #!/usr/bin/env bash
     set -euo pipefail
-    declare -A want=([hyperfine]={{hyperfine_version}} [critcmp]={{critcmp_version}} [samply]={{samply_version}})
     missing=()
-    for t in "${!want[@]}"; do
-        command -v "$t" >/dev/null 2>&1 || missing+=("${t}@${want[$t]}")
+    for spec in hyperfine@{{hyperfine_version}} critcmp@{{critcmp_version}} samply@{{samply_version}}; do
+        command -v "${spec%@*}" >/dev/null 2>&1 || missing+=("$spec")
     done
     if [ "${#missing[@]}" -eq 0 ]; then
         echo "performance tools already installed"

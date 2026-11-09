@@ -112,6 +112,7 @@ while :; do
     delay_ms="${retry_cap_ms}"
   fi
   delay="$(printf '%d.%03d' "$((delay_ms / 1000))" "$((delay_ms % 1000))")"
+  # llmlint: ignore[tool_output_is_signal] Each backoff must show in the job log: it is the only sign of why a step is slow or which attempt failed.
   echo "download failed (${failure}) on attempt ${attempt}/${max_attempts}; retrying in ${delay}s: ${url}" >&2
   sleep "${delay}"
   delay_ms=$((delay_ms * 2))
