@@ -12,6 +12,14 @@ const helper = join(root, 'scripts/release-artifact.mjs');
 const pkgName = metadata => metadata.packages.find(p => p.name === 'screencomp').name;
 const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('hex');
 const metadataVersion = () => JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1', '--locked'], { cwd: root, encoding: 'utf8' })).packages.find(p => p.name === 'screencomp').version;
+// GitHub runs a step from a file. `bash -c` would instead send the script through
+// Windows argument quoting, which corrupts the quotes in a long shell step.
+function writeStepScript(dir, script) {
+  const path = join(dir, 'step.sh');
+  writeFileSync(path, script);
+  return path;
+}
+
 // A Mach-O header for the given CPU: enough for the architecture check, never
 // executed. Linux and Windows hosts cannot compile or run a Darwin binary.
 function machoFixture(path, cpu) {
@@ -108,8 +116,12 @@ test('release production commands build, pack, checksum, install and run the rea
     chmodSync(join(transport, 'curl'), 0o755);
     const pathFile = join(actionTemp, 'path');
     const actionEnv = { ...process.env, PATH: `${transport}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`, STAGED_ASSETS: out, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, TMPDIR: actionTemp, GITHUB_PATH: pathFile, GH_TOKEN: 'forge-double' };
-    const installedAction = spawnSync('bash', ['-c', installStep.run], { cwd: root, env: actionEnv, encoding: 'utf8' });
+    const installedAction = spawnSync('bash', [writeStepScript(out, installStep.run)], { cwd: root, env: actionEnv, encoding: 'utf8' });
     assert.equal(installedAction.status, 0, installedAction.stdout + installedAction.stderr);
+    // sync-demo-install.sh waits for these names, so they must match what release production uploads.
+    const listed = spawnSync('bash', ['scripts/install.sh', '--list-assets', '--version', tag], { cwd: root, encoding: 'utf8' });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split('\n').map(line => line.trim()), [contract.archive, contract.checksum]);
     assert.match(installedAction.stdout, new RegExp(`screencomp ${version.replaceAll('.', '\\.')}`));
     const actionBinary = join(readFileSync(pathFile, 'utf8').trim(), target.includes('windows') ? golden.windowsBinary : golden.binary);
     assert.equal(createHash('sha256').update(readFileSync(actionBinary)).digest('hex'), contract.binarySha256);
@@ -361,7 +373,7 @@ test('installers refuse Intel macOS and install the Apple Silicon artifact on ar
       const env = { ...process.env, PATH: `${bin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}` };
       const installed = join(dir, name, 'installed'); const actionTemp = join(dir, name, 'runner'); mkdirSync(actionTemp);
       const script = spawnSync('bash', ['scripts/install.sh', '--version', tag, '--to', installed], { cwd: root, env, encoding: 'utf8' });
-      const viaAction = spawnSync('bash', ['-c', action.run], { cwd: root, encoding: 'utf8', env: { ...env, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, GITHUB_PATH: join(actionTemp, 'path'), GH_TOKEN: 'forge-double' } });
+      const viaAction = spawnSync('bash', [writeStepScript(dir, action.run)], { cwd: root, encoding: 'utf8', env: { ...env, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, GITHUB_PATH: join(actionTemp, 'path'), GH_TOKEN: 'forge-double' } });
       return { script, viaAction, installed, actionTemp, requests: existsSync(requests) ? readFileSync(requests, 'utf8').trim().split('\n') : [] };
     };
 

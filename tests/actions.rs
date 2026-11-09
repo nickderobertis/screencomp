@@ -15,11 +15,7 @@ use clap::Parser as _;
 use screencomp::{AppError, Cli, run};
 use tempfile::TempDir;
 
-// The subprocess helpers and fixtures serve only the `#[cfg(unix)]` tests, which
-// run the shipped shell scripts.
-#[cfg(unix)]
 mod common;
-#[cfg(unix)]
 use common::command;
 
 #[cfg(unix)]
@@ -2979,5 +2975,3327 @@ fn the_in_container_capture_script_needs_no_root() {
             !script.contains(root_only),
             "demo/capture.sh runs as the invoking uid inside the container, which cannot `{root_only}`: {script}"
         );
+    }
+}
+
+/// Drives `scripts/binstall.sh` and the real cargo-binstall under Git Bash, where
+/// signals do not reach native processes and the watchdog needs `taskkill`.
+#[cfg(windows)]
+mod binstall_on_windows {
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use tempfile::TempDir;
+
+    use super::command;
+
+    /// Explicit because `bash` alone resolves to System32's WSL launcher.
+    const GIT_BASH: &str = r"C:\Program Files\Git\bin\bash.exe";
+    const DEADLINE: Duration = Duration::from_secs(120);
+
+    #[derive(Clone, Copy)]
+    enum Reply {
+        Status(u16),
+        Hang,
+    }
+
+    fn read_request(stream: &mut TcpStream) {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+        }
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &[u8]) {
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+    }
+
+    /// A tgz holding the real `screencomp.exe` at its root.
+    fn package(dir: &Path) -> Vec<u8> {
+        std::fs::copy(env!("CARGO_BIN_EXE_screencomp"), dir.join("screencomp.exe")).unwrap();
+        let tgz = dir.join("package.tgz");
+        let status = command("tar")
+            .arg("-czf")
+            .arg(&tgz)
+            .arg("-C")
+            .arg(dir)
+            .arg("screencomp.exe")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(tgz).unwrap()
+    }
+
+    struct Connections {
+        opened: AtomicUsize,
+        closed: AtomicUsize,
+    }
+
+    /// Serves the failure until `recover_after` shows the script backing off.
+    fn start_server(
+        reply: Reply,
+        recover_after: Option<PathBuf>,
+        body: Vec<u8>,
+    ) -> (String, Arc<Connections>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/screencomp.tgz", listener.local_addr().unwrap());
+        let connections = Arc::new(Connections {
+            opened: AtomicUsize::new(0),
+            closed: AtomicUsize::new(0),
+        });
+        let shared = Arc::clone(&connections);
+        let body = Arc::new(body);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let shared = Arc::clone(&shared);
+                let body = Arc::clone(&body);
+                let recover_after = recover_after.clone();
+                std::thread::spawn(move || {
+                    read_request(&mut stream);
+                    let recovered = recover_after.is_some_and(|log| {
+                        std::fs::read_to_string(log).is_ok_and(|text| text.contains("retrying in"))
+                    });
+                    if recovered {
+                        respond(&mut stream, 200, &body);
+                        return;
+                    }
+                    match reply {
+                        Reply::Status(status) => respond(&mut stream, status, b"failure"),
+                        Reply::Hang => {
+                            shared.opened.fetch_add(1, Ordering::SeqCst);
+                            let mut sink = [0_u8; 64];
+                            while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+                            shared.closed.fetch_add(1, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+        });
+        (url, connections)
+    }
+
+    struct Run {
+        work: TempDir,
+        code: Option<i32>,
+        stderr: String,
+        output: String,
+        elapsed: Duration,
+        connections: Arc<Connections>,
+    }
+
+    fn binstall(reply: Reply, recovers: bool, attempt_timeout: &str) -> Run {
+        let work = TempDir::new().unwrap();
+        let manifest = work.path().join("crate");
+        std::fs::create_dir_all(manifest.join("src")).unwrap();
+        std::fs::write(manifest.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            manifest.join("Cargo.toml"),
+            "[package]\nname = \"screencomp\"\nversion = \"9.9.9\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let stdout_path = work.path().join("stdout");
+        let stderr_path = work.path().join("stderr");
+        let body = package(work.path());
+        let (url, connections) = start_server(reply, recovers.then(|| stderr_path.clone()), body);
+        let mut cmd = command(GIT_BASH);
+        cmd.arg("scripts/binstall.sh")
+            .args(["--no-confirm", "--allow-insecure-http", "--no-track"])
+            .args(["--strategies", "crate-meta-data"])
+            .args(["--disable-strategies", "compile,quick-install"])
+            .args(["--no-discover-github-token", "--disable-telemetry"])
+            .args(["--maximum-resolution-timeout", "120"])
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .args(["--pkg-url", &url, "--pkg-fmt", "tgz"])
+            .args(["--bin-dir", "{ bin }{ binary-ext }"])
+            .arg("--root")
+            .arg(work.path().join("root"))
+            .arg("screencomp")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env_remove("GITHUB_TOKEN")
+            .env_remove("GH_TOKEN")
+            .env("CARGO_HOME", work.path().join("cargo-home"))
+            .env("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", attempt_timeout)
+            .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "20")
+            .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "80")
+            .stdout(std::fs::File::create(&stdout_path).unwrap())
+            .stderr(std::fs::File::create(&stderr_path).unwrap());
+        let started = Instant::now();
+        let mut child = cmd.spawn().unwrap();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() > DEADLINE {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "binstall.sh had not exited by {DEADLINE:?}; stderr so far:\n{}",
+                    std::fs::read_to_string(&stderr_path).unwrap_or_default()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let elapsed = started.elapsed();
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+        let stdout = std::fs::read_to_string(&stdout_path).unwrap();
+        Run {
+            code: status.code(),
+            output: format!("stdout:\n{stdout}\nstderr:\n{stderr}"),
+            stderr,
+            elapsed,
+            connections,
+            work,
+        }
+    }
+
+    /// The real `cargo-binstall.exe`, zipped as its release asset is.
+    fn binstall_zip(dir: &Path) -> Vec<u8> {
+        let found = command("where").arg("cargo-binstall").output().unwrap();
+        assert!(found.status.success(), "cargo-binstall is not on PATH");
+        let text = String::from_utf8_lossy(&found.stdout).into_owned();
+        let real = text.lines().next().unwrap().trim().to_owned();
+        std::fs::copy(real, dir.join("cargo-binstall.exe")).unwrap();
+        let zip = dir.join("asset.zip");
+        let script = format!(
+            "Compress-Archive -Path '{}' -DestinationPath '{}'",
+            dir.join("cargo-binstall.exe").display(),
+            zip.display()
+        );
+        let status = command("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(zip).unwrap()
+    }
+
+    #[test]
+    fn the_bootstrap_installer_recovers_extracts_the_zip_and_installs_itself() {
+        let work = TempDir::new().unwrap();
+        let asset_dir = work.path().join("asset");
+        std::fs::create_dir(&asset_dir).unwrap();
+        let body = binstall_zip(&asset_dir);
+        let stderr_path = work.path().join("stderr");
+        let (url, _) = start_server(Reply::Status(504), Some(stderr_path.clone()), body);
+        let base = url.trim_end_matches("/screencomp.tgz");
+        let cargo_home = work.path().join("cargo-home");
+        let output_stderr = std::fs::File::create(&stderr_path).unwrap();
+        let status = command(GIT_BASH)
+            .arg("scripts/install-cargo-binstall.sh")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("CARGO_HOME", &cargo_home)
+            .env("SCREENCOMP_BINSTALL_RELEASE_URL", base)
+            .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+            .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80")
+            .stderr(output_stderr)
+            .status()
+            .unwrap();
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+        assert!(status.success(), "{stderr}");
+        assert!(stderr.contains("retrying in"), "{stderr}");
+        let version = command(cargo_home.join("bin/cargo-binstall.exe"))
+            .arg("-V")
+            .output()
+            .unwrap();
+        assert!(version.status.success(), "{stderr}");
+    }
+
+    #[test]
+    fn a_504_recovers_into_a_working_install() {
+        let run = binstall(Reply::Status(504), true, "60");
+        assert_eq!(run.code, Some(0), "{}", run.output);
+        assert!(run.stderr.contains("retrying in"), "{}", run.output);
+        let version = command(run.work.path().join("root/bin/screencomp.exe"))
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(version.status.success(), "{}", run.output);
+    }
+
+    #[test]
+    fn a_persistent_504_exhausts_its_attempts() {
+        let run = binstall(Reply::Status(504), false, "60");
+        assert_eq!(run.code, Some(94), "{}", run.output);
+        assert_eq!(
+            run.stderr.matches("retrying in").count(),
+            3,
+            "{}",
+            run.output
+        );
+        assert!(
+            run.stderr.contains("failed after 4 attempts"),
+            "{}",
+            run.output
+        );
+    }
+
+    #[test]
+    fn a_404_stops_after_one_attempt() {
+        let run = binstall(Reply::Status(404), false, "60");
+        assert_eq!(run.code, Some(94), "{}", run.output);
+        assert!(!run.stderr.contains("retrying in"), "{}", run.output);
+        assert!(run.stderr.contains("permanent error"), "{}", run.output);
+    }
+
+    #[test]
+    fn a_hung_install_is_stopped_and_its_process_tree_dies() {
+        let run = binstall(Reply::Hang, false, "2");
+        assert_eq!(run.code, Some(124), "{}", run.output);
+        assert!(run.stderr.contains("timed out after 2s"), "{}", run.output);
+        assert!(run.elapsed < DEADLINE, "{:?}", run.elapsed);
+        // Only a dead cargo-binstall.exe closes the hung connections.
+        let opened = run.connections.opened.load(Ordering::SeqCst);
+        assert!(opened > 0, "{}", run.output);
+        let waiting = Instant::now();
+        while run.connections.closed.load(Ordering::SeqCst) < opened {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(10),
+                "cargo-binstall.exe outlived its attempt: {}",
+                run.output
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Drives the root action's real "Install screencomp" step against a local
+/// server standing in for GitHub's release downloads and REST API.
+#[cfg(unix)]
+mod install_action {
+    use std::collections::HashMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::os::unix::process::CommandExt as _;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    use sha2::{Digest as _, Sha256};
+    use tempfile::TempDir;
+
+    use super::{action_step_script, command, path_str, repo_file};
+
+    const TAG: &str = "v9.9.9";
+    /// How long one install may run before its test fails, so an installer
+    /// without request timeouts fails rather than hangs the suite.
+    const INSTALL_DEADLINE: Duration = Duration::from_secs(60);
+    /// The attempt limit the action ships with.
+    const MAX_ATTEMPTS: usize = 8;
+    /// The test backoff, in milliseconds: base 20 doubling to a cap of 80.
+    const SCALED_DELAYS_MS: [u64; 7] = [20, 40, 80, 80, 80, 80, 80];
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    enum Op {
+        Lookup,
+        Archive,
+        Checksum,
+    }
+
+    const OPS: [Op; 3] = [Op::Lookup, Op::Archive, Op::Checksum];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Reply {
+        Valid,
+        Status(u16),
+        /// Accept the request and never answer it, so the client times out.
+        Hang,
+        /// Read the request, then close the connection without answering.
+        Drop,
+        WrongChecksum,
+        /// Promise more body than is sent, then close the connection.
+        Truncated,
+        /// A 200 lookup response that carries no tag.
+        NoTag,
+        /// A 200 lookup response that carries this tag.
+        Tag(&'static str),
+        /// A 200 lookup response with exactly this body.
+        Raw(&'static str),
+    }
+
+    const TRANSIENT: [Reply; 4] = [
+        Reply::Status(504),
+        Reply::Hang,
+        Reply::Drop,
+        Reply::Truncated,
+    ];
+
+    #[derive(Clone, Debug)]
+    struct Hit {
+        op: Op,
+        at: Instant,
+        authorization: Option<String>,
+        path: String,
+    }
+
+    type Plan = HashMap<Op, Vec<Reply>>;
+
+    struct Server {
+        url: String,
+        hits: Arc<Mutex<Vec<Hit>>>,
+    }
+
+    /// A tar.gz of the real binary, built once per test process.
+    fn archive() -> &'static [u8] {
+        static ARCHIVE: OnceLock<Vec<u8>> = OnceLock::new();
+        ARCHIVE.get_or_init(|| {
+            let dir = TempDir::new().unwrap();
+            std::fs::copy(
+                env!("CARGO_BIN_EXE_screencomp"),
+                dir.path().join("screencomp"),
+            )
+            .unwrap();
+            let tar = dir.path().join("out.tar.gz");
+            let status = command("tar")
+                .arg("-czf")
+                .arg(&tar)
+                .arg("-C")
+                .arg(dir.path())
+                .arg("screencomp")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::read(tar).unwrap()
+        })
+    }
+
+    fn read_request(stream: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+        }
+        String::from_utf8_lossy(&request).into_owned()
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &[u8]) {
+        let head = format!(
+            "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        // A client that gave up mid-response is not a server failure.
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+    }
+
+    fn classify(path: &str) -> Option<Op> {
+        if path.ends_with("/releases/latest") {
+            Some(Op::Lookup)
+        } else if path.ends_with(".tar.gz") {
+            Some(Op::Archive)
+        } else if path.ends_with(".sha256") {
+            Some(Op::Checksum)
+        } else {
+            None
+        }
+    }
+
+    fn valid_body(op: Op, path: &str) -> Vec<u8> {
+        match op {
+            // The release body carries an escaped decoy that must not be read
+            // as the tag.
+            Op::Lookup => format!(
+                r#"{{"body":"see \"tag_name\": \"v0.0.1\"","tag_name":"{TAG}","draft":false}}"#
+            )
+            .into_bytes(),
+            Op::Archive => archive().to_vec(),
+            Op::Checksum => checksum_line(&format!("{:x}", Sha256::digest(archive())), path),
+        }
+    }
+
+    /// A `sha256sum` line naming the archive the requested checksum belongs to.
+    fn checksum_line(digest: &str, path: &str) -> Vec<u8> {
+        let file = path.rsplit('/').next().unwrap();
+        let stem = file.strip_suffix(".sha256").unwrap();
+        format!("{digest}  {stem}.tar.gz\n").into_bytes()
+    }
+
+    fn serve(mut stream: TcpStream, plan: &Plan, hits: &Mutex<Vec<Hit>>) {
+        let request = read_request(&mut stream);
+        let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+        let Some(op) = classify(&path) else {
+            respond(&mut stream, 400, b"unexpected path");
+            return;
+        };
+        let authorization = request
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("authorization: ")
+                    .or(line.strip_prefix("Authorization: "))
+            })
+            .map(str::to_owned);
+        let attempt = {
+            let mut hits = hits.lock().unwrap();
+            hits.push(Hit {
+                op,
+                at: Instant::now(),
+                authorization,
+                path: path.clone(),
+            });
+            hits.iter().filter(|hit| hit.op == op).count() - 1
+        };
+        let replies = plan.get(&op).map_or(&[Reply::Valid][..], Vec::as_slice);
+        match replies[attempt.min(replies.len() - 1)] {
+            Reply::Valid => respond(&mut stream, 200, &valid_body(op, &path)),
+            Reply::Status(status) => respond(&mut stream, status, b"failure page"),
+            Reply::Hang => {
+                // Hold the connection until the client hits its timeout.
+                let mut sink = [0_u8; 64];
+                while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+            }
+            Reply::Drop => drop(stream),
+            Reply::WrongChecksum => {
+                let body = checksum_line(&"0".repeat(64), &path);
+                respond(&mut stream, 200, &body);
+            }
+            Reply::Truncated => {
+                let head =
+                    "HTTP/1.1 200 X\r\nContent-Length: 1024\r\nConnection: close\r\n\r\npartial";
+                let _ = stream.write_all(head.as_bytes());
+            }
+            Reply::NoTag => respond(&mut stream, 200, b"{}"),
+            Reply::Raw(body) => respond(&mut stream, 200, body.as_bytes()),
+            Reply::Tag(tag) => {
+                let body = format!(r#"{{"tag_name":"{tag}"}}"#);
+                respond(&mut stream, 200, body.as_bytes());
+            }
+        }
+    }
+
+    fn start_server(plan: Plan) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let plan = Arc::new(plan);
+        let thread_hits = Arc::clone(&hits);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let plan = Arc::clone(&plan);
+                let hits = Arc::clone(&thread_hits);
+                std::thread::spawn(move || serve(stream, &plan, &hits));
+            }
+        });
+        Server { url, hits }
+    }
+
+    struct Install {
+        _work: TempDir,
+        server_url: String,
+        hits: Vec<Hit>,
+        success: bool,
+        stdout: String,
+        stderr: String,
+        elapsed: Duration,
+        path_file: std::path::PathBuf,
+        runner_temp: std::path::PathBuf,
+        sleeps: Option<String>,
+    }
+
+    impl Install {
+        fn attempts(&self, op: Op) -> Vec<Instant> {
+            self.hits
+                .iter()
+                .filter(|hit| hit.op == op)
+                .map(|hit| hit.at)
+                .collect()
+        }
+
+        fn output(&self) -> String {
+            format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
+        }
+
+        fn assert_nothing_installed(&self) {
+            assert!(!self.path_file.exists(), "{}", self.output());
+            assert!(
+                !self.runner_temp.join("screencomp-bin/screencomp").exists(),
+                "{}",
+                self.output()
+            );
+        }
+
+        /// What the failure message must name for `op`.
+        fn expected_name_and_url(&self, op: Op) -> (String, String) {
+            let url = &self.server_url;
+            match op {
+                Op::Lookup => (
+                    "latest release of owner/repo".to_owned(),
+                    format!("{url}/api/repos/owner/repo/releases/latest"),
+                ),
+                Op::Archive => (
+                    format!("release archive screencomp-{TAG}-"),
+                    format!("{url}/owner/repo/releases/download/{TAG}/screencomp-{TAG}-"),
+                ),
+                Op::Checksum => (
+                    format!("release checksum screencomp-{TAG}-"),
+                    format!("{url}/owner/repo/releases/download/{TAG}/screencomp-{TAG}-"),
+                ),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Timing {
+        /// Millisecond backoff and a two-second attempt timeout.
+        Scaled,
+        /// The shipped schedule, with `sleep` recording instead of waiting.
+        ShippedWithRecordedSleep,
+    }
+
+    fn install(plan: Plan, version: &str, timing: Timing) -> Install {
+        install_with(plan, version, timing, |_| {})
+    }
+
+    /// `install`, with `adjust` applied last to the installer's command.
+    fn install_with(
+        plan: Plan,
+        version: &str,
+        timing: Timing,
+        adjust: impl FnOnce(&mut Command),
+    ) -> Install {
+        let server = start_server(plan);
+        // Built before the installer starts: building it inside the first request
+        // would count against that request's short client timeout.
+        archive();
+        let work = TempDir::new().unwrap();
+        let runner_temp = work.path().join("runner");
+        std::fs::create_dir(&runner_temp).unwrap();
+        let path_file = work.path().join("github-path");
+        let script = action_step_script(&repo_file("action.yml"), "Install screencomp");
+
+        let mut cmd = command("bash");
+        cmd.arg("-c")
+            .arg(script)
+            .current_dir(work.path())
+            .env("SCREENCOMP_VERSION", version)
+            .env("SCREENCOMP_METHOD", "download")
+            .env("SCREENCOMP_REPO", "owner/repo")
+            .env("SCREENCOMP_ACTION_PATH", work.path())
+            .env("GH_TOKEN", "test-token")
+            .env("RUNNER_TEMP", &runner_temp)
+            .env("GITHUB_PATH", &path_file)
+            .env("SCREENCOMP_INSTALL_GITHUB_URL", &server.url)
+            .env(
+                "SCREENCOMP_INSTALL_GITHUB_API_URL",
+                format!("{}/api", server.url),
+            );
+        let sleep_log = work.path().join("sleeps");
+        match timing {
+            Timing::Scaled => {
+                cmd.env("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT", "2")
+                    .env("SCREENCOMP_INSTALL_RETRY_BASE_MS", "20")
+                    .env("SCREENCOMP_INSTALL_RETRY_CAP_MS", "80");
+            }
+            Timing::ShippedWithRecordedSleep => {
+                let bin = work.path().join("bin");
+                std::fs::create_dir(&bin).unwrap();
+                let stub = bin.join("sleep");
+                std::fs::write(
+                    &stub,
+                    format!("#!/bin/sh\necho \"$1\" >>'{}'\n", path_str(&sleep_log)),
+                )
+                .unwrap();
+                let made_executable = command("chmod").arg("+x").arg(&stub).status().unwrap();
+                assert!(made_executable.success());
+                let path = std::env::var("PATH").unwrap();
+                cmd.env("PATH", format!("{}:{path}", path_str(&bin)));
+            }
+        }
+
+        adjust(&mut cmd);
+
+        // Output goes to files, not pipes: a surviving curl would otherwise hold
+        // the pipes open past the deadline.
+        let stdout_path = work.path().join("stdout");
+        let stderr_path = work.path().join("stderr");
+        let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+        let hits = server.hits.lock().unwrap().clone();
+        Install {
+            sleeps: std::fs::read_to_string(&sleep_log).ok(),
+            server_url: server.url,
+            hits,
+            success: status.success(),
+            stdout: std::fs::read_to_string(&stdout_path).unwrap(),
+            stderr: std::fs::read_to_string(&stderr_path).unwrap(),
+            elapsed,
+            path_file,
+            runner_temp,
+            _work: work,
+        }
+    }
+
+    /// Run `cmd` with its output in the given files, killing it at the deadline.
+    fn run_to_deadline(
+        mut cmd: Command,
+        stdout_path: &Path,
+        stderr_path: &Path,
+    ) -> (std::process::ExitStatus, Duration) {
+        cmd.stdout(std::fs::File::create(stdout_path).unwrap())
+            .stderr(std::fs::File::create(stderr_path).unwrap())
+            .process_group(0);
+        let started = Instant::now();
+        let mut child = cmd.spawn().unwrap();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return (status, started.elapsed());
+            }
+            if started.elapsed() > INSTALL_DEADLINE {
+                let group = format!("-{}", child.id());
+                let _ = command("kill").args(["-KILL", "--", &group]).status();
+                let _ = child.wait();
+                panic!(
+                    "script had not exited by the {INSTALL_DEADLINE:?} deadline; stderr so far:\n{}",
+                    std::fs::read_to_string(stderr_path).unwrap_or_default()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The tag-lookup path only runs for `latest`, so only it installs `latest`.
+    fn version_for(op: Op) -> &'static str {
+        if op == Op::Lookup { "latest" } else { TAG }
+    }
+
+    fn plan_for(op: Op, replies: Vec<Reply>) -> Plan {
+        HashMap::from([(op, replies)])
+    }
+
+    /// A `curl` on the PATH that always exits with one code and logs each call,
+    /// for transport failures a local server cannot provoke (DNS, TLS, proxy).
+    struct CurlStub {
+        dir: TempDir,
+        log: PathBuf,
+    }
+
+    impl CurlStub {
+        fn exiting_with(code: u8) -> Self {
+            let dir = TempDir::new().unwrap();
+            let log = dir.path().join("calls");
+            let stub = dir.path().join("curl");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\necho \"$*\" >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            let made_executable = command("chmod").arg("+x").arg(&stub).status().unwrap();
+            assert!(made_executable.success());
+            Self { dir, log }
+        }
+
+        fn install(&self) -> Install {
+            self.install_adjusted(TAG, |_| {})
+        }
+
+        fn install_adjusted(&self, version: &str, adjust: impl FnOnce(&mut Command)) -> Install {
+            let path = std::env::var("PATH").unwrap();
+            let path = format!("{}:{path}", path_str(self.dir.path()));
+            install_with(Plan::new(), version, Timing::Scaled, |cmd| {
+                cmd.env("PATH", path);
+                adjust(cmd);
+            })
+        }
+
+        /// The argument list of each call, oldest first.
+        fn calls(&self) -> Vec<String> {
+            std::fs::read_to_string(&self.log)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+    }
+
+    /// Run `check` for every operation and reply on its own thread: the
+    /// timeout cases each spend whole seconds waiting.
+    fn for_each_case(replies: &[Reply], check: impl Fn(Op, Reply) + Sync) {
+        std::thread::scope(|scope| {
+            for op in OPS {
+                for &reply in replies {
+                    let check = &check;
+                    scope.spawn(move || check(op, reply));
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn transient_failures_are_retried_until_a_valid_answer_installs_a_working_binary() {
+        for_each_case(&TRANSIENT, |op, reply| {
+            let run = install(
+                plan_for(op, vec![reply, reply, Reply::Valid]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(run.success, "{op:?}/{reply:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), 3, "{op:?}/{reply:?}");
+
+            let bindir = std::fs::read_to_string(&run.path_file).unwrap();
+            let binary = Path::new(bindir.trim()).join("screencomp");
+            let version = command(&binary).arg("--version").output().unwrap();
+            assert!(version.status.success(), "{op:?}/{reply:?}");
+            assert!(
+                String::from_utf8_lossy(&version.stdout).starts_with("screencomp "),
+                "{op:?}/{reply:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn the_lookup_alone_carries_the_token() {
+        let run = install(Plan::new(), "latest", Timing::Scaled);
+        assert!(run.success, "{}", run.output());
+        for hit in &run.hits {
+            let expected = (hit.op == Op::Lookup).then(|| "Bearer test-token".to_owned());
+            assert_eq!(hit.authorization, expected, "{:?}", hit.op);
+        }
+        assert!(!run.output().contains("test-token"), "{}", run.output());
+    }
+
+    #[test]
+    fn persistent_transient_failure_stops_after_bounded_growing_attempts() {
+        for_each_case(&TRANSIENT, |op, reply| {
+            let run = install(plan_for(op, vec![reply]), version_for(op), Timing::Scaled);
+            assert!(!run.success, "{op:?}/{reply:?}: {}", run.output());
+            run.assert_nothing_installed();
+
+            let attempts = run.attempts(op);
+            assert_eq!(attempts.len(), MAX_ATTEMPTS, "{op:?}/{reply:?}");
+            let backoff: u64 = SCALED_DELAYS_MS.iter().sum();
+            let limit =
+                Duration::from_millis(backoff) + Duration::from_secs(MAX_ATTEMPTS as u64 + 30);
+            assert!(run.elapsed < limit, "{op:?}/{reply:?}: {:?}", run.elapsed);
+
+            let (name, url) = run.expected_name_and_url(op);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                    && failure.contains(&name)
+                    && failure.contains(&url),
+                "{op:?}/{reply:?}: {failure}"
+            );
+
+            for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                let gap = attempts[index + 1] - attempts[index];
+                assert!(
+                    gap >= Duration::from_millis(*delay_ms),
+                    "{op:?}/{reply:?}: attempt gap {index} was {gap:?}"
+                );
+            }
+            let announced: Vec<&str> = run
+                .stderr
+                .lines()
+                .filter_map(|line| line.split_once("retrying in ")?.1.split_once('s'))
+                .map(|(delay, _)| delay)
+                .collect();
+            assert_eq!(
+                announced,
+                [
+                    "0.020", "0.040", "0.080", "0.080", "0.080", "0.080", "0.080"
+                ],
+                "{op:?}/{reply:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn the_shipped_schedule_doubles_to_its_cap_for_every_operation() {
+        for op in OPS {
+            let run = install(
+                plan_for(op, vec![Reply::Status(503)]),
+                version_for(op),
+                Timing::ShippedWithRecordedSleep,
+            );
+            assert!(!run.success, "{op:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), MAX_ATTEMPTS, "{op:?}");
+            let sleeps = run.sleeps.clone().unwrap_or_default();
+            assert_eq!(
+                sleeps.lines().collect::<Vec<_>>(),
+                [
+                    "2.000", "4.000", "8.000", "16.000", "30.000", "30.000", "30.000"
+                ],
+                "{op:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn permanent_failure_stops_after_one_attempt_and_names_what_is_missing() {
+        for op in OPS {
+            let run = install(
+                plan_for(op, vec![Reply::Status(404)]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(!run.success, "{op:?}: {}", run.output());
+            run.assert_nothing_installed();
+            assert_eq!(run.attempts(op).len(), 1, "{op:?}");
+            let (name, url) = run.expected_name_and_url(op);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.contains(&name) && failure.contains(&url) && failure.contains("not found"),
+                "{op:?}: {failure}"
+            );
+            assert!(!run.stderr.contains("retrying"), "{op:?}: {}", run.stderr);
+        }
+    }
+
+    #[test]
+    fn a_forbidden_response_is_not_retried() {
+        let run = install(
+            plan_for(Op::Archive, vec![Reply::Status(403)]),
+            TAG,
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert_eq!(run.attempts(Op::Archive).len(), 1);
+        assert!(run.stderr.contains("failed (HTTP 403)"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn an_archive_with_a_mismatched_checksum_is_refused() {
+        let run = install(
+            plan_for(Op::Checksum, vec![Reply::WrongChecksum]),
+            TAG,
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert!(run.stderr.contains("refusing to install"), "{}", run.stderr);
+        assert_eq!(run.attempts(Op::Checksum).len(), 1);
+        run.assert_nothing_installed();
+    }
+
+    #[test]
+    fn a_lookup_without_a_tag_fails_with_a_clear_message() {
+        let run = install(
+            plan_for(Op::Lookup, vec![Reply::NoTag]),
+            "latest",
+            Timing::Scaled,
+        );
+        assert!(!run.success, "{}", run.output());
+        assert!(run.stderr.contains("has no tag_name"), "{}", run.stderr);
+        assert!(run.attempts(Op::Archive).is_empty());
+    }
+
+    #[test]
+    fn a_lookup_with_an_unsafe_tag_is_refused_before_any_download() {
+        for tag in ["../../evil", "v1/x", "-v1", "v1 x"] {
+            let run = install(
+                plan_for(Op::Lookup, vec![Reply::Tag(tag)]),
+                "latest",
+                Timing::Scaled,
+            );
+            assert!(!run.success, "{tag}: {}", run.output());
+            assert!(
+                run.stderr.contains(&format!("invalid tag '{tag}'")),
+                "{tag}: {}",
+                run.stderr
+            );
+            assert!(run.attempts(Op::Archive).is_empty(), "{tag}");
+            run.assert_nothing_installed();
+        }
+    }
+
+    #[test]
+    fn sampled_408_429_and_5xx_statuses_are_retried() {
+        let statuses = [408, 429, 500, 502].map(Reply::Status);
+        for_each_case(&statuses, |op, reply| {
+            let run = install(
+                plan_for(op, vec![reply, Reply::Valid]),
+                version_for(op),
+                Timing::Scaled,
+            );
+            assert!(run.success, "{op:?}/{reply:?}: {}", run.output());
+            assert_eq!(run.attempts(op).len(), 2, "{op:?}/{reply:?}");
+        });
+    }
+
+    #[test]
+    fn a_refused_connection_is_retried_until_the_attempts_run_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+            cmd.env("SCREENCOMP_INSTALL_GITHUB_URL", &closed);
+        });
+        assert!(!run.success, "{}", run.output());
+        run.assert_nothing_installed();
+        let expected = format!("failed after {MAX_ATTEMPTS} attempts (last error: curl exit 7)");
+        assert!(run.stderr.contains(&expected), "{}", run.stderr);
+    }
+
+    #[test]
+    fn transport_failures_only_a_stub_can_provoke_are_retried() {
+        // Proxy and DNS resolution, HTTP/2 framing and stream, TLS handshake, send.
+        for code in [5, 6, 16, 35, 55, 56, 92] {
+            let stub = CurlStub::exiting_with(code);
+            let run = stub.install();
+            assert!(!run.success, "exit {code}: {}", run.output());
+            assert_eq!(stub.calls().len(), MAX_ATTEMPTS, "exit {code}");
+            let expected =
+                format!("failed after {MAX_ATTEMPTS} attempts (last error: curl exit {code})");
+            assert!(run.stderr.contains(&expected), "{}", run.stderr);
+        }
+    }
+
+    #[test]
+    fn an_untrusted_certificate_is_not_retried() {
+        let stub = CurlStub::exiting_with(60);
+        let run = stub.install();
+        assert!(!run.success, "{}", run.output());
+        assert_eq!(stub.calls().len(), 1);
+        assert!(
+            run.stderr.contains("failed (curl exit 60)"),
+            "{}",
+            run.stderr
+        );
+        assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_permanent_curl_failure_stops_at_once_and_names_the_exit_code() {
+        let stub = CurlStub::exiting_with(1);
+        let run = stub.install();
+        assert!(!run.success, "{}", run.output());
+        run.assert_nothing_installed();
+        assert_eq!(stub.calls().len(), 1, "{}", run.output());
+        let failure = run.stderr.lines().last().unwrap();
+        assert!(
+            failure.contains("failed (curl exit 1)") && failure.contains(&run.server_url),
+            "{failure}"
+        );
+        assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_base_url_that_is_not_http_is_refused_before_curl_runs() {
+        for variable in [
+            "SCREENCOMP_INSTALL_GITHUB_URL",
+            "SCREENCOMP_INSTALL_GITHUB_API_URL",
+        ] {
+            let stub = CurlStub::exiting_with(1);
+            let run = stub.install_adjusted("latest", |cmd| {
+                cmd.env(variable, "file:///etc/passwd");
+            });
+            assert!(!run.success, "{variable}: {}", run.output());
+            assert!(stub.calls().is_empty(), "{variable}: {:?}", stub.calls());
+            assert!(
+                run.stderr.contains("expected an http(s) base URL"),
+                "{variable}: {}",
+                run.output()
+            );
+        }
+    }
+
+    #[test]
+    fn a_lookup_without_a_token_goes_unauthenticated() {
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env_remove("GH_TOKEN");
+        });
+        assert!(run.success, "{}", run.output());
+        assert!(!run.attempts(Op::Lookup).is_empty());
+        assert!(run.hits.iter().all(|hit| hit.authorization.is_none()));
+    }
+
+    #[test]
+    fn a_malformed_timing_setting_stops_before_any_request() {
+        for name in [
+            "SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT",
+            "SCREENCOMP_INSTALL_RETRY_BASE_MS",
+            "SCREENCOMP_INSTALL_RETRY_CAP_MS",
+        ] {
+            for value in ["0", "-1", "soon", "1.5", "99999999999"] {
+                let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
+                    cmd.env(name, value);
+                });
+                assert!(!run.success, "{name}={value}: {}", run.output());
+                assert!(
+                    run.stderr.contains(name) && run.stderr.contains(&format!("got '{value}'")),
+                    "{name}={value}: {}",
+                    run.stderr
+                );
+                assert!(run.hits.is_empty(), "{name}={value}");
+                run.assert_nothing_installed();
+            }
+        }
+    }
+
+    #[test]
+    fn a_token_with_config_metacharacters_reaches_the_server_verbatim() {
+        let token = r#"a"b\c"#;
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("GH_TOKEN", token);
+        });
+        assert!(run.success, "{}", run.output());
+        let lookup = run.hits.iter().find(|hit| hit.op == Op::Lookup).unwrap();
+        assert_eq!(
+            lookup.authorization.as_deref().map(str::trim_end),
+            Some(format!("Bearer {token}").as_str())
+        );
+    }
+
+    #[test]
+    fn a_token_with_a_newline_is_refused_before_any_request() {
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("GH_TOKEN", "abc\nurl = \"http://elsewhere\"");
+        });
+        assert!(!run.success, "{}", run.output());
+        assert!(run.hits.is_empty());
+        assert!(
+            run.stderr.contains("without control characters"),
+            "{}",
+            run.stderr
+        );
+        run.assert_nothing_installed();
+    }
+
+    /// Asserted on curl's arguments: a connection that never completes needs an
+    /// unroutable address, which an offline suite cannot rely on.
+    #[test]
+    fn every_attempt_bounds_its_connection_and_total_time() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install();
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        for call in calls {
+            assert!(
+                call.contains("--connect-timeout 10") && call.contains("--max-time 2"),
+                "{call}"
+            );
+        }
+    }
+
+    /// The install of a `latest` whose lookup answers with exactly `body`.
+    fn install_latest_answering(body: &'static str) -> Install {
+        install(
+            plan_for(Op::Lookup, vec![Reply::Raw(body)]),
+            "latest",
+            Timing::Scaled,
+        )
+    }
+
+    fn assert_lookup_refused(body: &str, run: &Install, expected: &str) {
+        assert!(!run.success, "{body}: {}", run.output());
+        let failure = run.stderr.lines().last().unwrap_or_default();
+        assert!(
+            failure.contains(expected)
+                && failure.contains("latest release of owner/repo")
+                && failure.contains("/api/repos/owner/repo/releases/latest"),
+            "{body}: {failure}"
+        );
+        assert_eq!(run.attempts(Op::Lookup).len(), 1, "{body}");
+        assert!(run.attempts(Op::Archive).is_empty(), "{body}");
+        run.assert_nothing_installed();
+    }
+
+    #[test]
+    fn a_malformed_release_response_is_refused_before_any_download() {
+        for body in [
+            r#"{"tag_name":"v9.9.9""#,
+            r#"{"tag_name":"v9.9.9"} trailing"#,
+            r#"{"tag_name":"v9.9.9",}"#,
+            r#"{"tag_name":"v9.9.9","x":01}"#,
+            r#"{"tag_name":"v9.9.9","x":1.}"#,
+            r#"{"tag_name":"v9.9.9","x":"\q"}"#,
+            r#"{"tag_name":"v9.9.9","x":"\u12"}"#,
+            "{\"tag_name\":\"v9.9.9\",\"x\":\"a\nb\"}",
+            r#"{"x":truex,"tag_name":"v9.9.9"}"#,
+            r#"{"a":[1,],"tag_name":"v9.9.9"}"#,
+            r#"{"a":{"b"},"tag_name":"v9.9.9"}"#,
+            r#"[{"tag_name":"v9.9.9"}]"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "is not a valid JSON object");
+        }
+    }
+
+    #[test]
+    fn a_tag_name_only_in_a_nested_value_is_not_the_release_tag() {
+        for body in [
+            r#"{"release":{"tag_name":"v9.9.9"}}"#,
+            r#"{"assets":[{"tag_name":"v9.9.9"}]}"#,
+            r#"{"body":"\"tag_name\":\"v9.9.9\""}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has no tag_name");
+        }
+    }
+
+    #[test]
+    fn a_duplicate_top_level_tag_name_is_refused() {
+        for body in [
+            r#"{"tag_name":"v9.9.9","tag_name":"v9.9.9"}"#,
+            r#"{"tag_name":"v9.9.9","x":{},"tag\u005fname":"v0.0.1"}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has more than one tag_name");
+        }
+    }
+
+    #[test]
+    fn a_non_string_tag_name_is_refused() {
+        for body in [
+            r#"{"tag_name":9}"#,
+            r#"{"tag_name":null}"#,
+            r#"{"tag_name":["v9.9.9"]}"#,
+        ] {
+            let run = install_latest_answering(body);
+            assert_lookup_refused(body, &run, "has a non-string tag_name");
+        }
+    }
+
+    #[test]
+    fn a_tag_that_decodes_to_something_unsafe_is_refused() {
+        for (body, decoded) in [
+            (r#"{"tag_name":"..\u002fevil"}"#, "../evil"),
+            (r#"{"tag_name":"v9.9.9\n"}"#, "v9.9.9\n"),
+        ] {
+            let run = install_latest_answering(body);
+            assert!(!run.success, "{body}: {}", run.output());
+            assert!(
+                run.stderr.contains(&format!("invalid tag '{decoded}'")),
+                "{body}: {}",
+                run.stderr
+            );
+            assert!(run.attempts(Op::Archive).is_empty(), "{body}");
+            run.assert_nothing_installed();
+        }
+    }
+
+    #[test]
+    fn the_top_level_tag_is_read_past_nesting_escapes_and_formatting() {
+        for body in [
+            r#"{"tag\u005fname":"v9\u002e9\u002e9"}"#,
+            r#"{"author":{"tag_name":"v0.0.1"},"assets":[{"tag_name":"v0.0.2"}],"tag_name":"v9.9.9"}"#,
+            "{\n  \"id\" : -1.5e+3 ,\r\n\t\"ok\" : true , \"no\" : false , \"nil\" : null ,\n  \"empty\" : { } , \"list\" : [ ] , \"zero\" : 0 ,\n  \"body\" : \"h\u{e9}llo \\\" \\\\ \\/ \\b \\f \\n \\r \\t \\u00E9\" ,\n  \"tag_name\" : \"v9.9.9\"\n}\n",
+        ] {
+            let run = install_latest_answering(body);
+            assert!(run.success, "{body}: {}", run.output());
+            let archive = run.hits.iter().filter(|hit| hit.op == Op::Archive).count();
+            assert_eq!(archive, 1, "{body}");
+            assert!(
+                run.stdout
+                    .contains(&format!("Installing screencomp {TAG} ")),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn nesting_is_accepted_up_to_its_limit_and_refused_beyond_it() {
+        let nested = |arrays: usize| -> &'static str {
+            let body = format!(
+                r#"{{"x":{}{},"tag_name":"{TAG}"}}"#,
+                "[".repeat(arrays),
+                "]".repeat(arrays)
+            );
+            Box::leak(body.into_boxed_str())
+        };
+        let within = install_latest_answering(nested(63));
+        assert!(within.success, "{}", within.output());
+        let body = nested(64);
+        let beyond = install_latest_answering(body);
+        assert_lookup_refused(body, &beyond, "is not a valid JSON object");
+    }
+
+    #[test]
+    fn the_shipped_attempt_timeout_is_sixty_seconds() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install_adjusted(TAG, |cmd| {
+            cmd.env_remove("SCREENCOMP_INSTALL_ATTEMPT_TIMEOUT");
+        });
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        assert!(
+            calls.iter().all(|call| call.contains("--max-time 60")),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn the_token_stays_out_of_curls_arguments() {
+        let stub = CurlStub::exiting_with(28);
+        let run = stub.install_adjusted("latest", |_| {});
+        assert!(!run.success, "{}", run.output());
+        let calls = stub.calls();
+        assert_eq!(calls.len(), MAX_ATTEMPTS);
+        assert!(
+            calls.iter().all(|call| !call.contains("test-token")),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn an_awk_that_cannot_run_is_reported_with_its_exit_code() {
+        let dir = TempDir::new().unwrap();
+        let awk = dir.path().join("awk");
+        std::fs::write(&awk, "#!/bin/sh\nexit 2\n").unwrap();
+        let made_executable = command("chmod").arg("+x").arg(&awk).status().unwrap();
+        assert!(made_executable.success());
+        let path = format!(
+            "{}:{}",
+            path_str(dir.path()),
+            std::env::var("PATH").unwrap()
+        );
+        let run = install_with(Plan::new(), "latest", Timing::Scaled, |cmd| {
+            cmd.env("PATH", path);
+        });
+        assert_lookup_refused("awk stand-in", &run, "could not be parsed (awk exit 2)");
+    }
+
+    /// the repository's download scripts, invoked from the repository
+    /// root exactly as the workflows and recipes invoke them.
+    mod repo_tooling {
+        use super::*;
+
+        const TOOL_PATH: &str = "/tool.tar.gz";
+
+        struct Run {
+            _work: TempDir,
+            dest: PathBuf,
+            hits: Vec<Hit>,
+            url: String,
+            success: bool,
+            stderr: String,
+            elapsed: Duration,
+            sleeps: Vec<String>,
+        }
+
+        /// A PATH whose `sleep` records its argument instead of waiting.
+        fn recording_sleep(work: &Path) -> (String, PathBuf) {
+            let bin = work.join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.join("sleeps");
+            let stub = bin.join("sleep");
+            std::fs::write(
+                &stub,
+                format!("#!/bin/sh\necho \"$1\" >>'{}'\n", path_str(&log)),
+            )
+            .unwrap();
+            assert!(
+                command("chmod")
+                    .arg("+x")
+                    .arg(&stub)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let path = std::env::var("PATH").unwrap();
+            (format!("{}:{path}", path_str(&bin)), log)
+        }
+
+        fn download(replies: Vec<Reply>, timing: Timing) -> Run {
+            archive();
+            let server = start_server(plan_for(Op::Archive, replies));
+            let work = TempDir::new().unwrap();
+            let dest = work.path().join("tool.tar.gz");
+            let url = format!("{}{TOOL_PATH}", server.url);
+            let mut cmd = command("bash");
+            cmd.arg("scripts/download.sh")
+                .arg(&url)
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"));
+            let mut sleep_log = None;
+            match timing {
+                Timing::Scaled => {
+                    cmd.env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                        .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+                        .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80");
+                }
+                Timing::ShippedWithRecordedSleep => {
+                    let (path, log) = recording_sleep(work.path());
+                    cmd.env("PATH", path);
+                    sleep_log = Some(log);
+                }
+            }
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let hits = server.hits.lock().unwrap().clone();
+            Run {
+                dest,
+                hits,
+                url,
+                success: status.success(),
+                stderr: std::fs::read_to_string(&stderr_path).unwrap(),
+                elapsed,
+                sleeps: sleep_log
+                    .and_then(|log| std::fs::read_to_string(log).ok())
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::to_owned)
+                    .collect(),
+                _work: work,
+            }
+        }
+
+        fn assert_no_files_left(run: &Run) {
+            let dir = run.dest.parent().unwrap();
+            let leftovers: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("tool.tar.gz"))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}: {}", run.stderr);
+        }
+
+        fn for_each_transient(check: impl Fn(Reply) + Sync) {
+            std::thread::scope(|scope| {
+                for reply in TRANSIENT {
+                    let check = &check;
+                    scope.spawn(move || check(reply));
+                }
+            });
+        }
+
+        #[test]
+        fn a_transient_failure_recovers_into_a_file_that_extracts() {
+            for_each_transient(|reply| {
+                let run = download(vec![reply, reply, Reply::Valid], Timing::Scaled);
+                assert!(run.success, "{reply:?}: {}", run.stderr);
+                assert_eq!(run.hits.len(), 3, "{reply:?}");
+                let out = run.dest.parent().unwrap().join("out");
+                std::fs::create_dir(&out).unwrap();
+                let extracted = command("tar")
+                    .arg("-xzf")
+                    .arg(&run.dest)
+                    .arg("-C")
+                    .arg(&out)
+                    .status()
+                    .unwrap();
+                assert!(extracted.success(), "{reply:?}");
+                let version = command(out.join("screencomp"))
+                    .arg("--version")
+                    .output()
+                    .unwrap();
+                assert!(version.status.success(), "{reply:?}");
+            });
+        }
+
+        #[test]
+        fn a_persistent_transient_failure_is_bounded_names_the_url_and_leaves_no_file() {
+            for_each_transient(|reply| {
+                let run = download(vec![reply], Timing::Scaled);
+                assert!(!run.success, "{reply:?}: {}", run.stderr);
+                assert_eq!(run.hits.len(), MAX_ATTEMPTS, "{reply:?}");
+                assert_no_files_left(&run);
+                let backoff: u64 = SCALED_DELAYS_MS.iter().sum();
+                let limit =
+                    Duration::from_millis(backoff) + Duration::from_secs(MAX_ATTEMPTS as u64 + 30);
+                assert!(run.elapsed < limit, "{reply:?}: {:?}", run.elapsed);
+                let failure = run.stderr.lines().last().unwrap();
+                assert!(
+                    failure.contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                        && failure.contains(&run.url),
+                    "{reply:?}: {failure}"
+                );
+                for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                    let gap = run.hits[index + 1].at - run.hits[index].at;
+                    assert!(
+                        gap >= Duration::from_millis(*delay_ms),
+                        "{reply:?}: attempt gap {index} was {gap:?}"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn the_shipped_schedule_doubles_to_its_cap() {
+            let run = download(vec![Reply::Status(503)], Timing::ShippedWithRecordedSleep);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(
+                run.sleeps,
+                [
+                    "2.000", "4.000", "8.000", "16.000", "30.000", "30.000", "30.000"
+                ]
+            );
+        }
+
+        #[test]
+        fn a_forbidden_download_stops_after_one_attempt_and_names_the_status() {
+            let run = download(vec![Reply::Status(403)], Timing::Scaled);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(run.hits.len(), 1, "{}", run.stderr);
+            assert_no_files_left(&run);
+            let failure = run.stderr.lines().last().unwrap();
+            assert!(
+                failure.starts_with(&format!("download failed (HTTP 403): {}", run.url)),
+                "{failure}"
+            );
+            assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+        }
+
+        #[test]
+        fn a_missing_download_stops_after_one_attempt() {
+            let run = download(vec![Reply::Status(404)], Timing::Scaled);
+            assert!(!run.success, "{}", run.stderr);
+            assert_eq!(run.hits.len(), 1);
+            assert_no_files_left(&run);
+            assert!(
+                run.stderr
+                    .lines()
+                    .last()
+                    .unwrap()
+                    .starts_with(&format!("download not found (HTTP 404): {}", run.url)),
+                "{}",
+                run.stderr
+            );
+        }
+
+        /// A `sleep` on the PATH that logs backoffs (fractional seconds, or all
+        /// sleeps when `record_all`) without waiting, and really waits otherwise.
+        fn sleep_stub(work: &Path, record_all: bool) -> (String, PathBuf) {
+            let bin = work.join("sleep-bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.join("sleeps");
+            let stub = bin.join("sleep");
+            let whole = if record_all {
+                ""
+            } else {
+                "exec /bin/sleep \"$1\""
+            };
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in\n*.*) ;;\n*) {whole} ;;\nesac\necho \"$1\" >>'{}'\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let path = std::env::var("PATH").unwrap();
+            (format!("{}:{path}", path_str(&bin)), log)
+        }
+
+        fn make_executable(path: &Path) {
+            let status = command("chmod").arg("+x").arg(path).status().unwrap();
+            assert!(status.success());
+        }
+
+        fn read_lines(path: &Path) -> Vec<String> {
+            std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// Answers every request with `reply` until `healthy_after` backoffs are
+        /// logged, then serves the archive: the failing phase spans whole
+        /// cargo-binstall attempts however many requests each one makes.
+        fn start_binstall_server(
+            reply: Reply,
+            sleeps: PathBuf,
+            healthy_after: Option<usize>,
+        ) -> String {
+            archive();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/screencomp.tgz", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for mut stream in listener.incoming().flatten() {
+                    let sleeps = sleeps.clone();
+                    std::thread::spawn(move || {
+                        read_request(&mut stream);
+                        if healthy_after.is_some_and(|after| read_lines(&sleeps).len() >= after) {
+                            respond(&mut stream, 200, archive());
+                            return;
+                        }
+                        match reply {
+                            Reply::Status(status) => respond(&mut stream, status, b"failure"),
+                            Reply::Hang => {
+                                let mut sink = [0_u8; 64];
+                                while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+                            }
+                            _ => drop(stream),
+                        }
+                    });
+                }
+            });
+            url
+        }
+
+        /// How one real cargo-binstall failure is provoked.
+        #[derive(Clone, Copy, Debug)]
+        struct BinstallCase {
+            reply: Reply,
+            attempt_timeout: &'static str,
+            resolution_timeout: &'static str,
+        }
+
+        const fn binstall_reply(reply: Reply) -> BinstallCase {
+            BinstallCase {
+                reply,
+                attempt_timeout: "60",
+                resolution_timeout: "120",
+            }
+        }
+
+        /// The script's own per-attempt limit stops a hung cargo-binstall.
+        const WATCHDOG: BinstallCase = BinstallCase {
+            reply: Reply::Hang,
+            attempt_timeout: "2",
+            resolution_timeout: "120",
+        };
+
+        const BINSTALL_TRANSIENT: [BinstallCase; 6] = [
+            binstall_reply(Reply::Status(504)),
+            binstall_reply(Reply::Status(503)),
+            binstall_reply(Reply::Status(429)),
+            binstall_reply(Reply::Drop),
+            // cargo-binstall's own resolution timeout.
+            BinstallCase {
+                reply: Reply::Hang,
+                attempt_timeout: "60",
+                resolution_timeout: "1",
+            },
+            WATCHDOG,
+        ];
+
+        struct BinstallRun {
+            work: TempDir,
+            code: Option<i32>,
+            stderr: String,
+            stdout: String,
+            sleeps: Vec<String>,
+            elapsed: Duration,
+        }
+
+        /// Runs `scripts/binstall.sh` over the real cargo-binstall, as the recipes
+        /// do, resolving a crate whose only package URL is the local server.
+        fn binstall(case: BinstallCase, healthy_after: Option<usize>) -> BinstallRun {
+            let present = command("cargo-binstall").arg("-V").output();
+            assert!(
+                present.is_ok_and(|output| output.status.success()),
+                "cargo-binstall is not on PATH; ACTION: run 'just bootstrap'"
+            );
+            let work = TempDir::new().unwrap();
+            let manifest = work.path().join("crate");
+            std::fs::create_dir_all(manifest.join("src")).unwrap();
+            std::fs::write(manifest.join("src/main.rs"), "fn main() {}\n").unwrap();
+            std::fs::write(
+                manifest.join("Cargo.toml"),
+                "[package]\nname = \"screencomp\"\nversion = \"9.9.9\"\nedition = \"2021\"\n",
+            )
+            .unwrap();
+            let (path, sleep_log) = sleep_stub(work.path(), false);
+            let url = start_binstall_server(case.reply, sleep_log.clone(), healthy_after);
+            let mut cmd = command("bash");
+            cmd.arg("scripts/binstall.sh")
+                .args(["--no-confirm", "--allow-insecure-http", "--no-track"])
+                .args(["--strategies", "crate-meta-data"])
+                .args(["--disable-strategies", "compile,quick-install"])
+                .args(["--no-discover-github-token", "--disable-telemetry"])
+                .args(["--maximum-resolution-timeout", case.resolution_timeout])
+                .arg("--manifest-path")
+                .arg(&manifest)
+                .args(["--pkg-url", &url, "--pkg-fmt", "tgz"])
+                .args(["--bin-dir", "{ bin }{ binary-ext }"])
+                .arg("--root")
+                .arg(work.path().join("root"))
+                .arg("screencomp")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env_remove("GITHUB_TOKEN")
+                .env_remove("GH_TOKEN")
+                .env("CARGO_HOME", work.path().join("cargo-home"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", case.attempt_timeout);
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            BinstallRun {
+                code: status.code(),
+                stderr: std::fs::read_to_string(&stderr_path).unwrap(),
+                stdout: std::fs::read_to_string(&stdout_path).unwrap(),
+                sleeps: read_lines(&sleep_log),
+                elapsed,
+                work,
+            }
+        }
+
+        impl BinstallRun {
+            fn output(&self) -> String {
+                format!("stdout:\n{}\nstderr:\n{}", self.stdout, self.stderr)
+            }
+
+            fn binary(&self) -> PathBuf {
+                self.work.path().join("root/bin/screencomp")
+            }
+        }
+
+        fn for_each_binstall_case(cases: &[BinstallCase], check: impl Fn(BinstallCase) + Sync) {
+            std::thread::scope(|scope| {
+                for &case in cases {
+                    let check = &check;
+                    scope.spawn(move || check(case));
+                }
+            });
+        }
+
+        #[test]
+        fn real_binstall_recovers_from_each_transient_failure() {
+            for_each_binstall_case(&BINSTALL_TRANSIENT, |case| {
+                let run = binstall(case, Some(2));
+                assert_eq!(run.code, Some(0), "{case:?}: {}", run.output());
+                assert_eq!(run.sleeps, ["5.000", "10.000"], "{case:?}");
+                let version = command(run.binary()).arg("--version").output().unwrap();
+                assert!(version.status.success(), "{case:?}");
+            });
+        }
+
+        #[test]
+        fn real_binstall_exhausts_bounded_attempts_on_a_persistent_transient_failure() {
+            for_each_binstall_case(&BINSTALL_TRANSIENT, |case| {
+                let run = binstall(case, None);
+                assert_eq!(run.sleeps, ["5.000", "10.000", "20.000"], "{case:?}");
+                assert!(!run.binary().exists(), "{case:?}");
+                let failure = run.stderr.lines().last().unwrap();
+                assert!(
+                    failure.starts_with("cargo-binstall failed after 4 attempts"),
+                    "{case:?}: {failure}"
+                );
+                assert!(run.elapsed < INSTALL_DEADLINE, "{case:?}");
+            });
+        }
+
+        #[test]
+        fn a_hung_binstall_is_stopped_at_each_attempts_limit() {
+            let run = binstall(WATCHDOG, None);
+            assert_eq!(run.code, Some(124), "{}", run.output());
+            assert!(
+                run.stderr.contains("last error: timed out after 2s"),
+                "{}",
+                run.output()
+            );
+            // Four 2s attempts, each stopped by TERM well inside the KILL grace.
+            assert!(run.elapsed >= Duration::from_secs(8), "{:?}", run.elapsed);
+            assert!(run.elapsed < Duration::from_secs(20), "{:?}", run.elapsed);
+        }
+
+        #[test]
+        fn real_binstall_stops_after_one_attempt_on_a_permanent_failure() {
+            for status in [404, 403] {
+                let run = binstall(binstall_reply(Reply::Status(status)), None);
+                assert_eq!(run.code, Some(94), "{status}: {}", run.output());
+                assert!(run.sleeps.is_empty(), "{status}: {:?}", run.sleeps);
+                assert!(
+                    run.stderr
+                        .lines()
+                        .last()
+                        .unwrap()
+                        .starts_with("cargo-binstall failed with a permanent error (exit 94)"),
+                    "{status}: {}",
+                    run.output()
+                );
+            }
+        }
+
+        /// `scripts/download.sh` over a `curl` that always exits `code` and logs
+        /// its arguments, for failures a plain-HTTP local server cannot provoke.
+        fn download_with_curl_exiting(url: &str, code: u8) -> (bool, Vec<String>, String) {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.path().join("calls");
+            let stub = bin.join("curl");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncat >/dev/null\necho \"$*\" >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let output = command("bash")
+                .arg("scripts/download.sh")
+                .arg(url)
+                .arg(work.path().join("dest"))
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2")
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                read_lines(&log),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn download_classifies_transport_failures_a_local_server_cannot_provoke() {
+            // DNS, TLS handshake and HTTP/2 stream failures are retried.
+            for code in [6, 35, 92] {
+                let (success, calls, stderr) =
+                    download_with_curl_exiting("https://example.invalid/asset", code);
+                assert!(!success, "{code}");
+                assert_eq!(calls.len(), MAX_ATTEMPTS, "{code}: {stderr}");
+            }
+            // A local write error and a certificate failure are permanent.
+            for code in [23, 60] {
+                let (success, calls, stderr) =
+                    download_with_curl_exiting("https://example.invalid/asset", code);
+                assert!(!success, "{code}");
+                assert_eq!(calls.len(), 1, "{code}: {stderr}");
+                assert!(stderr.contains(&format!("curl exit {code}")), "{stderr}");
+            }
+        }
+
+        // Argument inspection because a real redirect needs a TLS server, and this
+        // suite stays offline with no certificate to trust.
+        #[test]
+        fn an_https_download_refuses_a_downgrading_redirect() {
+            let (_, https_calls, _) = download_with_curl_exiting("https://example.invalid/a", 23);
+            assert!(
+                https_calls[0].contains("--proto-redir =https"),
+                "{https_calls:?}"
+            );
+            let (_, http_calls, _) = download_with_curl_exiting("http://example.invalid/a", 23);
+            assert!(!http_calls[0].contains("--proto-redir"), "{http_calls:?}");
+        }
+
+        /// Runs `script` with `args` from the repository root with `env` set.
+        fn script_failure(
+            script: &str,
+            args: &[&str],
+            env: &[(&str, &str)],
+        ) -> (Option<i32>, String) {
+            let mut cmd = command("bash");
+            cmd.arg(script)
+                .args(args)
+                .current_dir(env!("CARGO_MANIFEST_DIR"));
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+            let output = cmd.output().unwrap();
+            (
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn download_refuses_bad_arguments_and_settings_before_any_request() {
+            let url = "http://127.0.0.1:9/never-requested";
+            for (args, env, expected, code) in [
+                (vec![url], vec![], "usage: download.sh", 2),
+                (
+                    vec!["--output=/tmp/x", "dest"],
+                    vec![],
+                    "expected an http(s) URL",
+                    2,
+                ),
+                (
+                    vec![url, "dest"],
+                    vec![("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "0")],
+                    "retry_base_ms must be a positive integer",
+                    1,
+                ),
+                (
+                    vec![url, "dest"],
+                    vec![("SCREENCOMP_DOWNLOAD_BEARER_TOKEN", "bad\ntoken")],
+                    "without control characters",
+                    1,
+                ),
+            ] {
+                let (status, stderr) = script_failure("scripts/download.sh", &args, &env);
+                assert_eq!(status, Some(code), "{stderr}");
+                assert!(stderr.contains(expected), "{expected}: {stderr}");
+            }
+        }
+
+        /// `dir`'s `cargo-binstall` packed the way the host's release asset is.
+        fn pack_binstall_dir(dir: &Path) -> Vec<u8> {
+            let packed = dir.join("asset");
+            let status = if cfg!(target_os = "macos") {
+                command("zip")
+                    .arg("-qj")
+                    .arg(&packed)
+                    .arg(dir.join("cargo-binstall"))
+                    .status()
+            } else {
+                command("tar")
+                    .arg("-czf")
+                    .arg(&packed)
+                    .arg("-C")
+                    .arg(dir)
+                    .arg("cargo-binstall")
+                    .status()
+            };
+            assert!(status.unwrap().success());
+            let file = if cfg!(target_os = "macos") {
+                dir.join("asset.zip")
+            } else {
+                packed
+            };
+            std::fs::read(file).unwrap()
+        }
+
+        fn run_binstall_installer(body: Vec<u8>) -> (bool, String) {
+            let (url, _hits) = start_asset_server(vec![Reply::Valid], body);
+            let work = TempDir::new().unwrap();
+            let output = command("bash")
+                .arg("scripts/install-cargo-binstall.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("CARGO_HOME", work.path().join("cargo-home"))
+                .env("SCREENCOMP_BINSTALL_RELEASE_URL", &url)
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn the_binstall_installer_names_a_corrupt_asset() {
+            let (success, stderr) = run_binstall_installer(b"not an archive".to_vec());
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not extract"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn the_binstall_installer_names_a_failed_self_install() {
+            let dir = TempDir::new().unwrap();
+            let binary = dir.path().join("cargo-binstall");
+            std::fs::write(&binary, "#!/bin/sh\nexit 7\n").unwrap();
+            make_executable(&binary);
+            let (success, stderr) = run_binstall_installer(pack_binstall_dir(dir.path()));
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not install itself"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn the_rustup_install_keeps_rustup_inits_exit_code_and_names_the_next_step() {
+            let work = TempDir::new().unwrap();
+            let (url, _hits) =
+                start_asset_server(vec![Reply::Valid], b"#!/bin/sh\nexit 3\n".to_vec());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/install-rustup.sh", "-y"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("RUSTUP_UPDATE_ROOT", &url);
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            assert_eq!(status.code(), Some(3), "{stderr}");
+            assert!(stderr.contains("rustup-init failed"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn a_download_that_cannot_be_renamed_into_place_says_so() {
+            archive();
+            let server = start_server(plan_for(Op::Archive, vec![Reply::Valid]));
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("mv");
+            std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+            make_executable(&stub);
+            let dest = work.path().join("tool.tar.gz");
+            let output = command("bash")
+                .arg("scripts/download.sh")
+                .arg(format!("{}{TOOL_PATH}", server.url))
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{stderr}");
+            assert!(stderr.contains("could not be written"), "{stderr}");
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+            assert!(!dest.exists());
+            let leftovers: Vec<_> = std::fs::read_dir(work.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(".part."))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+
+        #[test]
+        fn a_release_whose_assets_cannot_be_named_skips_the_install() {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("uname");
+            std::fs::write(&stub, "#!/bin/sh\necho Plan9\n").unwrap();
+            make_executable(&stub);
+            let github_path = work.path().join("github-path");
+            let output = command("bash")
+                .arg("scripts/sync-demo-install.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("HAVE_TOKEN", "present")
+                .env("EVENT_NAME", "release")
+                .env("RELEASE_TAG", TAG)
+                .env("GITHUB_PATH", &github_path)
+                .env(
+                    "PATH",
+                    format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap()),
+                )
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "{stdout}");
+            assert!(stdout.contains("could not name the assets"), "{stdout}");
+            assert!(!github_path.exists());
+        }
+
+        #[test]
+        fn listing_assets_refuses_a_tag_that_cannot_name_a_file() {
+            for tag in ["v1/../../x", "v1\nv2"] {
+                let (status, stderr) = script_failure(
+                    "scripts/install.sh",
+                    &["--list-assets", "--version", tag],
+                    &[],
+                );
+                assert_eq!(status, Some(1), "{tag}: {stderr}");
+                assert!(stderr.contains("invalid release tag"), "{tag}: {stderr}");
+            }
+        }
+
+        /// The lines of a downloader that state its retry policy.
+        fn retry_policy(script: &str) -> Vec<String> {
+            let mut lines: Vec<String> = script
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.starts_with("max_attempts=")
+                        || line.starts_with("408 | 429 | 5??)")
+                        || line.starts_with("5 | 6 | 7 |")
+                        || line.contains("--proto-redir")
+                        || line.contains("--connect-timeout")
+                        || line.contains("--tlsv1.2")
+                        || line.ends_with(":-60}\"")
+                        || line.ends_with(":-2000}\"")
+                        || line.ends_with(":-30000}\"")
+                })
+                .map(|line| {
+                    let line = line.replace("SCREENCOMP_INSTALL_", "SCREENCOMP_DOWNLOAD_");
+                    // Only the policy's flags: the two call sites order paths differently.
+                    if line.contains("curl -fsSL") {
+                        "curl --tlsv1.2 redirect-args".to_owned()
+                    } else {
+                        line.replace("--config - ", "")
+                    }
+                })
+                .collect();
+            lines.sort();
+            lines
+        }
+
+        #[test]
+        fn the_action_and_the_repository_downloader_share_one_retry_policy() {
+            let action = action_step_script(&repo_file("action.yml"), "Install screencomp");
+            let downloader = repo_file("scripts/download.sh");
+            let policy = retry_policy(&downloader);
+            assert_eq!(policy.len(), 9, "{policy:?}");
+            assert_eq!(retry_policy(&action), policy);
+        }
+
+        #[test]
+        fn listing_assets_needs_a_version() {
+            let (status, stderr) = script_failure("scripts/install.sh", &["--list-assets"], &[]);
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("--list-assets needs --version"), "{stderr}");
+        }
+
+        /// A scratch PATH holding `just` and a `curl` that delivers `fixture`
+        /// (or a 404 when absent), so a recipe's own composition really runs.
+        struct Provisioning {
+            work: TempDir,
+            bin: PathBuf,
+            urls: PathBuf,
+        }
+
+        impl Provisioning {
+            fn new(fixture: Option<&[u8]>) -> Self {
+                let work = TempDir::new().unwrap();
+                let bin = work.path().join("path-bin");
+                std::fs::create_dir(&bin).unwrap();
+                std::os::unix::fs::symlink(command_path("just"), bin.join("just")).unwrap();
+                let urls = work.path().join("urls");
+                let delivery = match fixture {
+                    Some(bytes) => {
+                        let file = work.path().join("fixture");
+                        std::fs::write(&file, bytes).unwrap();
+                        format!("cp '{}' \"$out\"\nprintf 200\n", path_str(&file))
+                    }
+                    None => "printf 404\nexit 22\n".to_owned(),
+                };
+                let stub = bin.join("curl");
+                std::fs::write(
+                    &stub,
+                    format!(
+                        "#!/bin/bash\ncat >/dev/null\nprev=\nfor arg; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\necho \"$prev\" >>'{}'\n{delivery}",
+                        path_str(&urls)
+                    ),
+                )
+                .unwrap();
+                make_executable(&stub);
+                Self { work, bin, urls }
+            }
+
+            fn path(&self) -> String {
+                format!("{}:/usr/bin:/bin", path_str(&self.bin))
+            }
+
+            fn run_recipe(&self, recipe: &str) -> (bool, String) {
+                let output = command("just")
+                    .arg(recipe)
+                    .current_dir(env!("CARGO_MANIFEST_DIR"))
+                    .env("PATH", self.path())
+                    .env("CARGO_HOME", self.work.path().join("cargo-home"))
+                    .env("HOME", self.work.path())
+                    .output()
+                    .unwrap();
+                (
+                    output.status.success(),
+                    String::from_utf8_lossy(&output.stderr).into_owned(),
+                )
+            }
+
+            fn installed(&self, tool: &str) -> PathBuf {
+                self.work.path().join("cargo-home/bin").join(tool)
+            }
+        }
+
+        /// A tar.gz holding one executable named `tool`.
+        fn tool_archive(tool: &str) -> Vec<u8> {
+            let dir = TempDir::new().unwrap();
+            let binary = dir.path().join(tool);
+            std::fs::write(&binary, "#!/bin/sh\necho provisioned\n").unwrap();
+            make_executable(&binary);
+            let packed = dir.path().join("packed.tgz");
+            let status = command("tar")
+                .arg("-czf")
+                .arg(&packed)
+                .arg("-C")
+                .arg(dir.path())
+                .arg(tool)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            std::fs::read(packed).unwrap()
+        }
+
+        fn assert_provisioned(tool: &str, setup: &Provisioning, stderr: &str) {
+            let output = command(setup.installed(tool)).output().unwrap();
+            assert!(output.status.success(), "{tool}: {stderr}");
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim(),
+                "provisioned",
+                "{tool}"
+            );
+        }
+
+        #[test]
+        fn the_actionlint_recipe_extracts_what_it_downloaded() {
+            let setup = Provisioning::new(Some(&tool_archive("actionlint")));
+            let (success, stderr) = setup.run_recipe("_ensure-actionlint");
+            assert!(success, "{stderr}");
+            assert_provisioned("actionlint", &setup, &stderr);
+            let urls = read_lines(&setup.urls);
+            assert_eq!(urls.len(), 1, "{urls:?}");
+            assert!(
+                urls[0].contains("/rhysd/actionlint/releases/download/v"),
+                "{urls:?}"
+            );
+        }
+
+        #[test]
+        fn the_actionlint_recipe_names_a_corrupt_archive() {
+            let setup = Provisioning::new(Some(b"not an archive"));
+            let (success, stderr) = setup.run_recipe("_ensure-actionlint");
+            assert!(!success, "{stderr}");
+            assert!(stderr.contains("could not extract actionlint"), "{stderr}");
+            assert!(!setup.installed("actionlint").exists());
+        }
+
+        #[test]
+        fn the_single_binary_recipes_install_an_executable() {
+            for (recipe, tool, repository) in [
+                ("_ensure-lefthook", "lefthook", "/evilmartians/lefthook/"),
+                ("_ensure-hadolint", "hadolint", "/hadolint/hadolint/"),
+            ] {
+                let setup = Provisioning::new(Some(b"#!/bin/sh\necho provisioned\n"));
+                let (success, stderr) = setup.run_recipe(recipe);
+                assert!(success, "{recipe}: {stderr}");
+                assert_provisioned(tool, &setup, &stderr);
+                let urls = read_lines(&setup.urls);
+                assert!(urls[0].contains(repository), "{recipe}: {urls:?}");
+            }
+        }
+
+        #[test]
+        fn every_tool_recipe_stops_at_once_on_a_404() {
+            for (recipe, tool) in [
+                ("_ensure-actionlint", "actionlint"),
+                ("_ensure-lefthook", "lefthook"),
+                ("_ensure-hadolint", "hadolint"),
+            ] {
+                let setup = Provisioning::new(None);
+                let (success, stderr) = setup.run_recipe(recipe);
+                assert!(!success, "{recipe}: {stderr}");
+                assert_eq!(read_lines(&setup.urls).len(), 1, "{recipe}: {stderr}");
+                assert!(
+                    stderr.contains("download not found (HTTP 404)"),
+                    "{recipe}: {stderr}"
+                );
+                assert!(!setup.installed(tool).exists(), "{recipe}");
+            }
+        }
+
+        /// `Provisioning`'s PATH plus a `cargo-binstall` logging its arguments
+        /// and exiting `code`, and stubs for `extra` tools.
+        fn with_binstall_stub(setup: &Provisioning, code: u8, extra: &[&str]) -> PathBuf {
+            let log = setup.work.path().join("binstall-args");
+            let stub = setup.bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\necho \"$*\" >>'{}'\nexit {code}\n",
+                    path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            for tool in extra {
+                let path = setup.bin.join(tool);
+                std::fs::write(&path, "#!/bin/sh\n").unwrap();
+                make_executable(&path);
+            }
+            log
+        }
+
+        #[test]
+        fn ensure_tools_installs_only_the_missing_tool_without_a_source_fallback() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(
+                &setup,
+                0,
+                &["cargo-nextest", "cargo-llvm-cov", "cargo-deny"],
+            );
+            let (success, stderr) = setup.run_recipe("_ensure-tools");
+            assert!(success, "{stderr}");
+            assert_eq!(
+                read_lines(&log),
+                ["--no-confirm --disable-strategies compile cargo-machete"],
+                "{stderr}"
+            );
+        }
+
+        #[test]
+        fn ensure_tools_fails_once_on_a_permanent_binstall_failure() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(
+                &setup,
+                94,
+                &["cargo-nextest", "cargo-llvm-cov", "cargo-deny"],
+            );
+            let (success, stderr) = setup.run_recipe("_ensure-tools");
+            assert!(!success, "{stderr}");
+            assert_eq!(read_lines(&log).len(), 1, "{stderr}");
+            assert!(stderr.contains("permanent error (exit 94)"), "{stderr}");
+        }
+
+        #[test]
+        fn bench_tools_installs_the_pinned_tools_through_the_retrying_wrapper() {
+            let setup = Provisioning::new(None);
+            let log = with_binstall_stub(&setup, 0, &[]);
+            let (success, stderr) = setup.run_recipe("bench-tools");
+            assert!(success, "{stderr}");
+            let calls = read_lines(&log);
+            assert_eq!(calls.len(), 1, "{stderr}");
+            for tool in ["hyperfine@", "critcmp@", "samply@"] {
+                assert!(calls[0].contains(tool), "{tool}: {calls:?}");
+            }
+            assert!(calls[0].starts_with("--no-confirm "), "{calls:?}");
+        }
+
+        /// Runs `setup.sh`'s real `ensure_rust` on a machine without rustup; the
+        /// served rustup-init records its arguments and puts a `rustup` on PATH.
+        fn ensure_rust(replies: Vec<Reply>, setup: &Provisioning) -> (bool, Vec<Instant>, String) {
+            let log = setup.work.path().join("rustup-init-args");
+            let rustup = setup.bin.join("rustup");
+            let body = format!(
+                "#!/bin/sh\necho \"$*\" >'{}'\nprintf '#!/bin/sh\\n' >'{rustup}'\nchmod +x '{rustup}'\n",
+                path_str(&log),
+                rustup = path_str(&rustup)
+            );
+            let (url, hits) = start_asset_server(replies, body.into_bytes());
+            // setup.sh finds its siblings from its own path, so it runs from a copy
+            // of them with only the trailing `main "$@"` removed.
+            let root = setup.work.path().join("clone");
+            let scripts = root.join("scripts");
+            std::fs::create_dir_all(&scripts).unwrap();
+            for sibling in ["setup-lib.sh", "download.sh", "install-rustup.sh"] {
+                let shipped = repo_file(&format!("scripts/{sibling}"));
+                std::fs::write(scripts.join(sibling), shipped).unwrap();
+            }
+            let shipped = repo_file("scripts/setup.sh");
+            let without_main = shipped.strip_suffix("main \"$@\"\n").unwrap();
+            let copy = scripts.join("setup.sh");
+            std::fs::write(&copy, without_main).unwrap();
+            let script = format!("source '{}'; ensure_rust", path_str(&copy));
+            let output = command("bash")
+                .args(["-c", &script])
+                .current_dir(&root)
+                .env("PATH", setup.path())
+                .env("HOME", setup.work.path())
+                .env("RUSTUP_UPDATE_ROOT", &url)
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2")
+                .output()
+                .unwrap();
+            let recorded = hits.lock().unwrap().clone();
+            (
+                output.status.success(),
+                recorded,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn setup_installs_rustup_through_the_retrying_download() {
+            let setup = Provisioning::new(None);
+            std::fs::remove_file(setup.bin.join("curl")).unwrap();
+            let (success, hits, stderr) =
+                ensure_rust(vec![Reply::Status(503), Reply::Valid], &setup);
+            assert!(success, "{stderr}");
+            assert_eq!(hits.len(), 2, "{stderr}");
+            assert_eq!(
+                read_lines(&setup.work.path().join("rustup-init-args")),
+                ["-y --profile minimal --no-modify-path"]
+            );
+        }
+
+        #[test]
+        fn setup_stops_at_once_when_rustup_init_is_missing() {
+            let setup = Provisioning::new(None);
+            std::fs::remove_file(setup.bin.join("curl")).unwrap();
+            let (success, hits, stderr) = ensure_rust(vec![Reply::Status(404)], &setup);
+            assert!(!success, "{stderr}");
+            assert_eq!(hits.len(), 1, "{stderr}");
+            assert!(stderr.contains("download not found (HTTP 404)"), "{stderr}");
+        }
+
+        /// The `Install release-plz` step's shell, installing into `bin`.
+        fn release_plz_step(bin: &Path) -> String {
+            let workflow = repo_file(".github/workflows/release-plz.yml");
+            let start = workflow.find("- name: Install release-plz").unwrap();
+            let body = workflow[start..].split_once("run: |\n").unwrap().1;
+            let lines: Vec<&str> = body
+                .lines()
+                .take_while(|line| line.starts_with("          "))
+                .map(|line| &line[10..])
+                .collect();
+            lines.join("\n").replace("/usr/local/bin", &path_str(bin))
+        }
+
+        fn run_release_plz_step(setup: &Provisioning) -> (bool, String) {
+            let output = command("bash")
+                .args(["-eo", "pipefail", "-c", &release_plz_step(&setup.bin)])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", setup.path())
+                .env("RELEASE_PLZ_VERSION", "1.2.3")
+                .output()
+                .unwrap();
+            (
+                output.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )
+        }
+
+        #[test]
+        fn the_release_plz_step_runs_the_binary_it_downloaded() {
+            let setup = Provisioning::new(Some(&tool_archive("release-plz")));
+            let (success, output) = run_release_plz_step(&setup);
+            assert!(success, "{output}");
+            assert!(output.contains("provisioned"), "{output}");
+            let urls = read_lines(&setup.urls);
+            assert!(urls[0].contains("release-plz-v1.2.3/"), "{urls:?}");
+        }
+
+        #[test]
+        fn the_release_plz_step_stops_at_once_on_a_404() {
+            let setup = Provisioning::new(None);
+            let (success, output) = run_release_plz_step(&setup);
+            assert!(!success, "{output}");
+            assert_eq!(read_lines(&setup.urls).len(), 1, "{output}");
+            assert!(!setup.bin.join("release-plz").exists());
+        }
+
+        /// `scripts/download.sh` onto an existing file, with `env` applied.
+        fn download_over_existing(
+            reply: Reply,
+            env: &[(&str, &str)],
+        ) -> (bool, Vec<u8>, Vec<Hit>, String) {
+            archive();
+            let server = start_server(plan_for(Op::Archive, vec![reply]));
+            let work = TempDir::new().unwrap();
+            let dest = work.path().join("tool.tar.gz");
+            std::fs::write(&dest, b"previous contents").unwrap();
+            let mut cmd = command("bash");
+            cmd.arg("scripts/download.sh")
+                .arg(format!("{}{TOOL_PATH}", server.url))
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2");
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+            let output = cmd.output().unwrap();
+            let hits = server.hits.lock().unwrap().clone();
+            (
+                output.status.success(),
+                std::fs::read(&dest).unwrap(),
+                hits,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn a_failed_download_keeps_the_existing_file_and_a_good_one_replaces_it() {
+            for reply in [Reply::Status(404), Reply::Status(503), Reply::Truncated] {
+                let (success, contents, _, stderr) = download_over_existing(reply, &[]);
+                assert!(!success, "{reply:?}: {stderr}");
+                assert_eq!(contents, b"previous contents", "{reply:?}");
+            }
+            let (success, contents, _, stderr) = download_over_existing(Reply::Valid, &[]);
+            assert!(success, "{stderr}");
+            assert_eq!(contents, archive());
+        }
+
+        #[test]
+        fn a_token_with_config_metacharacters_reaches_the_server_intact() {
+            let token = r#"a"b\c"#;
+            let (success, _, hits, stderr) = download_over_existing(
+                Reply::Valid,
+                &[("SCREENCOMP_DOWNLOAD_BEARER_TOKEN", token)],
+            );
+            assert!(success, "{stderr}");
+            assert_eq!(hits[0].authorization, Some(format!("Bearer {token}")));
+        }
+
+        #[test]
+        fn a_directory_destination_is_refused_before_any_request() {
+            let work = TempDir::new().unwrap();
+            let (status, stderr) = script_failure(
+                "scripts/download.sh",
+                &["http://127.0.0.1:9/never", &path_str(work.path())],
+                &[],
+            );
+            assert_eq!(status, Some(2), "{stderr}");
+            assert!(stderr.contains("is a directory"), "{stderr}");
+        }
+
+        #[test]
+        fn install_sh_refuses_a_base_url_that_is_not_http() {
+            let (status, stderr) = script_failure(
+                "scripts/install.sh",
+                &["--version", TAG],
+                &[("SCREENCOMP_INSTALL_GITHUB_URL", "file:///etc/passwd")],
+            );
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("expected an http(s) base URL"), "{stderr}");
+        }
+
+        #[test]
+        fn binstall_refuses_bad_timing_settings_before_running_anything() {
+            let (status, stderr) = script_failure(
+                "scripts/binstall.sh",
+                &["never-installed"],
+                &[("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", "soon")],
+            );
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("attempt_timeout must be"), "{stderr}");
+        }
+
+        #[test]
+        fn the_sync_demo_install_is_a_no_op_without_its_token() {
+            let work = TempDir::new().unwrap();
+            let github_path = work.path().join("github-path");
+            let output = command("bash")
+                .arg("scripts/sync-demo-install.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("HAVE_TOKEN", "")
+                .env("GITHUB_PATH", &github_path)
+                .env("HOME", work.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("skipping screencomp install")
+            );
+            assert!(!github_path.exists());
+        }
+
+        /// The URL each bootstrap installer requests for a stubbed `uname`.
+        fn requested_url(script: &str, os: &str, machine: &str) -> (bool, String) {
+            requested_url_with_ldd(script, os, machine, "ldd (GNU libc) 2.39")
+        }
+
+        fn requested_url_with_ldd(
+            script: &str,
+            os: &str,
+            machine: &str,
+            ldd: &str,
+        ) -> (bool, String) {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("uname");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\ncase \"$1\" in\n-s) echo {os} ;;\n*) echo {machine} ;;\nesac\n"
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let ldd_stub = bin.join("ldd");
+            // musl's ldd prints to stderr and exits 1 for --version.
+            let body = if ldd.contains("musl") {
+                format!("#!/bin/sh\necho '{ldd}' >&2\nexit 1\n")
+            } else {
+                format!("#!/bin/sh\necho '{ldd}'\n")
+            };
+            std::fs::write(&ldd_stub, body).unwrap();
+            make_executable(&ldd_stub);
+            let (url, _hits) = start_asset_server(vec![Reply::Status(404)], Vec::new());
+            let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
+            let output = command("bash")
+                .arg(script)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_RELEASE_URL", &url)
+                .env("RUSTUP_UPDATE_ROOT", &url)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            (output.status.success(), stderr.replace(&url, "SERVER"))
+        }
+
+        #[test]
+        fn the_bootstrap_installers_request_each_platforms_published_asset() {
+            for (script, os, machine, expected) in [
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "x86_64",
+                    "SERVER/cargo-binstall-x86_64-unknown-linux-musl.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "aarch64",
+                    "SERVER/cargo-binstall-aarch64-unknown-linux-musl.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Linux",
+                    "armv7l",
+                    "SERVER/cargo-binstall-armv7-unknown-linux-musleabihf.tgz",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "Darwin",
+                    "arm64",
+                    "SERVER/cargo-binstall-universal-apple-darwin.zip",
+                ),
+                (
+                    "scripts/install-cargo-binstall.sh",
+                    "MINGW64_NT-10.0",
+                    "x86_64",
+                    "SERVER/cargo-binstall-x86_64-pc-windows-msvc.zip",
+                ),
+                (
+                    "scripts/install-rustup.sh",
+                    "Darwin",
+                    "arm64",
+                    "SERVER/dist/aarch64-apple-darwin/rustup-init",
+                ),
+                (
+                    "scripts/install-rustup.sh",
+                    "Darwin",
+                    "x86_64",
+                    "SERVER/dist/x86_64-apple-darwin/rustup-init",
+                ),
+            ] {
+                let (success, stderr) = requested_url(script, os, machine);
+                assert!(!success, "{script} {os} {machine}");
+                assert!(
+                    stderr.contains(&format!("HTTP 404): {expected}.")),
+                    "{script} {os} {machine}: {stderr}"
+                );
+            }
+        }
+
+        #[test]
+        fn the_bootstrap_installers_select_riscv_musl_and_refuse_an_unknown_architecture() {
+            let (_, riscv) = requested_url("scripts/install-cargo-binstall.sh", "Linux", "riscv64");
+            assert!(
+                riscv
+                    .contains("HTTP 404): SERVER/cargo-binstall-riscv64gc-unknown-linux-musl.tgz."),
+                "{riscv}"
+            );
+            for (ldd, libc) in [
+                ("musl libc (x86_64)", "musl"),
+                ("ldd (GNU libc) 2.39", "gnu"),
+            ] {
+                let (_, rustup) =
+                    requested_url_with_ldd("scripts/install-rustup.sh", "Linux", "x86_64", ldd);
+                let expected =
+                    format!("HTTP 404): SERVER/dist/x86_64-unknown-linux-{libc}/rustup-init.");
+                assert!(rustup.contains(&expected), "{ldd}: {rustup}");
+            }
+            let (success, stderr) = requested_url("scripts/install-rustup.sh", "Linux", "ppc64le");
+            assert!(!success);
+            assert!(
+                stderr.contains("unsupported architecture ppc64le"),
+                "{stderr}"
+            );
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
+        fn the_bootstrap_installers_name_an_unsupported_platform() {
+            for script in [
+                "scripts/install-cargo-binstall.sh",
+                "scripts/install-rustup.sh",
+            ] {
+                let (success, stderr) = requested_url(script, "Plan9", "x86_64");
+                assert!(!success, "{script}");
+                assert!(
+                    stderr.contains("unsupported OS Plan9"),
+                    "{script}: {stderr}"
+                );
+                assert!(stderr.contains("ACTION:"), "{script}: {stderr}");
+            }
+        }
+
+        struct SyncInstall {
+            _work: TempDir,
+            hits: Vec<Hit>,
+            success: bool,
+            output: String,
+            binary: PathBuf,
+            github_path: PathBuf,
+            sleeps: Vec<String>,
+            gh_calls: usize,
+            url: String,
+        }
+
+        impl SyncInstall {
+            fn attempts(&self, op: Op) -> Vec<Instant> {
+                self.hits
+                    .iter()
+                    .filter(|hit| hit.op == op)
+                    .map(|hit| hit.at)
+                    .collect()
+            }
+
+            fn assert_installed(&self, context: &str) {
+                let version = command(&self.binary).arg("--version").output().unwrap();
+                assert!(version.status.success(), "{context}: {}", self.output);
+                assert!(self.github_path.exists(), "{context}: {}", self.output);
+            }
+
+            fn assert_skipped_install(&self, context: &str) {
+                // The step stays green so the demo refresh still runs.
+                assert!(self.success, "{context}: {}", self.output);
+                assert!(!self.binary.exists(), "{context}: {}", self.output);
+                assert!(!self.github_path.exists(), "{context}: {}", self.output);
+                assert!(self.output.contains("::warning::"), "{context}");
+            }
+        }
+
+        /// A `gh` that lists the release's assets as `starter` until poll `ready_at`
+        /// (1-based), then `uploaded`, applying the caller's real `--jq` filter. It
+        /// fails like an unreachable API on the first poll.
+        fn gh_stub(work: &Path, ready_at: usize) -> (PathBuf, PathBuf) {
+            let bin = work.join("gh-bin");
+            std::fs::create_dir(&bin).unwrap();
+            let log = work.join("gh-calls");
+            let stub = bin.join("gh");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/sh\necho \"$*\" >>'{log}'\ncalls=$(wc -l <'{log}')\n\
+                     [ \"$calls\" -gt 1 ] || exit 1\n\
+                     state=starter\n[ \"$calls\" -lt {ready_at} ] || state=uploaded\n\
+                     prev=\nfor arg; do [ \"$prev\" = --jq ] && query=$arg; prev=$arg; done\n\
+                     body=\nfor name in $(scripts/install.sh --list-assets --version {TAG}); do\n\
+                     body=\"$body${{body:+,}}{{\\\"name\\\":\\\"$name\\\",\\\"state\\\":\\\"$state\\\"}}\"\ndone\n\
+                     printf '{{\"assets\":[%s]}}\\n' \"$body\" | jq -r \"$query\"\n",
+                    log = path_str(&log)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            (bin, log)
+        }
+
+        /// Runs sync-demo.yml's install step script against the local server.
+        fn sync_install(plan: Plan, release_ready_at: Option<usize>) -> SyncInstall {
+            archive();
+            let server = start_server(plan);
+            let work = TempDir::new().unwrap();
+            let home = work.path().join("home");
+            std::fs::create_dir(&home).unwrap();
+            let github_path = work.path().join("github-path");
+            let mut cmd = command("bash");
+            cmd.arg("scripts/sync-demo-install.sh")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("HAVE_TOKEN", "present")
+                .env("GITHUB_TOKEN", "test-token")
+                .env("GITHUB_REPOSITORY", "owner/repo")
+                .env("GITHUB_PATH", &github_path)
+                .env("HOME", &home)
+                .env("SCREENCOMP_INSTALL_GITHUB_URL", &server.url)
+                .env(
+                    "SCREENCOMP_INSTALL_GITHUB_API_URL",
+                    format!("{}/api", server.url),
+                )
+                .env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80");
+            let mut sleep_log = None;
+            let mut gh_log = None;
+            match release_ready_at {
+                Some(ready_at) => {
+                    let (path, sleeps) = sleep_stub(work.path(), true);
+                    let (gh, calls) = gh_stub(work.path(), ready_at);
+                    cmd.env("EVENT_NAME", "release")
+                        .env("RELEASE_TAG", TAG)
+                        .env("PATH", format!("{}:{path}", path_str(&gh)));
+                    sleep_log = Some(sleeps);
+                    gh_log = Some(calls);
+                }
+                None => {
+                    cmd.env("EVENT_NAME", "push").env("RELEASE_TAG", "");
+                }
+            }
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            SyncInstall {
+                hits: server.hits.lock().unwrap().clone(),
+                success: status.success(),
+                output: format!(
+                    "{}{}",
+                    std::fs::read_to_string(&stdout_path).unwrap(),
+                    std::fs::read_to_string(&stderr_path).unwrap()
+                ),
+                binary: home.join(".local/bin/screencomp"),
+                github_path,
+                sleeps: sleep_log.map_or_else(Vec::new, |log| read_lines(&log)),
+                gh_calls: gh_log.map_or(0, |log| read_lines(&log).len()),
+                url: server.url,
+                _work: work,
+            }
+        }
+
+        #[test]
+        fn the_sync_demo_install_recovers_from_transient_failures_on_every_request() {
+            for_each_case(&TRANSIENT, |op, reply| {
+                let run = sync_install(plan_for(op, vec![reply, reply, Reply::Valid]), None);
+                run.assert_installed(&format!("{op:?}/{reply:?}"));
+                assert_eq!(
+                    run.attempts(op).len(),
+                    3,
+                    "{op:?}/{reply:?}: {}",
+                    run.output
+                );
+            });
+        }
+
+        #[test]
+        fn the_sync_demo_install_gives_up_after_bounded_growing_attempts() {
+            for_each_case(&TRANSIENT, |op, reply| {
+                let context = format!("{op:?}/{reply:?}");
+                let run = sync_install(plan_for(op, vec![reply]), None);
+                run.assert_skipped_install(&context);
+                let attempts = run.attempts(op);
+                assert_eq!(attempts.len(), MAX_ATTEMPTS, "{context}: {}", run.output);
+                assert!(
+                    run.output
+                        .contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                        && run.output.contains(&run.url),
+                    "{context}: {}",
+                    run.output
+                );
+                for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                    let gap = attempts[index + 1] - attempts[index];
+                    assert!(
+                        gap >= Duration::from_millis(*delay_ms),
+                        "{context}: attempt gap {index} was {gap:?}"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        fn the_sync_demo_install_stops_at_once_on_a_404() {
+            for op in OPS {
+                let run = sync_install(plan_for(op, vec![Reply::Status(404)]), None);
+                run.assert_skipped_install(&format!("{op:?}"));
+                assert_eq!(run.attempts(op).len(), 1, "{op:?}: {}", run.output);
+                assert!(
+                    run.output.contains("download not found (HTTP 404)"),
+                    "{op:?}: {}",
+                    run.output
+                );
+            }
+        }
+
+        #[test]
+        fn the_sync_demo_install_sends_its_token_only_to_the_api() {
+            let run = sync_install(Plan::new(), None);
+            run.assert_installed("happy path");
+            for hit in &run.hits {
+                let expected = (hit.op == Op::Lookup).then(|| "Bearer test-token".to_owned());
+                assert_eq!(hit.authorization, expected, "{:?}", hit.op);
+            }
+        }
+
+        #[test]
+        fn a_release_waits_for_its_assets_before_a_single_install() {
+            // `latest` names another release: the install must use the event's tag.
+            let plan = plan_for(Op::Lookup, vec![Reply::Tag("v0.0.1")]);
+            let run = sync_install(plan, Some(4));
+            run.assert_installed("release");
+            assert_eq!(run.gh_calls, 4, "{}", run.output);
+            assert_eq!(
+                run.output.matches("waiting for release").count(),
+                1,
+                "{}",
+                run.output
+            );
+            assert_eq!(run.sleeps, ["15", "30", "60"], "{}", run.output);
+            // The assets waited for are the ones install.sh then requests.
+            if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+                let stem = format!("/screencomp-{TAG}-x86_64-unknown-linux-gnu");
+                for (op, suffix) in [(Op::Archive, ".tar.gz"), (Op::Checksum, ".sha256")] {
+                    let wanted = format!("{stem}{suffix}");
+                    assert!(
+                        run.hits
+                            .iter()
+                            .any(|hit| hit.op == op && hit.path.ends_with(&wanted)),
+                        "{wanted}: {}",
+                        run.output
+                    );
+                }
+            }
+            assert!(run.attempts(Op::Lookup).is_empty(), "{}", run.output);
+            for op in [Op::Archive, Op::Checksum] {
+                assert_eq!(run.attempts(op).len(), 1, "{op:?}: {}", run.output);
+            }
+        }
+
+        #[test]
+        fn a_release_whose_assets_never_arrive_skips_the_install_without_requesting_them() {
+            let run = sync_install(Plan::new(), Some(usize::MAX >> 1));
+            run.assert_skipped_install("release");
+            assert_eq!(run.gh_calls, 8, "{}", run.output);
+            assert_eq!(
+                run.sleeps,
+                ["15", "30", "60", "60", "60", "60", "60"],
+                "{}",
+                run.output
+            );
+            assert!(run.hits.is_empty(), "{}", run.output);
+        }
+
+        #[test]
+        fn install_sh_still_runs_standalone_when_piped_to_sh() {
+            archive();
+            let server = start_server(Plan::new());
+            let work = TempDir::new().unwrap();
+            let dir = work.path().join("bin");
+            let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install.sh");
+            let mut cmd = command("sh");
+            cmd.args(["-s", "--", "--to"])
+                .arg(&dir)
+                .current_dir(work.path())
+                .env_remove("SCREENCOMP_INSTALL_DOWNLOADER")
+                .env("SCREENCOMP_INSTALL_GITHUB_URL", &server.url)
+                .env(
+                    "SCREENCOMP_INSTALL_GITHUB_API_URL",
+                    format!("{}/api", server.url),
+                )
+                .stdin(std::fs::File::open(script).unwrap());
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            assert!(status.success(), "{stderr}");
+            let version = command(dir.join("screencomp"))
+                .arg("--version")
+                .output()
+                .unwrap();
+            assert!(version.status.success(), "{stderr}");
+        }
+
+        /// Answers requests from `replies` (the last repeats), logging each.
+        fn start_asset_server(
+            replies: Vec<Reply>,
+            body: Vec<u8>,
+        ) -> (String, Arc<Mutex<Vec<Instant>>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let hits = Arc::new(Mutex::new(Vec::new()));
+            let server_hits = Arc::clone(&hits);
+            let replies = Arc::new(replies);
+            let body = Arc::new(body);
+            std::thread::spawn(move || {
+                for mut stream in listener.incoming().flatten() {
+                    let hits = Arc::clone(&server_hits);
+                    let replies = Arc::clone(&replies);
+                    let body = Arc::clone(&body);
+                    std::thread::spawn(move || {
+                        read_request(&mut stream);
+                        let attempt = {
+                            let mut hits = hits.lock().unwrap();
+                            hits.push(Instant::now());
+                            hits.len() - 1
+                        };
+                        match replies[attempt.min(replies.len() - 1)] {
+                            Reply::Status(status) => respond(&mut stream, status, b"failure"),
+                            Reply::Hang => {
+                                let mut sink = [0_u8; 64];
+                                while matches!(stream.read(&mut sink), Ok(read) if read > 0) {}
+                            }
+                            Reply::Truncated => {
+                                let head = "HTTP/1.1 200 X\r\nContent-Length: 1024\r\nConnection: close\r\n\r\npartial";
+                                let _ = stream.write_all(head.as_bytes());
+                            }
+                            Reply::Drop => drop(stream),
+                            _ => respond(&mut stream, 200, &body),
+                        }
+                    });
+                }
+            });
+            (url, hits)
+        }
+
+        fn command_path(name: &str) -> PathBuf {
+            let found = command("bash")
+                .args(["-c", &format!("command -v {name}")])
+                .output()
+                .unwrap();
+            assert!(found.status.success(), "{name} is not on PATH");
+            PathBuf::from(String::from_utf8_lossy(&found.stdout).trim())
+        }
+
+        /// The real cargo-binstall packed the way its release assets are.
+        fn binstall_asset() -> Vec<u8> {
+            static ASSET: OnceLock<Vec<u8>> = OnceLock::new();
+            ASSET
+                .get_or_init(|| {
+                    let dir = TempDir::new().unwrap();
+                    let real = command_path("cargo-binstall");
+                    std::fs::copy(real, dir.path().join("cargo-binstall")).unwrap();
+                    let packed = dir.path().join("asset");
+                    let status = if cfg!(target_os = "macos") {
+                        command("zip")
+                            .arg("-qj")
+                            .arg(&packed)
+                            .arg(dir.path().join("cargo-binstall"))
+                            .status()
+                    } else {
+                        command("tar")
+                            .arg("-czf")
+                            .arg(&packed)
+                            .arg("-C")
+                            .arg(dir.path())
+                            .arg("cargo-binstall")
+                            .status()
+                    };
+                    assert!(status.unwrap().success());
+                    let file = if cfg!(target_os = "macos") {
+                        dir.path().join("asset.zip")
+                    } else {
+                        packed
+                    };
+                    std::fs::read(file).unwrap()
+                })
+                .clone()
+        }
+
+        struct Bootstrap {
+            work: TempDir,
+            hits: Vec<Instant>,
+            success: bool,
+            output: String,
+            url: String,
+            elapsed: Duration,
+        }
+
+        fn finish_bootstrap(
+            cmd: Command,
+            work: TempDir,
+            url: String,
+            hits: &Mutex<Vec<Instant>>,
+        ) -> Bootstrap {
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            Bootstrap {
+                hits: hits.lock().unwrap().clone(),
+                success: status.success(),
+                output: format!(
+                    "{}{}",
+                    std::fs::read_to_string(&stdout_path).unwrap(),
+                    std::fs::read_to_string(&stderr_path).unwrap()
+                ),
+                url,
+                elapsed,
+                work,
+            }
+        }
+
+        fn scale_download(cmd: &mut Command) {
+            cmd.env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80");
+        }
+
+        /// Runs the real `just _ensure-tools` where only cargo-binstall is absent.
+        fn ensure_tools(replies: Vec<Reply>) -> Bootstrap {
+            let (url, hits) = start_asset_server(replies, binstall_asset());
+            let just = command_path("just");
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("tools");
+            std::fs::create_dir(&bin).unwrap();
+            std::os::unix::fs::symlink(just, bin.join("just")).unwrap();
+            for tool in [
+                "cargo-nextest",
+                "cargo-llvm-cov",
+                "cargo-deny",
+                "cargo-machete",
+            ] {
+                let stub = bin.join(tool);
+                std::fs::write(&stub, "#!/bin/sh\n").unwrap();
+                make_executable(&stub);
+            }
+            let mut cmd = command("just");
+            cmd.arg("_ensure-tools")
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", format!("{}:/usr/bin:/bin", path_str(&bin)))
+                .env("CARGO_HOME", work.path().join("cargo-home"))
+                .env("HOME", work.path())
+                .env("SCREENCOMP_BINSTALL_RELEASE_URL", &url);
+            scale_download(&mut cmd);
+            finish_bootstrap(cmd, work, url, &hits)
+        }
+
+        impl Bootstrap {
+            fn installed_binstall(&self) -> PathBuf {
+                self.work.path().join("cargo-home/bin/cargo-binstall")
+            }
+
+            fn assert_bounded_failure(&self, context: &str) {
+                assert!(!self.success, "{context}: {}", self.output);
+                assert_eq!(self.hits.len(), MAX_ATTEMPTS, "{context}: {}", self.output);
+                assert!(
+                    self.output
+                        .contains(&format!("failed after {MAX_ATTEMPTS} attempts"))
+                        && self.output.contains(&self.url),
+                    "{context}: {}",
+                    self.output
+                );
+                let backoff: u64 = SCALED_DELAYS_MS.iter().sum();
+                let limit =
+                    Duration::from_millis(backoff) + Duration::from_secs(MAX_ATTEMPTS as u64 + 30);
+                assert!(self.elapsed < limit, "{context}: {:?}", self.elapsed);
+                for (index, delay_ms) in SCALED_DELAYS_MS.iter().enumerate() {
+                    let gap = self.hits[index + 1] - self.hits[index];
+                    assert!(
+                        gap >= Duration::from_millis(*delay_ms),
+                        "{context}: attempt gap {index} was {gap:?}"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn ensure_tools_recovers_the_cargo_binstall_download() {
+            for_each_transient(|reply| {
+                let run = ensure_tools(vec![reply, reply, Reply::Valid]);
+                assert!(run.success, "{reply:?}: {}", run.output);
+                assert_eq!(run.hits.len(), 3, "{reply:?}");
+                let version = command(run.installed_binstall())
+                    .arg("-V")
+                    .output()
+                    .unwrap();
+                assert!(version.status.success(), "{reply:?}: {}", run.output);
+            });
+        }
+
+        #[test]
+        fn ensure_tools_gives_up_on_a_persistent_cargo_binstall_failure() {
+            for_each_transient(|reply| {
+                let run = ensure_tools(vec![reply]);
+                run.assert_bounded_failure(&format!("{reply:?}"));
+                assert!(!run.installed_binstall().exists(), "{reply:?}");
+            });
+        }
+
+        #[test]
+        fn ensure_tools_stops_at_once_on_a_missing_cargo_binstall_asset() {
+            let run = ensure_tools(vec![Reply::Status(404)]);
+            assert!(!run.success, "{}", run.output);
+            assert_eq!(run.hits.len(), 1, "{}", run.output);
+            assert!(
+                run.output.contains("download not found (HTTP 404)")
+                    && run.output.contains(&run.url),
+                "{}",
+                run.output
+            );
+            assert!(!run.installed_binstall().exists());
+        }
+
+        /// Runs `scripts/install-rustup.sh` as `setup.sh` does. The served
+        /// rustup-init only records its arguments.
+        fn install_rustup(replies: Vec<Reply>) -> (Bootstrap, PathBuf) {
+            let work = TempDir::new().unwrap();
+            let args_log = work.path().join("rustup-init-args");
+            let body = format!("#!/bin/sh\necho \"$*\" >'{}'\n", path_str(&args_log));
+            let (url, hits) = start_asset_server(replies, body.into_bytes());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/install-rustup.sh", "-y", "--profile", "minimal"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("RUSTUP_UPDATE_ROOT", &url);
+            scale_download(&mut cmd);
+            (finish_bootstrap(cmd, work, url, &hits), args_log)
+        }
+
+        #[test]
+        fn the_rustup_install_recovers_and_runs_rustup_init() {
+            for_each_transient(|reply| {
+                let (run, args_log) = install_rustup(vec![reply, reply, Reply::Valid]);
+                assert!(run.success, "{reply:?}: {}", run.output);
+                assert_eq!(run.hits.len(), 3, "{reply:?}");
+                assert_eq!(
+                    std::fs::read_to_string(args_log).unwrap().trim(),
+                    "-y --profile minimal",
+                    "{reply:?}"
+                );
+            });
+        }
+
+        #[test]
+        fn the_rustup_install_gives_up_without_running_anything() {
+            for_each_transient(|reply| {
+                let (run, args_log) = install_rustup(vec![reply]);
+                run.assert_bounded_failure(&format!("{reply:?}"));
+                assert!(!args_log.exists(), "{reply:?}");
+            });
+        }
+
+        #[test]
+        fn the_rustup_install_stops_at_once_on_a_404() {
+            let (run, args_log) = install_rustup(vec![Reply::Status(404)]);
+            assert!(!run.success, "{}", run.output);
+            assert_eq!(run.hits.len(), 1, "{}", run.output);
+            assert!(run.output.contains("download not found (HTTP 404)"));
+            assert!(!args_log.exists());
+        }
+
+        #[test]
+        fn binstall_backoff_stops_growing_at_its_cap() {
+            let work = TempDir::new().unwrap();
+            let (path, sleeps) = sleep_stub(work.path(), false);
+            let bin = work.path().join("sleep-bin");
+            let stub = bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                "#!/bin/sh\necho 'Received status code 504 Gateway Timeout' >&2\nexit 94\n",
+            )
+            .unwrap();
+            make_executable(&stub);
+            let mut cmd = command("bash");
+            cmd.args(["scripts/binstall.sh", "probe"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "5000")
+                .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "7000");
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            assert_eq!(status.code(), Some(94));
+            assert_eq!(read_lines(&sleeps), ["5.000", "7.000", "7.000"]);
+        }
+
+        #[test]
+        fn an_attempt_that_exits_zero_when_stopped_still_counts_as_timed_out() {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let stub = bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                "#!/bin/bash\ntrap 'exit 0' TERM\nwhile :; do /bin/sleep 0.05; done\n",
+            )
+            .unwrap();
+            make_executable(&stub);
+            let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/binstall.sh", "probe"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", "1")
+                .env("SCREENCOMP_BINSTALL_KILL_GRACE", "1")
+                .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "20")
+                .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "80");
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            assert_eq!(status.code(), Some(124), "{stderr}");
+            assert!(stderr.contains("failed after 4 attempts"), "{stderr}");
+        }
+
+        #[test]
+        fn a_descendant_that_ignores_term_is_killed_after_its_leader_exits() {
+            let work = TempDir::new().unwrap();
+            let bin = work.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let pids = work.path().join("pids");
+            // The leader exits on TERM; its child ignores TERM and keeps running.
+            let stub = bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                format!(
+                    "#!/bin/bash\n\
+                     ( trap '' TERM; echo \"$BASHPID\" >>'{pids}'; while :; do /bin/sleep 1; done ) &\n\
+                     trap 'exit 1' TERM\n\
+                     while :; do /bin/sleep 0.05; done\n",
+                    pids = path_str(&pids)
+                ),
+            )
+            .unwrap();
+            make_executable(&stub);
+            let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
+            let mut cmd = command("bash");
+            cmd.args(["scripts/binstall.sh", "probe"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_ATTEMPT_TIMEOUT", "1")
+                .env("SCREENCOMP_BINSTALL_KILL_GRACE", "2")
+                .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "20")
+                .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "80");
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, elapsed) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            let recorded = read_lines(&pids);
+            let survivors: Vec<&String> = recorded
+                .iter()
+                .filter(|pid| {
+                    command("kill")
+                        .args(["-0", pid])
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .unwrap()
+                        .success()
+                })
+                .collect();
+            for pid in &survivors {
+                let _ = command("kill").args(["-KILL", pid]).status();
+            }
+            assert_eq!(status.code(), Some(124));
+            assert_eq!(recorded.len(), 4, "{recorded:?}");
+            assert!(survivors.is_empty(), "still running: {survivors:?}");
+            // Each attempt waited out its timeout and the grace before KILL.
+            assert!(elapsed >= Duration::from_secs(4 * 3), "{elapsed:?}");
+        }
+
+        /// Every file whose shell performs this repository's own downloads.
+        fn download_surfaces() -> Vec<(String, String)> {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let mut surfaces = vec![root.join(".github/workflows/release-plz.yml")];
+            surfaces.push(root.join("justfile"));
+            surfaces.push(root.join("scripts/setup.sh"));
+            surfaces.push(root.join("scripts/install-cargo-binstall.sh"));
+            surfaces.push(root.join("scripts/install-rustup.sh"));
+            surfaces
+                .into_iter()
+                .map(|path| {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    (path_str(&path), text)
+                })
+                .collect()
+        }
+
+        #[test]
+        fn workflows_and_recipes_only_download_through_the_retrying_mechanism() {
+            let mut routed = 0;
+            for (path, text) in download_surfaces() {
+                for line in text.lines().map(str::trim) {
+                    // `have curl` is setup.sh's prerequisite check, not a fetch.
+                    if line.starts_with('#') || line.starts_with("have curl") {
+                        continue;
+                    }
+                    assert!(
+                        !line
+                            .split_whitespace()
+                            .any(|word| word == "curl" || word == "wget"),
+                        "{path}: `{line}` bypasses scripts/download.sh"
+                    );
+                    assert!(
+                        !line.contains("binstall --no-confirm")
+                            || line.contains("bash scripts/binstall.sh --no-confirm"),
+                        "{path}: `{line}` is not retried"
+                    );
+                    routed += usize::from(line.contains("bash scripts/download.sh"));
+                }
+            }
+            // release-plz.yml 1, justfile 3, both bootstrap installers 1 each.
+            assert_eq!(routed, 6);
+            assert!(
+                repo_file(".github/workflows/sync-demo.yml")
+                    .contains("run: bash scripts/sync-demo-install.sh")
+            );
+        }
     }
 }
