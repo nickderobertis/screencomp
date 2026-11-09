@@ -1155,7 +1155,7 @@ case "$method $path" in
     ;;
   " "*/pages)
     [ "$filter" = .source.branch ] || exit 1
-    echo gallery-branch
+    if [ -f "$WORK/pages-branch" ]; then cat "$WORK/pages-branch"; else echo gallery-branch; fi
     exit 0
     ;;
 esac
@@ -1219,6 +1219,20 @@ fn run_pages_build_gate(
     previous_build: &str,
     subcommand: &str,
 ) -> (std::process::Output, usize) {
+    run_pages_build_gate_with_env(dir, label, polls, previous_build, subcommand, &[])
+}
+
+/// [`run_pages_build_gate`] with extra environment, applied last so it can
+/// override the defaults.
+#[cfg(unix)]
+fn run_pages_build_gate_with_env(
+    dir: &Path,
+    label: &str,
+    polls: &[&str],
+    previous_build: &str,
+    subcommand: &str,
+    extra_env: &[(&str, String)],
+) -> (std::process::Output, usize) {
     let work = dir.join(label);
     let stub = write_gh_stub(&work, polls);
     let script =
@@ -1245,6 +1259,7 @@ fn run_pages_build_gate(
         .env("POLL_SECONDS", "0")
         .env("APPEAR_ATTEMPTS", "3")
         .env("SETTLE_ATTEMPTS", "3")
+        .envs(extra_env.iter().map(|(key, value)| (*key, value.as_str())))
         .output()
         .unwrap();
     let posts = gh_stub_rebuilds(&work);
@@ -1659,6 +1674,276 @@ fn pages_build_gate_fails_within_the_bound_when_a_newer_build_keeps_running() {
         std::fs::read_to_string(work.join("cursor")).unwrap().trim(),
         "5"
     );
+}
+
+/// A later deploy can replace the build being waited on; the gate must report and
+/// recover from the build it actually read, not the one it first saw.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_follows_a_build_replaced_while_settling() {
+    let dir = TempDir::new().unwrap();
+    let passed = run_read_only_pages_gate(
+        dir.path(),
+        "replaced",
+        &["101 building", "102 errored", "<rebuild>", "103 built"],
+    );
+    let stderr = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("pages build 102 for o/r ended 'errored'"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("build 101"), "{stderr}");
+    assert_eq!(gh_stub_pushes(&dir.path().join("replaced")), 1);
+}
+
+/// Every bounded wait after the recovery push fails with the still-running message
+/// and never pushes again.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_bounds_the_waits_after_the_recovery_push() {
+    let dir = TempDir::new().unwrap();
+    for (label, polls, reads) in [
+        (
+            "recovery-running",
+            &["101 errored", "<rebuild>", "102 building"][..],
+            "4",
+        ),
+        (
+            "successor-running",
+            &["101 errored", "<rebuild>", "102 errored", "103 building"][..],
+            "5",
+        ),
+    ] {
+        let failed = run_read_only_pages_gate(dir.path(), label, polls);
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(!failed.status.success(), "{label}: {stderr}");
+        assert!(
+            stderr.contains("still running after 3 polls"),
+            "{label}: {stderr}"
+        );
+        let work = dir.path().join(label);
+        assert_eq!(gh_stub_pushes(&work), 1, "{label}");
+        assert_eq!(
+            std::fs::read_to_string(work.join("cursor")).unwrap().trim(),
+            reads,
+            "{label}: the first read finds the build, then SETTLE_ATTEMPTS"
+        );
+    }
+}
+
+/// When the recovery build's successor errors too, the failure names the last
+/// build that errored, and that is still the end of recovery.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_names_an_errored_successor_of_the_recovery_build() {
+    let dir = TempDir::new().unwrap();
+    let failed = run_read_only_pages_gate(
+        dir.path(),
+        "successor-errored",
+        &["101 errored", "<rebuild>", "102 errored", "103 errored"],
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("build 103 for o/r ended 'errored' after an empty-commit rebuild"),
+        "{stderr}"
+    );
+    assert_eq!(gh_stub_pushes(&dir.path().join("successor-errored")), 1);
+}
+
+/// The "no build followed" failure keeps the earlier build's real status apart
+/// from what polling reported.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_keeps_the_errored_status_apart_from_the_poll_result() {
+    let dir = TempDir::new().unwrap();
+    let failed = run_read_only_pages_gate(dir.path(), "poll-result", &["101 errored"]);
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("build 101 for o/r ended 'errored' started no Pages build")
+            && stderr.contains("(poll result: absent)"),
+        "{stderr}"
+    );
+}
+
+/// A concurrent deploy that lands between the recovery's fetch and its push wins:
+/// the non-forced push is rejected, the deploy survives, and git's reason reaches
+/// the log. A `git` shim advances the real remote at exactly that moment.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_recovery_push_never_overwrites_a_concurrent_deploy() {
+    let dir = TempDir::new().unwrap();
+    let work = dir.path().join("concurrent");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    write_gallery_remote(&work);
+    let remote = work.join("remote.git");
+    let concurrent = String::from_utf8_lossy(
+        &command("git")
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@e",
+                "-C",
+                remote.to_str().unwrap(),
+                "commit-tree",
+                "gallery-branch^{tree}",
+                "-p",
+                "gallery-branch",
+                "-m",
+                "concurrent deploy",
+            ])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_owned();
+
+    let real_git = String::from_utf8_lossy(
+        &command("bash")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_owned();
+    let shim_dir = work.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let shim = shim_dir.join("git");
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/usr/bin/env bash\ncase \" $* \" in *' commit-tree '*) {real_git} -C {remote} update-ref refs/heads/gallery-branch {concurrent} ;; esac\nexec {real_git} \"$@\"\n",
+            remote = remote.display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &shim,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!("{}:{}", shim_dir.display(), std::env::var("PATH").unwrap());
+
+    let (failed, _) = run_pages_build_gate_with_env(
+        dir.path(),
+        "concurrent",
+        &["101 errored"],
+        "100",
+        "verify",
+        &[("PATH", path)],
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("failed pushing the empty commit to gallery-branch")
+            && stderr.contains("rejected"),
+        "{stderr}"
+    );
+    assert_eq!(
+        remote_git(&remote, &["rev-parse", "gallery-branch"]),
+        concurrent
+    );
+    assert_eq!(gh_stub_pushes(&work), 0);
+}
+
+/// A push the remote refuses reports the remote's reason, with the token that the
+/// remote URL carries redacted from anything echoed back.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_reports_a_refused_push_without_the_token() {
+    let dir = TempDir::new().unwrap();
+    let work = dir.path().join("refused");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    write_gallery_remote(&work);
+    let hook = work.join("remote.git/hooks/pre-receive");
+    std::fs::write(
+        &hook,
+        "#!/usr/bin/env bash\necho 'denied for s3cr3t-value' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &hook,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+
+    let (failed, _) = run_pages_build_gate_with_env(
+        dir.path(),
+        "refused",
+        &["101 errored"],
+        "100",
+        "verify",
+        &[
+            ("GH_TOKEN", "s3cr3t-value".to_owned()),
+            (
+                "GIT_CONFIG_VALUE_0",
+                "https://x-access-token:s3cr3t-value@github.com/o/r.git".to_owned(),
+            ),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("failed pushing the empty commit") && stderr.contains("denied for ***"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("s3cr3t-value"), "{stderr}");
+    assert_eq!(gh_stub_pushes(&work), 0);
+}
+
+/// A missing branch fails at the fetch and says so, instead of a generic failure.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_reports_a_recovery_fetch_failure() {
+    let dir = TempDir::new().unwrap();
+    let work = dir.path().join("missing-ref");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("deny-rebuild"), "").unwrap();
+    std::fs::write(work.join("pages-branch"), "no-such-branch\n").unwrap();
+    write_gallery_remote(&work);
+    let (failed, _) =
+        run_pages_build_gate(dir.path(), "missing-ref", &["101 errored"], "100", "verify");
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(!failed.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("failed fetching no-such-branch")
+            && stderr.contains("couldn't find remote ref"),
+        "{stderr}"
+    );
+    assert_eq!(gh_stub_pushes(&work), 0);
+}
+
+/// The Pages source branch comes from an API response and becomes a git ref, so a
+/// null, empty, or malformed value is refused before git sees it.
+#[cfg(unix)]
+#[test]
+fn pages_build_gate_rejects_an_unusable_pages_source_branch() {
+    let dir = TempDir::new().unwrap();
+    for (label, branch) in [("null", "null"), ("empty", ""), ("malformed", "bad..ref")] {
+        let work = dir.path().join(label);
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("deny-rebuild"), "").unwrap();
+        std::fs::write(work.join("pages-branch"), format!("{branch}\n")).unwrap();
+        write_gallery_remote(&work);
+        let (failed, _) =
+            run_pages_build_gate(dir.path(), label, &["101 errored"], "100", "verify");
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(!failed.status.success(), "{label}: {stderr}");
+        assert!(
+            stderr.contains("no usable Pages source branch")
+                && stderr.contains("pages:write")
+                && !stderr.contains("failed fetching"),
+            "{label}: {stderr}"
+        );
+        assert_eq!(gh_stub_pushes(&work), 0, "{label}");
+    }
 }
 
 /// `pages: write` keeps its single rebuild when nothing newer was queued, and

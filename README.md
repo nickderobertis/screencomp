@@ -273,7 +273,9 @@ Neither recovery is attempted twice, and they differ in how they finish:
   does, the run fails naming the last errored build. A build still running at the
   settle bound fails with the still-running message, which names no build.
 - If the empty commit is refused or starts no build, the run fails naming the
-  errored build and the `pages:write` remedy.
+  errored build and the `pages:write` remedy. A step of the push that fails first
+  warns with git's own error, token redacted, so a refused credential and a push
+  rejected by a concurrent deploy read differently.
 
 Coalescing removes the race a run creates for itself, not one created from
 outside it (a scheduled prune, a second repository deploying into a shared

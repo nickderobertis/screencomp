@@ -149,6 +149,22 @@ die_stuck() {
   die "the Pages build for ${REPO} was still running after ${SETTLE_ATTEMPTS} polls; the published gallery is stale until it finishes — watch it at https://github.com/${REPO}/deployments and re-run this job once it settles"
 }
 
+# Run one step of the empty-commit recovery, keeping its stdout. On failure, warn
+# with the step's own stderr on one line, so a refused credential, a missing ref
+# and a rejected push stay distinguishable. The remote URL embeds the token, so it
+# is redacted first. Uses the caller's $work for the capture file.
+recovery_step() {
+  local what="$1" detail
+  shift
+  if "$@" 2>"${work}/step-stderr"; then
+    return 0
+  fi
+  detail="$(<"${work}/step-stderr")"
+  [ -z "${GH_TOKEN:-}" ] || detail="${detail//"$GH_TOKEN"/***}"
+  warn "the empty-commit recovery failed ${what}: ${detail//$'\n'/ }"
+  return 1
+}
+
 # Start a build using only contents access: one empty commit on the branch Pages
 # builds from. It must be a real `git push`, the transport every deploy here uses:
 # GitHub's docs say a GITHUB_TOKEN push does not trigger a Pages build, yet the
@@ -159,18 +175,27 @@ die_stuck() {
 # non-forced push can never overwrite a concurrent deploy.
 push_empty_commit() (
   local branch remote work commit
-  branch="$("$GH_BIN" api "repos/${REPO}/pages" --jq '.source.branch' 2>/dev/null)" || return 1
-  [ -n "$branch" ] || return 1
-  remote="https://x-access-token:${GH_TOKEN:-}@github.com/${REPO}.git"
-  work="$(mktemp -d)" || return 1
+  work="$(mktemp -d)" || {
+    warn "the empty-commit recovery could not create a working directory"
+    return 1
+  }
   # shellcheck disable=SC2064 # expand now: the local is gone when EXIT fires.
   trap "rm -rf '${work}'" EXIT
-  git -C "$work" init -q >/dev/null 2>&1 || return 1
-  git -C "$work" fetch -q --depth=1 --filter=blob:none "$remote" "refs/heads/${branch}" >/dev/null 2>&1 || return 1
-  commit="$(GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+  branch="$(recovery_step "reading the Pages source branch" "$GH_BIN" api "repos/${REPO}/pages" --jq '.source.branch')" || return 1
+  # The value becomes a git ref. `gh --jq` can render a JSON null as the text
+  # `null`, and a Pages source that is not a branch has no usable value at all.
+  if [ -z "$branch" ] || [ "$branch" = null ] || ! git check-ref-format "refs/heads/${branch}"; then
+    warn "the empty-commit recovery got no usable Pages source branch for ${REPO}: '${branch}'"
+    return 1
+  fi
+  remote="https://x-access-token:${GH_TOKEN:-}@github.com/${REPO}.git"
+  recovery_step "initializing a working repository" git -C "$work" init -q >/dev/null || return 1
+  recovery_step "fetching ${branch}" git -C "$work" fetch -q --depth=1 --filter=blob:none "$remote" "refs/heads/${branch}" >/dev/null || return 1
+  commit="$(recovery_step "creating the empty commit" env \
+    GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
     GIT_COMMITTER_NAME='github-actions[bot]' GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
-    git -C "$work" commit-tree 'FETCH_HEAD^{tree}' -p FETCH_HEAD -m 'chore: rebuild Pages after a superseded build' 2>/dev/null)" || return 1
-  git -C "$work" push -q "$remote" "${commit}:refs/heads/${branch}" >/dev/null 2>&1
+    git -C "$work" commit-tree 'FETCH_HEAD^{tree}' -p FETCH_HEAD -m 'chore: rebuild Pages after a superseded build')" || return 1
+  recovery_step "pushing the empty commit to ${branch}" git -C "$work" push -q "$remote" "${commit}:refs/heads/${branch}" >/dev/null
 )
 
 cmd_record() {
@@ -235,13 +260,13 @@ cmd_verify() {
   warn "a rebuild of ${REPO} could not be requested without pages:write; pushing an empty commit to start one"
   push_empty_commit ||
     die "the Pages build ${build} for ${REPO} ended '${status}' and neither a rebuild nor an empty commit could start another; grant the deploy token pages:write to recover from a superseded build"
-  local recovery_build
-  read -r status recovery_build <<<"$(wait_for_new_build)"
-  case "$status" in
+  local recovery_build recovery_status
+  read -r recovery_status recovery_build <<<"$(wait_for_new_build)"
+  case "$recovery_status" in
     built) ;;
     stuck) die_stuck ;;
     absent | unavailable)
-      die "the empty commit pushed after Pages build ${build} for ${REPO} ended '${status}' started no Pages build; GitHub does not document that a GITHUB_TOKEN push triggers one, so grant the deploy token pages:write to recover from a superseded build"
+      die "the empty commit pushed after Pages build ${build} for ${REPO} ended '${status}' started no Pages build that could be observed (poll result: ${recovery_status}); GitHub does not document that a GITHUB_TOKEN push triggers one, so grant the deploy token pages:write to recover from a superseded build"
       ;;
     *)
       # The recovery build can be superseded exactly as the deploy's was.
@@ -254,9 +279,9 @@ cmd_verify() {
           ;;
         stuck) die_stuck ;;
         absent | unavailable) ;;
-        *) recovery_build="$newer_build" status="$newer_status" ;;
+        *) recovery_build="$newer_build" recovery_status="$newer_status" ;;
       esac
-      die "the Pages build ${recovery_build} for ${REPO} ended '${status}' after an empty-commit rebuild; the published gallery is stale (see https://github.com/${REPO}/deployments)"
+      die "the Pages build ${recovery_build} for ${REPO} ended '${recovery_status}' after an empty-commit rebuild; the published gallery is stale (see https://github.com/${REPO}/deployments)"
       ;;
   esac
   echo "pages build succeeded for ${REPO} after an empty-commit rebuild"
