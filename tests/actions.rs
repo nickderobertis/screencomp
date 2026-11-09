@@ -5294,6 +5294,31 @@ mod install_action {
         }
 
         #[test]
+        fn binstall_backoff_stops_growing_at_its_cap() {
+            let work = TempDir::new().unwrap();
+            let (path, sleeps) = sleep_stub(work.path(), false);
+            let bin = work.path().join("sleep-bin");
+            let stub = bin.join("cargo-binstall");
+            std::fs::write(
+                &stub,
+                "#!/bin/sh\necho 'Received status code 504 Gateway Timeout' >&2\nexit 94\n",
+            )
+            .unwrap();
+            make_executable(&stub);
+            let mut cmd = command("bash");
+            cmd.args(["scripts/binstall.sh", "probe"])
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("PATH", path)
+                .env("SCREENCOMP_BINSTALL_RETRY_BASE_MS", "5000")
+                .env("SCREENCOMP_BINSTALL_RETRY_CAP_MS", "7000");
+            let stdout_path = work.path().join("stdout");
+            let stderr_path = work.path().join("stderr");
+            let (status, _) = run_to_deadline(cmd, &stdout_path, &stderr_path);
+            assert_eq!(status.code(), Some(94));
+            assert_eq!(read_lines(&sleeps), ["5.000", "7.000", "7.000"]);
+        }
+
+        #[test]
         fn an_attempt_that_exits_zero_when_stopped_still_counts_as_timed_out() {
             let work = TempDir::new().unwrap();
             let bin = work.path().join("bin");
