@@ -25,8 +25,8 @@
   cargo-binstall through `scripts/binstall.sh`; never a bare `curl`. Upstream's
   installer scripts are not run: `scripts/install-cargo-binstall.sh` and
   `scripts/install-rustup.sh` fetch their binaries through download.sh.
-  `workflows_and_recipes_only_download_through_the_retrying_mechanism` holds
-  this. `action.yml` keeps its own copy of the policy for consumers, and
+  `workflows_and_recipes_only_download_through_the_retrying_mechanism` and
+  `.github/tests/download-routing.test.mjs` hold this. `action.yml` keeps its own copy of the policy for consumers, and
   `scripts/install.sh` stays standalone, using download.sh only when
   `SCREENCOMP_INSTALL_DOWNLOADER` names it.
 - Provision the toolchain with `rustup show` so `rust-toolchain.toml` stays the

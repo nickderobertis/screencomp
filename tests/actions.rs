@@ -5410,10 +5410,7 @@ mod install_action {
         /// Every file whose shell performs this repository's own downloads.
         fn download_surfaces() -> Vec<(String, String)> {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let mut surfaces: Vec<PathBuf> = std::fs::read_dir(root.join(".github/workflows"))
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .collect();
+            let mut surfaces = vec![root.join(".github/workflows/release-plz.yml")];
             surfaces.push(root.join("justfile"));
             surfaces.push(root.join("scripts/setup.sh"));
             surfaces.push(root.join("scripts/install-cargo-binstall.sh"));

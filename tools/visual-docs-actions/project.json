@@ -24,7 +24,7 @@
       "{workspaceRoot}/scripts/install.sh",
       "{workspaceRoot}/scripts/setup.sh",
       "{workspaceRoot}/justfile",
-      "{workspaceRoot}/.github/workflows/*.yml",
+      "{workspaceRoot}/.github/workflows/release-plz.yml",
       "{workspaceRoot}/README.md",
       "{workspaceRoot}/examples/**/*",
       "{workspaceRoot}/demo/capture.sh",
