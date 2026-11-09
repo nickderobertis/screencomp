@@ -1433,7 +1433,6 @@ fn pages_build_gate_passes_on_a_built_build_and_fails_on_an_errored_one() {
     }
 }
 
-/// Output of git run against one bare remote.
 #[cfg(unix)]
 fn remote_git(remote: &Path, args: &[&str]) -> String {
     let output = command("git")
@@ -1501,7 +1500,6 @@ fn write_gallery_remote(work: &Path) -> String {
     remote_git(&remote, &["rev-parse", "refs/heads/gallery-branch"])
 }
 
-/// Pushes the remote received for one work directory.
 #[cfg(unix)]
 fn gh_stub_pushes(work: &Path) -> usize {
     std::fs::read_to_string(work.join("pushes"))
