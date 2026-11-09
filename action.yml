@@ -47,13 +47,6 @@ runs:
         retry_base_ms="${SCREENCOMP_INSTALL_RETRY_BASE_MS:-2000}"
         retry_cap_ms="${SCREENCOMP_INSTALL_RETRY_CAP_MS:-30000}"
 
-        for base_url in "${github_url}" "${github_api_url}"; do
-          case "${base_url}" in
-            http://* | https://*) ;;
-            *) echo "expected an http(s) base URL, got '${base_url}'" >&2; exit 1 ;;
-          esac
-        done
-
         require_positive_integer() {
           # Nine digits at most keeps the backoff doubling inside shell arithmetic.
           if ! [[ "$2" =~ ^[1-9][0-9]{0,8}$ ]]; then
