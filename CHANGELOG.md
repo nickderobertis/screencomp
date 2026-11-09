@@ -6,6 +6,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/nickderobertis/screencomp/compare/v0.5.0...v0.5.1) - 2026-11-09
+
+### Fixed
+
+- *(visual-docs)* pass a Pages build that a concurrent deploy superseded ([#128](https://github.com/nickderobertis/screencomp/pull/128))
+- *(action)* retry transient download failures when installing screencomp ([#126](https://github.com/nickderobertis/screencomp/pull/126))
+
 ## [0.5.0](https://github.com/nickderobertis/screencomp/compare/v0.4.9...v0.5.0) - 2026-10-13
 
 ### Fixed
