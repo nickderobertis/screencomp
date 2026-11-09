@@ -54,6 +54,7 @@ Usage: install.sh [--version <tag>] [--to <dir>]
 
   --version <tag>   Release tag to install, e.g. v0.1.0 (default: latest).
   --to <dir>        Install directory (default: ~/.local/bin).
+  --list-assets     Print this host's release asset names for --version, one per line.
   -h, --help        Show this help.
 
 Environment: SCREENCOMP_VERSION, SCREENCOMP_INSTALL_DIR, GITHUB_TOKEN.
@@ -187,6 +188,7 @@ extract() {
 main() {
     version="${SCREENCOMP_VERSION:-}"
     bindir="${SCREENCOMP_INSTALL_DIR:-}"
+    list_assets=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -194,12 +196,21 @@ main() {
             --version=*) version="${1#*=}"; shift ;;
             --to | --bin-dir) bindir="${2:?--to needs a value}"; shift 2 ;;
             --to=* | --bin-dir=*) bindir="${1#*=}"; shift ;;
+            --list-assets) list_assets=1; shift ;;
             -h | --help) usage; exit 0 ;;
             *) err "unknown option: $1 (try --help)" ;;
         esac
     done
 
     [ -n "$bindir" ] || bindir="${HOME}/.local/bin"
+
+    detect_target
+
+    if [ -n "$list_assets" ]; then
+        [ -n "$version" ] || err "--list-assets needs --version <tag>"
+        printf '%s\n' "${BIN}-${version}-${TARGET}.${EXT}" "${BIN}-${version}-${TARGET}.sha256"
+        exit 0
+    fi
 
     if [ -n "$DOWNLOADER" ]; then
         DL="external"
@@ -210,8 +221,6 @@ main() {
     else
         err "need curl or wget to download"
     fi
-
-    detect_target
 
     if [ -z "$version" ]; then
         say "resolving latest release..."

@@ -573,7 +573,7 @@ _ensure-actionlint:
     echo "installing actionlint {{actionlint_version}}"
     archive="$(mktemp)"
     bash scripts/download.sh "$url" "$archive"
-    tar -xzf "$archive" -C "$dest" actionlint
+    tar -xzf "$archive" -C "$dest" actionlint || { echo "could not extract actionlint from $url; ACTION: fix the tar error above, then rerun" >&2; exit 1; }
     rm -f "$archive"
 
 # Install the pinned hadolint binary onto PATH if it is missing.

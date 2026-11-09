@@ -118,6 +118,10 @@ test('release production commands build, pack, checksum, install and run the rea
     const actionEnv = { ...process.env, PATH: `${transport}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`, STAGED_ASSETS: out, SCREENCOMP_METHOD: 'download', SCREENCOMP_VERSION: tag, SCREENCOMP_REPO: 'nickderobertis/screencomp', SCREENCOMP_ACTION_PATH: root, RUNNER_TEMP: actionTemp, TMPDIR: actionTemp, GITHUB_PATH: pathFile, GH_TOKEN: 'forge-double' };
     const installedAction = spawnSync('bash', [writeStepScript(out, installStep.run)], { cwd: root, env: actionEnv, encoding: 'utf8' });
     assert.equal(installedAction.status, 0, installedAction.stdout + installedAction.stderr);
+    // sync-demo-install.sh waits for these names, so they must match what release production uploads.
+    const listed = spawnSync('bash', ['scripts/install.sh', '--list-assets', '--version', tag], { cwd: root, encoding: 'utf8' });
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.deepEqual(listed.stdout.trim().split('\n').map(line => line.trim()), [contract.archive, contract.checksum]);
     assert.match(installedAction.stdout, new RegExp(`screencomp ${version.replaceAll('.', '\\.')}`));
     const actionBinary = join(readFileSync(pathFile, 'utf8').trim(), target.includes('windows') ? golden.windowsBinary : golden.binary);
     assert.equal(createHash('sha256').update(readFileSync(actionBinary)).digest('hex'), contract.binarySha256);

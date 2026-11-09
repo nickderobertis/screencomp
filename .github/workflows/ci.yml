@@ -199,16 +199,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
       - name: actionlint
-        run: |
-          bash scripts/download.sh https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz actionlint.tar.gz
-          tar -xzf actionlint.tar.gz actionlint
-          ./actionlint -color .github/workflows/*.yml examples/*.yml
+        run: just lint-actions
       - name: hadolint
-        run: |
-          bash scripts/download.sh https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 hadolint
-          chmod +x hadolint
-          ./hadolint Dockerfile
+        run: just lint-docker
       # The gh-pages maintenance and Pages build-gate scripts are shared by the
       # reusable workflow and their tests; actionlint only lints shell embedded in
       # workflows, so lint the extracted scripts here (shellcheck ships on the

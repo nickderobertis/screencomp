@@ -32,8 +32,14 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
 bash scripts/download.sh "${base}/${asset}" "${work}/${asset}"
-case "${asset}" in
+if ! case "${asset}" in
   *.tgz) tar -xzf "${work}/${asset}" -C "${work}" ;;
   *.zip) unzip -q "${work}/${asset}" -d "${work}" ;;
-esac
-"${work}/cargo-binstall" --self-install
+esac; then
+  echo "could not extract ${asset}. ACTION: fix the extraction error above, then rerun 'just bootstrap'" >&2
+  exit 1
+fi
+if ! "${work}/cargo-binstall" --self-install; then
+  echo "cargo-binstall could not install itself. ACTION: fix the error above, then rerun 'just bootstrap'" >&2
+  exit 1
+fi

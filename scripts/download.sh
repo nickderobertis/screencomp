@@ -39,6 +39,11 @@ for setting in attempt_timeout retry_base_ms retry_cap_ms; do
   fi
 done
 
+if [ -d "${dest}" ]; then
+  echo "download.sh: destination '${dest}' is a directory. ACTION: pass a file path as the second argument" >&2
+  exit 2
+fi
+
 part="${dest}.part.$$"
 trap 'rm -f -- "${part}"' EXIT
 
@@ -69,7 +74,10 @@ while :; do
     --config - --connect-timeout 10 --max-time "${attempt_timeout}" \
     --write-out '%{http_code}' "${url}" <<<"${config}")" || exit_code=$?
   if [ "${exit_code}" -eq 0 ]; then
-    mv -f -- "${part}" "${dest}"
+    if ! mv -f -- "${part}" "${dest}"; then
+      echo "download could not be written to ${dest}: ${url}. ACTION: fix the permissions or path named above, then rerun" >&2
+      exit 1
+    fi
     exit 0
   fi
   rm -f -- "${part}"

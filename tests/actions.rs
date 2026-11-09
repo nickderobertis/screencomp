@@ -2343,6 +2343,58 @@ mod binstall_on_windows {
         }
     }
 
+    /// The real `cargo-binstall.exe`, zipped as its release asset is.
+    fn binstall_zip(dir: &Path) -> Vec<u8> {
+        let found = command("where").arg("cargo-binstall").output().unwrap();
+        assert!(found.status.success(), "cargo-binstall is not on PATH");
+        let text = String::from_utf8_lossy(&found.stdout).into_owned();
+        let real = text.lines().next().unwrap().trim().to_owned();
+        std::fs::copy(real, dir.join("cargo-binstall.exe")).unwrap();
+        let zip = dir.join("asset.zip");
+        let script = format!(
+            "Compress-Archive -Path '{}' -DestinationPath '{}'",
+            dir.join("cargo-binstall.exe").display(),
+            zip.display()
+        );
+        let status = command("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::read(zip).unwrap()
+    }
+
+    #[test]
+    fn the_bootstrap_installer_recovers_extracts_the_zip_and_installs_itself() {
+        let work = TempDir::new().unwrap();
+        let asset_dir = work.path().join("asset");
+        std::fs::create_dir(&asset_dir).unwrap();
+        let body = binstall_zip(&asset_dir);
+        let stderr_path = work.path().join("stderr");
+        let (url, _) = start_server(Reply::Status(504), Some(stderr_path.clone()), body);
+        let base = url.trim_end_matches("/screencomp.tgz");
+        let cargo_home = work.path().join("cargo-home");
+        let output_stderr = std::fs::File::create(&stderr_path).unwrap();
+        let status = command(GIT_BASH)
+            .arg("scripts/install-cargo-binstall.sh")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .env("CARGO_HOME", &cargo_home)
+            .env("SCREENCOMP_BINSTALL_RELEASE_URL", base)
+            .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "20")
+            .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "80")
+            .stderr(output_stderr)
+            .status()
+            .unwrap();
+        let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+        assert!(status.success(), "{stderr}");
+        assert!(stderr.contains("retrying in"), "{stderr}");
+        let version = command(cargo_home.join("bin/cargo-binstall.exe"))
+            .arg("-V")
+            .output()
+            .unwrap();
+        assert!(version.status.success(), "{stderr}");
+    }
+
     #[test]
     fn a_504_recovers_into_a_working_install() {
         let run = binstall(Reply::Status(504), true, "60");
@@ -3102,17 +3154,37 @@ mod install_action {
 
     #[test]
     fn a_permanent_curl_failure_stops_at_once_and_names_the_exit_code() {
-        let run = install_with(Plan::new(), TAG, Timing::Scaled, |cmd| {
-            cmd.env("SCREENCOMP_INSTALL_GITHUB_URL", "unsupported://host");
-        });
+        let stub = CurlStub::exiting_with(1);
+        let run = stub.install();
         assert!(!run.success, "{}", run.output());
         run.assert_nothing_installed();
+        assert_eq!(stub.calls().len(), 1, "{}", run.output());
         let failure = run.stderr.lines().last().unwrap();
         assert!(
-            failure.contains("failed (curl exit 1)") && failure.contains("unsupported://host"),
+            failure.contains("failed (curl exit 1)") && failure.contains(&run.server_url),
             "{failure}"
         );
         assert!(!run.stderr.contains("retrying"), "{}", run.stderr);
+    }
+
+    #[test]
+    fn a_base_url_that_is_not_http_is_refused_before_curl_runs() {
+        for variable in [
+            "SCREENCOMP_INSTALL_GITHUB_URL",
+            "SCREENCOMP_INSTALL_GITHUB_API_URL",
+        ] {
+            let stub = CurlStub::exiting_with(1);
+            let run = stub.install_adjusted("latest", |cmd| {
+                cmd.env(variable, "file:///etc/passwd");
+            });
+            assert!(!run.success, "{variable}: {}", run.output());
+            assert!(stub.calls().is_empty(), "{variable}: {:?}", stub.calls());
+            assert!(
+                run.stderr.contains("expected an http(s) base URL"),
+                "{variable}: {}",
+                run.output()
+            );
+        }
     }
 
     #[test]
@@ -3922,6 +3994,83 @@ mod install_action {
             }
         }
 
+        /// `scripts/download.sh` onto an existing file, with `env` applied.
+        fn download_over_existing(
+            reply: Reply,
+            env: &[(&str, &str)],
+        ) -> (bool, Vec<u8>, Vec<Hit>, String) {
+            archive();
+            let server = start_server(plan_for(Op::Archive, vec![reply]));
+            let work = TempDir::new().unwrap();
+            let dest = work.path().join("tool.tar.gz");
+            std::fs::write(&dest, b"previous contents").unwrap();
+            let mut cmd = command("bash");
+            cmd.arg("scripts/download.sh")
+                .arg(format!("{}{TOOL_PATH}", server.url))
+                .arg(&dest)
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .env("SCREENCOMP_DOWNLOAD_ATTEMPT_TIMEOUT", "2")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_BASE_MS", "1")
+                .env("SCREENCOMP_DOWNLOAD_RETRY_CAP_MS", "2");
+            for (key, value) in env {
+                cmd.env(key, value);
+            }
+            let output = cmd.output().unwrap();
+            let hits = server.hits.lock().unwrap().clone();
+            (
+                output.status.success(),
+                std::fs::read(&dest).unwrap(),
+                hits,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        }
+
+        #[test]
+        fn a_failed_download_keeps_the_existing_file_and_a_good_one_replaces_it() {
+            for reply in [Reply::Status(404), Reply::Status(503), Reply::Truncated] {
+                let (success, contents, _, stderr) = download_over_existing(reply, &[]);
+                assert!(!success, "{reply:?}: {stderr}");
+                assert_eq!(contents, b"previous contents", "{reply:?}");
+            }
+            let (success, contents, _, stderr) = download_over_existing(Reply::Valid, &[]);
+            assert!(success, "{stderr}");
+            assert_eq!(contents, archive());
+        }
+
+        #[test]
+        fn a_token_with_config_metacharacters_reaches_the_server_intact() {
+            let token = r#"a"b\c"#;
+            let (success, _, hits, stderr) = download_over_existing(
+                Reply::Valid,
+                &[("SCREENCOMP_DOWNLOAD_BEARER_TOKEN", token)],
+            );
+            assert!(success, "{stderr}");
+            assert_eq!(hits[0].authorization, Some(format!("Bearer {token}")));
+        }
+
+        #[test]
+        fn a_directory_destination_is_refused_before_any_request() {
+            let work = TempDir::new().unwrap();
+            let (status, stderr) = script_failure(
+                "scripts/download.sh",
+                &["http://127.0.0.1:9/never", &path_str(work.path())],
+                &[],
+            );
+            assert_eq!(status, Some(2), "{stderr}");
+            assert!(stderr.contains("is a directory"), "{stderr}");
+        }
+
+        #[test]
+        fn install_sh_refuses_a_base_url_that_is_not_http() {
+            let (status, stderr) = script_failure(
+                "scripts/install.sh",
+                &["--version", TAG],
+                &[("SCREENCOMP_INSTALL_GITHUB_URL", "file:///etc/passwd")],
+            );
+            assert_eq!(status, Some(1), "{stderr}");
+            assert!(stderr.contains("expected an http(s) base URL"), "{stderr}");
+        }
+
         #[test]
         fn binstall_refuses_bad_timing_settings_before_running_anything() {
             let (status, stderr) = script_failure(
@@ -3954,6 +4103,15 @@ mod install_action {
 
         /// The URL each bootstrap installer requests for a stubbed `uname`.
         fn requested_url(script: &str, os: &str, machine: &str) -> (bool, String) {
+            requested_url_with_ldd(script, os, machine, "ldd (GNU libc) 2.39")
+        }
+
+        fn requested_url_with_ldd(
+            script: &str,
+            os: &str,
+            machine: &str,
+            ldd: &str,
+        ) -> (bool, String) {
             let work = TempDir::new().unwrap();
             let bin = work.path().join("bin");
             std::fs::create_dir(&bin).unwrap();
@@ -3966,6 +4124,9 @@ mod install_action {
             )
             .unwrap();
             make_executable(&stub);
+            let ldd_stub = bin.join("ldd");
+            std::fs::write(&ldd_stub, format!("#!/bin/sh\necho '{ldd}'\n")).unwrap();
+            make_executable(&ldd_stub);
             let (url, _hits) = start_asset_server(vec![Reply::Status(404)], Vec::new());
             let path = format!("{}:{}", path_str(&bin), std::env::var("PATH").unwrap());
             let output = command("bash")
@@ -4036,6 +4197,33 @@ mod install_action {
         }
 
         #[test]
+        fn the_bootstrap_installers_select_riscv_musl_and_refuse_an_unknown_architecture() {
+            let (_, riscv) = requested_url("scripts/install-cargo-binstall.sh", "Linux", "riscv64");
+            assert!(
+                riscv
+                    .contains("HTTP 404): SERVER/cargo-binstall-riscv64gc-unknown-linux-musl.tgz."),
+                "{riscv}"
+            );
+            for (ldd, libc) in [
+                ("musl libc (x86_64)", "musl"),
+                ("ldd (GNU libc) 2.39", "gnu"),
+            ] {
+                let (_, rustup) =
+                    requested_url_with_ldd("scripts/install-rustup.sh", "Linux", "x86_64", ldd);
+                let expected =
+                    format!("HTTP 404): SERVER/dist/x86_64-unknown-linux-{libc}/rustup-init.");
+                assert!(rustup.contains(&expected), "{ldd}: {rustup}");
+            }
+            let (success, stderr) = requested_url("scripts/install-rustup.sh", "Linux", "ppc64le");
+            assert!(!success);
+            assert!(
+                stderr.contains("unsupported architecture ppc64le"),
+                "{stderr}"
+            );
+            assert!(stderr.contains("ACTION:"), "{stderr}");
+        }
+
+        #[test]
         fn the_bootstrap_installers_name_an_unsupported_platform() {
             for script in [
                 "scripts/install-cargo-binstall.sh",
@@ -4100,8 +4288,7 @@ mod install_action {
                     "#!/bin/sh\necho \"$*\" >>'{log}'\ncalls=$(wc -l <'{log}')\n\
                      [ \"$calls\" -gt 1 ] || exit 1\n\
                      [ \"$calls\" -ge {ready_at} ] || {{ echo uploading.tmp; exit 0; }}\n\
-                     stem=screencomp-{TAG}-x86_64-unknown-linux-gnu\n\
-                     echo \"$stem.tar.gz\"\necho \"$stem.sha256\"\n",
+                     scripts/install.sh --list-assets --version {TAG}\n",
                     log = path_str(&log)
                 ),
             )
@@ -4665,8 +4852,8 @@ mod install_action {
                     routed += usize::from(line.contains("bash scripts/download.sh"));
                 }
             }
-            // ci.yml 2, release-plz.yml 1, justfile 3, both bootstrap installers 1 each.
-            assert_eq!(routed, 8);
+            // release-plz.yml 1, justfile 3, both bootstrap installers 1 each.
+            assert_eq!(routed, 6);
             assert!(
                 repo_file(".github/workflows/sync-demo.yml")
                     .contains("run: bash scripts/sync-demo-install.sh")

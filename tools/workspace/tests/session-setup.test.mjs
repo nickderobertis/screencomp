@@ -211,9 +211,13 @@ test("without setsid the hand-off still detaches through nohup", { skip: posixOn
     try {
       // macOS keeps bash, sleep and mkdir in /bin, not /usr/bin; the first
       // directory holding a tool wins, as it would on PATH.
+      // A set, not existsSync: that follows a runner image's dangling symlinks.
+      const linked = new Set(["setsid"]);
       for (const from of ["/bin", "/usr/bin"]) {
         for (const tool of readdirSync(from)) {
-          if (tool !== "setsid" && !existsSync(join(bin, tool))) symlinkSync(join(from, tool), join(bin, tool));
+          if (linked.has(tool)) continue;
+          linked.add(tool);
+          symlinkSync(join(from, tool), join(bin, tool));
         }
       }
       const run = hook(dir, { PATH: bin, ASDF_DATA_DIR: join(bin, "no-asdf") });

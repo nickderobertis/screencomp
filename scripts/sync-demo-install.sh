@@ -14,14 +14,19 @@ if [ -z "${HAVE_TOKEN:-}" ]; then
 fi
 
 assets_uploaded() {
-  local names
+  local names asset
   names="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
     --json assets --jq '.assets[] | select(.state == "uploaded") | .name')" || return 1
-  local stem="screencomp-${RELEASE_TAG}-x86_64-unknown-linux-gnu"
-  grep -qxF "${stem}.tar.gz" <<<"${names}" && grep -qxF "${stem}.sha256" <<<"${names}"
+  while IFS= read -r asset; do
+    grep -qxF "${asset}" <<<"${names}" || return 1
+  done <<<"${expected_assets}"
 }
 
 if [ "${EVENT_NAME:-}" = "release" ]; then
+  if ! expected_assets="$(scripts/install.sh --list-assets --version "${RELEASE_TAG}")"; then
+    echo "::warning::could not name the assets of release ${RELEASE_TAG}; continuing without screencomp, the baseline reseed is skipped. ACTION: fix the install.sh error above, then rerun this workflow"
+    exit 0
+  fi
   attempt=1 max=8 delay=15
   until assets_uploaded; do
     if [ "${attempt}" -ge "${max}" ]; then
