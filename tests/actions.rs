@@ -3933,6 +3933,8 @@ mod install_action {
             }
         }
 
+        // Argument inspection because a real redirect needs a TLS server, and this
+        // suite stays offline with no certificate to trust.
         #[test]
         fn an_https_download_refuses_a_downgrading_redirect() {
             let (_, https_calls, _) = download_with_curl_exiting("https://example.invalid/a", 23);
@@ -4102,6 +4104,12 @@ mod install_action {
             assert!(stderr.contains("could not be written"), "{stderr}");
             assert!(stderr.contains("ACTION:"), "{stderr}");
             assert!(!dest.exists());
+            let leftovers: Vec<_> = std::fs::read_dir(work.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.contains(".part."))
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
         }
 
         #[test]
@@ -4432,6 +4440,7 @@ mod install_action {
                 format!(
                     "#!/bin/sh\necho \"$*\" >>'{log}'\ncalls=$(wc -l <'{log}')\n\
                      [ \"$calls\" -gt 1 ] || exit 1\n\
+                     case \"$*\" in *'select(.state == \"uploaded\")'*) ;; *) echo incomplete-asset; ;; esac\n\
                      [ \"$calls\" -ge {ready_at} ] || {{ echo uploading.tmp; exit 0; }}\n\
                      scripts/install.sh --list-assets --version {TAG}\n",
                     log = path_str(&log)
