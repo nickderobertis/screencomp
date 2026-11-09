@@ -208,6 +208,9 @@ main() {
 
     if [ -n "$list_assets" ]; then
         [ -n "$version" ] || err "--list-assets needs --version <tag>"
+        case "$version" in
+            *[!A-Za-z0-9._+-]*) err "invalid release tag for --list-assets: $version" ;;
+        esac
         printf '%s\n' "${BIN}-${version}-${TARGET}.${EXT}" "${BIN}-${version}-${TARGET}.sha256"
         exit 0
     fi

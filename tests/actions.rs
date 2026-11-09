@@ -4141,6 +4141,19 @@ mod install_action {
         }
 
         #[test]
+        fn listing_assets_refuses_a_tag_that_cannot_name_a_file() {
+            for tag in ["v1/../../x", "v1\nv2"] {
+                let (status, stderr) = script_failure(
+                    "scripts/install.sh",
+                    &["--list-assets", "--version", tag],
+                    &[],
+                );
+                assert_eq!(status, Some(1), "{tag}: {stderr}");
+                assert!(stderr.contains("invalid release tag"), "{tag}: {stderr}");
+            }
+        }
+
+        #[test]
         fn listing_assets_needs_a_version() {
             let (status, stderr) = script_failure("scripts/install.sh", &["--list-assets"], &[]);
             assert_eq!(status, Some(1), "{stderr}");
