@@ -5,8 +5,12 @@
 # builds from this repository's target dir: per profile it removes each unit's
 # older builds in deps/, .fingerprint/, build/ and incremental/, keeping the
 # unit's newest build and every build modified within the last 2 days.
-schema_version = 1
+schema_version = 2
 
 [pool.maintain]
 command = ["just", "pool-maintenance"]
 timeout = "30m"
+
+[policy]
+publication = "change-auto"
+approvals = "none"
